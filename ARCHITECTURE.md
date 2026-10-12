@@ -128,36 +128,37 @@ review with no `review.json` loads as empty without touching disk.
 
 ### `review`
 **Role:** the application core and the **only write path**. Each operation is
-a transaction through `store`; each re-checks the `model` invariants before
-committing.
+a transaction through `store`; each validates its inputs before committing.
 
-Operations:
+Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 
-- `sync(path)` — read the file; if its hash differs from the latest revision,
-  snapshot it and append a revision. Idempotent. Called at the start of every
-  other operation, so any entry point observes the current file.
-- `view(path, as_of: Option<Revision>)` — the review resolved against the
-  latest revision: threads with mapped ranges and `Current | Outdated`, plus
-  changed lines since `as_of` (default: the revision last acknowledged).
-- `add_thread`, `reply`, `edit`, `delete`, `resolve`, `reopen`.
-- `acknowledge(path)` — record that the human has seen the latest revision;
-  advances the baseline for "changed since last review" markers. Called by the
-  TUI on quit, never implicitly by the CLI.
+- `add_thread(file, start, end, body, author)` — anchors a new open thread to
+  lines `start..=end` of the file as it is now, storing the quote.
+- `view(file, include_resolved)` — threads in id order, open only by default,
+  each with a computed `state`.
+- `resolve(file, id, author, note?)` — marks the thread resolved; a note is
+  appended as a second comment by the resolver.
 
 **Invariants**
-- Revisions are append-only; `seq` is dense and increasing.
-- New threads anchor to the **latest** revision. Line numbers supplied by a
-  caller are always interpreted against the latest revision.
-- A mutation referencing an unknown comment id fails without changing anything.
-- Replying to a resolved thread is allowed and leaves it resolved (resolve /
-  reopen is an explicit act). Reopen requires no particular author.
-- Every message has a non-empty `author`.
-- All operations are idempotent where reasonable (`resolve` on a resolved
-  thread is a no-op success).
+- Lines are read with `str::lines()` (`\n` or `\r\n`, final newline
+  ignored); the file must be valid UTF-8. The same helper takes the quote at
+  `add_thread` and checks it in `view`.
+- `state` is `outdated` iff the stored range no longer exists in the file or
+  its text differs from `quote`. There is no mapping between versions of the
+  file: inserting lines above an anchor makes it `outdated`.
+- A mutation that fails (unknown id, bad range, empty author or body) changes
+  nothing.
+- Every message has a non-empty `author` and `body`.
+- `resolve` on a resolved thread is a no-op success: the new note is ignored
+  and nothing is written.
 
 **Contract:** returns typed results and typed errors (`NotFound`,
-`InvalidRange`, `FileUnreadable`, `Locked`, …). No printing, no terminal
-awareness. This is the API both front ends share.
+`InvalidRange`, `FileUnreadable`, `Locked`, `UnsupportedSchema`, `EmptyAuthor`,
+`EmptyBody`, `Io`, `Corrupt`). No printing, no terminal awareness. This is the
+API both front ends share. Mapping errors to exit codes belongs to `cli`.
+
+*Deferred:* `sync` and revisions, `reply`, `edit`, `delete`, `reopen`,
+`acknowledge`, `as_of` views.
 
 ### `cli`
 **Role:** the agent-facing front end. Parses args (clap), calls `review`,

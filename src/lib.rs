@@ -5,6 +5,7 @@
 
 pub mod error;
 pub mod model;
+pub mod review;
 pub mod store;
 
 pub use error::{Error, Result};
