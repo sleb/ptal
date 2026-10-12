@@ -70,6 +70,9 @@ Writes require `--as <name>` (or `PTAL_AUTHOR`) so every message is attributed.
 A skill or prompt for your agent of choice is just: *"run `ptal comments
 <file>`, address each thread, reply and resolve."*
 
+The full command and key map, agent and human side by side, is in
+[docs/interfaces.md](docs/interfaces.md).
+
 ## Where data lives
 
 `$XDG_DATA_HOME/ptal/` (default `~/.local/share/ptal/`, on macOS too). Override
