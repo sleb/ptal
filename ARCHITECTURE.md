@@ -26,7 +26,29 @@ for, and the invariants and contracts between them.
 Dependencies point downward only. `model` depends on nothing in the crate.
 `tui` and `cli` never touch `store` or `anchor` directly.
 
+## Status
+
+| Component | State |
+|---|---|
+| `model` | Built: `Review`, `Thread`, `Status`, `Comment`, `Anchor`, `State` |
+| `store` | Built: data dir, atomic `review.json`, lock, schema check |
+| `review` | Built (MVP subset): `add_thread`, `view`, `resolve` |
+| `cli` | Next story |
+| `tui` | Next story |
+| `anchor`, `highlight`, `diffview` | Deferred |
+
+Deferred within built components: revisions and snapshots, anchor mapping
+between file versions, nested replies, edit, delete, reopen, `acknowledge`,
+`ptal schema`. In the MVP, `state` compares the quote against the file at the
+stored lines, with no mapping. Sections below describe deferred design where
+they say so.
+
 ## Key idea: revisions and anchoring
+
+*Deferred.* The MVP stores no revisions: a thread keeps the line range and
+quote from when it was created, and `review` reports `outdated` whenever the
+file no longer matches. The design below replaces that without changing the
+output shape.
 
 A plan file is mutable and untracked, so there are no commits to anchor to.
 ptal supplies its own: every distinct content of the file is a **revision**,
@@ -77,6 +99,8 @@ golden-JSON test in `model` pins it. Every persisted file carries
 `ptal schema`, revisions.
 
 ### `anchor`
+*Deferred.* Not part of the MVP.
+
 **Role:** pure functions mapping line ranges between revisions.
 
 ```
@@ -161,6 +185,8 @@ API both front ends share. Mapping errors to exit codes belongs to `cli`.
 `acknowledge`, `as_of` views.
 
 ### `cli`
+*Not built yet.* Next story.
+
 **Role:** the agent-facing front end. Parses args (clap), calls `review`,
 prints.
 
@@ -183,6 +209,8 @@ Commands: `comments`, `add`, `reply`, `resolve`, `reopen`, `schema`; bare
   Changing them is a `schema_version` bump.
 
 ### `tui`
+*Not built yet.* Next story.
+
 **Role:** the human front end (ratatui + crossterm).
 
 Internally: `App` state (cursor, selection, scroll, focused thread, mode),
@@ -202,11 +230,15 @@ event)` function, and a pure `render(state, view)`.
 - Display only; never mutates the reviewed file.
 
 ### `highlight`
+*Deferred.*
+
 **Role:** syntax highlighting of the reviewed text (syntect), producing styled
 spans per line. Pure; language chosen from file extension, plain text
 fallback. Depends on nothing else in the crate.
 
 ### `diffview`
+*Deferred.*
+
 **Role:** the seam that keeps room for other diff presentations. A trait the
 TUI renders against:
 
@@ -236,11 +268,14 @@ state or `review`.
 
 ## Testing strategy
 
-- `anchor`: property tests (identity, in-bounds, `Current` ⇒ identical text).
-- `model`/`review`: invariant tests over operation sequences, including
-  tombstones, nested replies, reopen, and multi-revision drift.
-- `store`: crash-safety (kill between temp write and rename), concurrent
-  writers under the lock.
+- `model`: round-trip and a golden-JSON test pinning the wire shape.
+- `store`: data-dir and review-dir naming, stale-temp recovery, schema
+  refusal, lock contention.
+- `review`: one test per rule, with an injected clock; editing the file between
+  calls to exercise `state`.
+- `tests/core.rs`: concurrent writers, cross-handle reads, a full review round.
+- `anchor` (deferred): property tests (identity, in-bounds, `Current` ⇒
+  identical text).
 - `cli`: golden JSON output tests plus a schema-conformance check.
 - `tui`: drive `update` with scripted key events and assert on state and on
   `TestBackend` snapshots.
