@@ -1,0 +1,38 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project state
+
+ptal is a Rust terminal tool for reviewing a single throwaway text file (usually a `.md` plan): a human comments in a TUI, an agent reads and resolves comments through a JSON CLI.
+
+Work is tracked in GitHub: an **MVP/milestone issue** holds the scope and design decisions, and **story issues** are sub-issues of it, each with scope, acceptance criteria, and out-of-scope. Find current work with `gh issue list`; don't rely on issue numbers written in docs.
+
+`README.md` and `ARCHITECTURE.md` describe the design. The MVP deliberately narrows it, and the milestone issue lists the deviations. Where they disagree, the milestone issue wins for the MVP, and the docs are corrected as code lands rather than annotated around.
+
+## Working agreements
+
+1. **Strict TDD.** Failing test first (seen failing for the right reason), minimum code to pass, then refactor green. No production code without a test that demanded it.
+2. **Fearless refactoring.** Single user, no compatibility burden. If something is wrong, delete and rewrite it. No shims, deprecated aliases, or migration code for formats nobody has; `schema_version` stays `1` until real data exists.
+3. **Docs stay true.** Each change lands with the docs that describe it (rustdoc, `ARCHITECTURE.md`, `README.md`). Docs describe what exists; unbuilt design is labeled deferred.
+
+Green gate for every step: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
+
+Plan stories with `/ptal-plan <issue#>`; the approved plan is posted as a comment on the issue and is the execution script.
+
+## Commands
+
+Once the crate exists:
+
+```sh
+cargo build
+cargo test
+cargo test <name>                 # single test by substring
+cargo test --test <file>          # one integration test file in tests/
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+```
+
+## Architecture
+
+See `ARCHITECTURE.md` (layering and dependency rules, per-component invariants and contracts, "Cross-cutting rules", "Testing strategy"). It is the single source of truth; don't restate it here. If a rule matters and is missing from it, add it there.
