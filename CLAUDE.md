@@ -4,12 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-ptal is a Rust terminal tool for reviewing a single throwaway text file (usually a `.md` plan): a human comments in a TUI, an agent reads and resolves comments through a JSON CLI. **No code exists yet.** The repo holds design docs only; implementation is tracked in GitHub issues:
+ptal is a Rust terminal tool for reviewing a single throwaway text file (usually a `.md` plan): a human comments in a TUI, an agent reads and resolves comments through a JSON CLI.
 
-- #2 MVP umbrella (its "MVP design decisions" table narrows ARCHITECTURE.md)
-- #3 core: `model`, `store`, `review` → #4 agent CLI → #5 TUI → #6 agent dry run
+Work is tracked in GitHub: an **MVP/milestone issue** holds the scope and design decisions, and **story issues** are sub-issues of it, each with scope, acceptance criteria, and out-of-scope. Find current work with `gh issue list`; don't rely on issue numbers written in docs.
 
-`README.md` and `ARCHITECTURE.md` describe the full design. **Where they disagree with #2, the issue wins for the MVP** (no revisions/snapshots, no `anchor` mapping, no replies/edit/delete, one crate rather than a workspace). Fix the docs when code lands rather than annotating around them.
+`README.md` and `ARCHITECTURE.md` describe the design. The MVP deliberately narrows it, and the milestone issue lists the deviations. Where they disagree, the milestone issue wins for the MVP, and the docs are corrected as code lands rather than annotated around.
 
 ## Working agreements
 
@@ -23,7 +22,7 @@ Plan stories with `/ptal-plan <issue#>`; the approved plan is posted as a commen
 
 ## Commands
 
-Once the crate exists (step 0 of #3):
+Once the crate exists:
 
 ```sh
 cargo build
@@ -34,15 +33,6 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-## Architecture (the parts that span files)
+## Architecture
 
-Layering is strict and downward-only: `tui`/`cli` → `review` → `store` → `model`. Front ends hold no business rules and never touch `store` directly.
-
-- **`review` is the only write path.** Every mutation is a transaction: `store::with_review` takes an exclusive lock, reads, applies, re-checks invariants, atomically writes. This is what lets the TUI and an agent driving the CLI run concurrently. Never hold state across a lock release.
-- **Core has no UI knowledge.** `review` returns typed results and typed errors (`NotFound`, `InvalidRange`, `FileUnreadable`, `Locked`, …); no printing. Exit-code mapping (0 ok / 1 runtime / 2 usage-or-not-found) belongs to `cli`.
-- **Time and id counter are injected** so core logic is deterministic in tests.
-- **The reviewed file is read-only to ptal.** Data lives under `$PTAL_DATA_DIR` → `$XDG_DATA_HOME/ptal` → `~/.local/share/ptal` (also on macOS; do not use the `dirs` crate), in `<slug>-<hash8>/review.json` keyed by the canonical path. Never write next to the reviewed file.
-- **Wire format is the model types.** stdout is data only (JSON when not a TTY or `--json`); diagnostics and errors go to stderr. Lines are 1-based and inclusive everywhere. Comment ids are `c1`, `c2`, … from a monotonic, never-reused counter shared by threads and resolve notes.
-- **Staleness (MVP):** `state: current | outdated` is computed by checking the stored quote at the stored lines; there is no range mapping. `state` is in the schema so real mapping can replace this later without an output change.
-- **CLI help is part of the product.** `ptal --help` alone must teach an agent the list → address → resolve workflow; every command carries an example. Writes require `--as` or `PTAL_AUTHOR`; the CLI never invents an author.
-- **TUI (when built):** all keys handled in a pure `update(state, event)`; `render` is pure over state; the TUI persists nothing itself and re-reads `view` after each write.
+See `ARCHITECTURE.md` (layering and dependency rules, per-component invariants and contracts, "Cross-cutting rules", "Testing strategy"). It is the single source of truth; don't restate it here. If a rule matters and is missing from it, add it there.
