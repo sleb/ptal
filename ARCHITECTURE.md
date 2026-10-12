@@ -26,7 +26,29 @@ for, and the invariants and contracts between them.
 Dependencies point downward only. `model` depends on nothing in the crate.
 `tui` and `cli` never touch `store` or `anchor` directly.
 
+## Status
+
+| Component | State |
+|---|---|
+| `model` | Built: `Review`, `Thread`, `Status`, `Comment`, `Anchor`, `State` |
+| `store` | Built: data dir, atomic `review.json`, lock, schema check |
+| `review` | Built (MVP subset): `add_thread`, `view`, `resolve` |
+| `cli` | Next story |
+| `tui` | Next story |
+| `anchor`, `highlight`, `diffview` | Deferred |
+
+Deferred within built components: revisions and snapshots, anchor mapping
+between file versions, nested replies, edit, delete, reopen, `acknowledge`,
+`ptal schema`. In the MVP, `state` compares the quote against the file at the
+stored lines, with no mapping. Sections below describe deferred design where
+they say so.
+
 ## Key idea: revisions and anchoring
+
+*Deferred.* The MVP stores no revisions: a thread keeps the line range and
+quote from when it was created, and `review` reports `outdated` whenever the
+file no longer matches. The design below replaces that without changing the
+output shape.
 
 A plan file is mutable and untracked, so there are no commits to anchor to.
 ptal supplies its own: every distinct content of the file is a **revision**,
@@ -49,30 +71,36 @@ threads are never silently dropped or silently re-pointed at the wrong text.
 ### `model`
 **Role:** the data types that are persisted and exposed to agents.
 
-- `Review` — one per reviewed file: identity, ordered revision list, threads.
-- `Revision` — `{ id: sha256, seq: u32, seen_at }`. `seq` is 1-based, dense.
-- `Thread` — a root `Comment` plus `anchor` and `status`.
-- `Comment` — `{ id, parent: Option<id>, author, body, created_at, edited_at?,
-  deleted }`. Replies nest to arbitrary depth via `parent`.
-- `Anchor` — `{ revision, start_line, end_line, quote }` (1-based, inclusive).
-- `Status` — `Open | Resolved { by, at }`.
+- `Review` — one per reviewed file: `schema_version`, `path`, `next_id`,
+  `threads`.
+- `Thread` — `{ id, anchor, status, comments }`. Its id is its first
+  comment's id.
+- `Status` — `open` or `resolved`; `resolved_by` and `resolved_at` appear on
+  the wire only when resolved.
+- `Comment` — `{ id, author, body, created_at }`. Timestamps are RFC 3339 UTC.
+- `Anchor` — `{ start_line, end_line, quote }` (1-based, inclusive); `quote`
+  is the anchored lines joined by `\n`.
+- `State` — `current | outdated`. Computed by `review` when viewing, never
+  persisted.
 
 **Invariants**
 - Comment ids are short, human-typeable, and unique within a review (`c1`,
-  `c2`, …), assigned from a monotonic counter that is never reused.
-- Comments form a forest of trees; `parent` always refers to an existing
-  comment in the same thread; no cycles. A thread's id is its root comment's id.
-- `anchor.revision` refers to a revision in the review; `start <= end`; both
-  lie within that revision's line count; `quote` is exactly those lines.
-- Status lives on the thread root only. A reply cannot be "resolved" alone.
-- Deleting a comment that has replies tombstones it (`deleted: true`, body
-  cleared); the tree shape is preserved.
+  `c2`, …), assigned from `next_id`, a monotonic counter that is never reused.
+  Threads and resolve notes draw from the same counter.
+- `start_line <= end_line`, both within the file when the thread is created;
+  `quote` is exactly those lines.
+- Status lives on the thread.
 
-**Contract:** serde (de)serialization is the on-disk and on-wire format.
-Types derive `JsonSchema`; `ptal schema` prints it. Every persisted file
-carries `schema_version`; unknown future versions are refused, not guessed at.
+**Contract:** serde (de)serialization is the on-disk and on-wire format. The
+golden-JSON test in `model` pins it. Every persisted file carries
+`schema_version`; unknown future versions are refused, not guessed at.
+
+*Deferred:* nested replies (`parent`), edit/delete, `JsonSchema` derives and
+`ptal schema`, revisions.
 
 ### `anchor`
+*Deferred.* Not part of the MVP.
+
 **Role:** pure functions mapping line ranges between revisions.
 
 ```
@@ -88,64 +116,77 @@ changed_lines(old_text, new_text)    -> Vec<Range>      // for gutter markers
 - Identity: mapping a range between identical texts returns it unchanged.
 
 ### `store`
-**Role:** persistence. Reads and writes `Review`s and revision snapshots.
+**Role:** persistence. Reads and writes `Review`s.
 
-**Layout** — `$PTAL_DATA_DIR` or `$XDG_DATA_HOME/ptal` or `~/.local/share/ptal`:
+**Layout** — `$PTAL_DATA_DIR` or `$XDG_DATA_HOME/ptal` or `~/.local/share/ptal`
+(empty variables count as unset):
 
 ```
-<data>/<slug>-<hash8>/        slug = file name; hash8 = of canonical abs path
-  review.json                 Review (schema_version, path, revisions, threads)
-  revisions/<sha256>.txt      immutable snapshots
+<data>/<slug>-<hash8>/        slug = file name sanitized to [A-Za-z0-9._-];
+                              hash8 = of the canonical absolute path
+  review.json                 Review (schema_version, path, next_id, threads)
+  review.lock                 advisory lock file; never renamed or replaced
 ```
 
 **Invariants**
-- Review identity is the canonicalized absolute path of the file. Moving the
-  file starts a new review (a future `ptal move` may migrate).
-- Writes are atomic (write temp file, fsync, rename). A crash leaves the old
-  or the new `review.json`, never a partial one.
-- Snapshots are immutable and write-once; a snapshot is written before any
-  `review.json` that references it.
-- Every mutation is read-modify-write under an exclusive advisory lock on the
-  review directory. No caller holds state across a lock release and writes it
-  back. This is what lets the TUI and a CLI-driving agent run concurrently.
+- Review identity is the canonicalized absolute path of the file, so a
+  symlink or `./` path reaches the same review. Moving the file starts a new
+  review.
+- Writes are atomic (write `review.json.tmp`, fsync, rename). A crash leaves
+  the old or the new `review.json`, never a partial one; a stale temp file is
+  overwritten by the next write.
+- Every mutation is read-modify-write under an exclusive advisory lock on
+  `review.lock`. The lock is a separate file because `review.json` is replaced
+  by rename, which would orphan a lock held on it. Acquisition retries for ~5s,
+  then fails with `Locked`.
+- A `review.json` with a newer `schema_version` is refused (`UnsupportedSchema`)
+  and left untouched.
+- An unchanged review is not rewritten.
 
-**Contract:** `with_review(path, |&mut Review| -> R) -> Result<R>` is the only
-mutation primitive; `load(path)` is a shared-lock read. Nothing else writes.
+**Contract:** `with_review(file, |&mut Review| -> Result<R>) -> Result<R>` is
+the only mutation primitive; an `Err` from the closure writes nothing.
+`load(file)` takes no lock: rename makes each read a consistent snapshot. A
+review with no `review.json` loads as empty without touching disk.
+
+*Deferred:* `revisions/` snapshots.
 
 ### `review`
 **Role:** the application core and the **only write path**. Each operation is
-a transaction through `store`; each re-checks the `model` invariants before
-committing.
+a transaction through `store`; each validates its inputs before committing.
 
-Operations:
+Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 
-- `sync(path)` — read the file; if its hash differs from the latest revision,
-  snapshot it and append a revision. Idempotent. Called at the start of every
-  other operation, so any entry point observes the current file.
-- `view(path, as_of: Option<Revision>)` — the review resolved against the
-  latest revision: threads with mapped ranges and `Current | Outdated`, plus
-  changed lines since `as_of` (default: the revision last acknowledged).
-- `add_thread`, `reply`, `edit`, `delete`, `resolve`, `reopen`.
-- `acknowledge(path)` — record that the human has seen the latest revision;
-  advances the baseline for "changed since last review" markers. Called by the
-  TUI on quit, never implicitly by the CLI.
+- `add_thread(file, start, end, body, author)` — anchors a new open thread to
+  lines `start..=end` of the file as it is now, storing the quote.
+- `view(file, include_resolved)` — threads in id order, open only by default,
+  each with a computed `state`.
+- `resolve(file, id, author, note?)` — marks the thread resolved; a note is
+  appended as a second comment by the resolver.
 
 **Invariants**
-- Revisions are append-only; `seq` is dense and increasing.
-- New threads anchor to the **latest** revision. Line numbers supplied by a
-  caller are always interpreted against the latest revision.
-- A mutation referencing an unknown comment id fails without changing anything.
-- Replying to a resolved thread is allowed and leaves it resolved (resolve /
-  reopen is an explicit act). Reopen requires no particular author.
-- Every message has a non-empty `author`.
-- All operations are idempotent where reasonable (`resolve` on a resolved
-  thread is a no-op success).
+- Lines are read with `str::lines()` (`\n` or `\r\n`, final newline
+  ignored); the file must be valid UTF-8. The same helper takes the quote at
+  `add_thread` and checks it in `view`.
+- `state` is `outdated` iff the stored range no longer exists in the file or
+  its text differs from `quote`. There is no mapping between versions of the
+  file: inserting lines above an anchor makes it `outdated`.
+- A mutation that fails (unknown id, bad range, empty author or body) changes
+  nothing.
+- Every message has a non-empty `author` and `body`.
+- `resolve` on a resolved thread is a no-op success: the new note is ignored
+  and nothing is written.
 
 **Contract:** returns typed results and typed errors (`NotFound`,
-`InvalidRange`, `FileUnreadable`, `Locked`, …). No printing, no terminal
-awareness. This is the API both front ends share.
+`InvalidRange`, `FileUnreadable`, `Locked`, `UnsupportedSchema`, `EmptyAuthor`,
+`EmptyBody`, `Io`, `Corrupt`). No printing, no terminal awareness. This is the
+API both front ends share. Mapping errors to exit codes belongs to `cli`.
+
+*Deferred:* `sync` and revisions, `reply`, `edit`, `delete`, `reopen`,
+`acknowledge`, `as_of` views.
 
 ### `cli`
+*Not built yet.* Next story.
+
 **Role:** the agent-facing front end. Parses args (clap), calls `review`,
 prints.
 
@@ -168,6 +209,8 @@ Commands: `comments`, `add`, `reply`, `resolve`, `reopen`, `schema`; bare
   Changing them is a `schema_version` bump.
 
 ### `tui`
+*Not built yet.* Next story.
+
 **Role:** the human front end (ratatui + crossterm).
 
 Internally: `App` state (cursor, selection, scroll, focused thread, mode),
@@ -187,11 +230,15 @@ event)` function, and a pure `render(state, view)`.
 - Display only; never mutates the reviewed file.
 
 ### `highlight`
+*Deferred.*
+
 **Role:** syntax highlighting of the reviewed text (syntect), producing styled
 spans per line. Pure; language chosen from file extension, plain text
 fallback. Depends on nothing else in the crate.
 
 ### `diffview`
+*Deferred.*
+
 **Role:** the seam that keeps room for other diff presentations. A trait the
 TUI renders against:
 
@@ -221,11 +268,14 @@ state or `review`.
 
 ## Testing strategy
 
-- `anchor`: property tests (identity, in-bounds, `Current` ⇒ identical text).
-- `model`/`review`: invariant tests over operation sequences, including
-  tombstones, nested replies, reopen, and multi-revision drift.
-- `store`: crash-safety (kill between temp write and rename), concurrent
-  writers under the lock.
+- `model`: round-trip and a golden-JSON test pinning the wire shape.
+- `store`: data-dir and review-dir naming, stale-temp recovery, schema
+  refusal, lock contention.
+- `review`: one test per rule, with an injected clock; editing the file between
+  calls to exercise `state`.
+- `tests/core.rs`: concurrent writers, cross-handle reads, a full review round.
+- `anchor` (deferred): property tests (identity, in-bounds, `Current` ⇒
+  identical text).
 - `cli`: golden JSON output tests plus a schema-conformance check.
 - `tui`: drive `update` with scripted key events and assert on state and on
   `TestBackend` snapshots.

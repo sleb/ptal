@@ -9,8 +9,9 @@ your comments through a small JSON CLI, edits the file, replies, and resolves
 threads. You re-open ptal and see what changed. Comments, replies, and resolved
 state persist across rounds and revisions.
 
-> **Status:** design phase. See [ARCHITECTURE.md](ARCHITECTURE.md). Nothing
-> below is implemented yet; keybindings and commands are the intended shape.
+> **Status:** core library implemented (model, store, review); CLI and TUI
+> pending. See [ARCHITECTURE.md](ARCHITECTURE.md). Nothing below is runnable
+> yet; keybindings and commands are the intended shape.
 
 ## Why not a PR?
 
@@ -78,4 +79,5 @@ with `PTAL_DATA_DIR`. Nothing is written next to the reviewed file.
 
 ```sh
 cargo build --release
+cargo test
 ```
