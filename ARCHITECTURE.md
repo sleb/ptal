@@ -260,6 +260,9 @@ state or `review`.
 - **Single write path.** If it changes data, it goes through `review`.
 - **The file is read-only to us.** ptal never modifies the reviewed file.
 - **Core has no UI knowledge; front ends have no rules.**
+- **One interface map.** [docs/interfaces.md](docs/interfaces.md) pairs each
+  CLI command with its TUI key. Any change to either front end's surface
+  updates it in the same change.
 - **Lines are 1-based and inclusive** everywhere in the model and on the wire.
 - **Time and randomness are injected** (clock, id counter) so core logic is
   testable deterministically.

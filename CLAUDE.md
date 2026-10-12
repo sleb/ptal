@@ -15,6 +15,7 @@ Work is tracked in GitHub: an **MVP/milestone issue** holds the scope and design
 1. **Strict TDD.** Failing test first (seen failing for the right reason), minimum code to pass, then refactor green. No production code without a test that demanded it.
 2. **Fearless refactoring.** Single user, no compatibility burden. If something is wrong, delete and rewrite it. No shims, deprecated aliases, or migration code for formats nobody has; `schema_version` stays `1` until real data exists.
 3. **Docs stay true.** Each change lands with the docs that describe it (rustdoc, `ARCHITECTURE.md`, `README.md`). Docs describe what exists; unbuilt design is labeled deferred.
+4. **One interface map.** `docs/interfaces.md` lists every CLI command and TUI key side by side. Any change to the user-facing surface (command, flag, key, mode) updates that table in the same change.
 
 Green gate for every step: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
 
