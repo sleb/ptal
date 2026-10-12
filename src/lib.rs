@@ -2,3 +2,5 @@
 //!
 //! Front ends (`cli`, `tui`) are thin layers over this library and arrive in
 //! later stories.
+
+pub mod model;

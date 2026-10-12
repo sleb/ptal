@@ -49,28 +49,32 @@ threads are never silently dropped or silently re-pointed at the wrong text.
 ### `model`
 **Role:** the data types that are persisted and exposed to agents.
 
-- `Review` — one per reviewed file: identity, ordered revision list, threads.
-- `Revision` — `{ id: sha256, seq: u32, seen_at }`. `seq` is 1-based, dense.
-- `Thread` — a root `Comment` plus `anchor` and `status`.
-- `Comment` — `{ id, parent: Option<id>, author, body, created_at, edited_at?,
-  deleted }`. Replies nest to arbitrary depth via `parent`.
-- `Anchor` — `{ revision, start_line, end_line, quote }` (1-based, inclusive).
-- `Status` — `Open | Resolved { by, at }`.
+- `Review` — one per reviewed file: `schema_version`, `path`, `next_id`,
+  `threads`.
+- `Thread` — `{ id, anchor, status, comments }`. Its id is its first
+  comment's id.
+- `Status` — `open` or `resolved`; `resolved_by` and `resolved_at` appear on
+  the wire only when resolved.
+- `Comment` — `{ id, author, body, created_at }`. Timestamps are RFC 3339 UTC.
+- `Anchor` — `{ start_line, end_line, quote }` (1-based, inclusive); `quote`
+  is the anchored lines joined by `\n`.
+- `State` — `current | outdated`. Computed by `review` when viewing, never
+  persisted.
 
 **Invariants**
 - Comment ids are short, human-typeable, and unique within a review (`c1`,
-  `c2`, …), assigned from a monotonic counter that is never reused.
-- Comments form a forest of trees; `parent` always refers to an existing
-  comment in the same thread; no cycles. A thread's id is its root comment's id.
-- `anchor.revision` refers to a revision in the review; `start <= end`; both
-  lie within that revision's line count; `quote` is exactly those lines.
-- Status lives on the thread root only. A reply cannot be "resolved" alone.
-- Deleting a comment that has replies tombstones it (`deleted: true`, body
-  cleared); the tree shape is preserved.
+  `c2`, …), assigned from `next_id`, a monotonic counter that is never reused.
+  Threads and resolve notes draw from the same counter.
+- `start_line <= end_line`, both within the file when the thread is created;
+  `quote` is exactly those lines.
+- Status lives on the thread.
 
-**Contract:** serde (de)serialization is the on-disk and on-wire format.
-Types derive `JsonSchema`; `ptal schema` prints it. Every persisted file
-carries `schema_version`; unknown future versions are refused, not guessed at.
+**Contract:** serde (de)serialization is the on-disk and on-wire format. The
+golden-JSON test in `model` pins it. Every persisted file carries
+`schema_version`; unknown future versions are refused, not guessed at.
+
+*Deferred:* nested replies (`parent`), edit/delete, `JsonSchema` derives and
+`ptal schema`, revisions.
 
 ### `anchor`
 **Role:** pure functions mapping line ranges between revisions.
