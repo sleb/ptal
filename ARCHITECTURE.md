@@ -92,29 +92,39 @@ changed_lines(old_text, new_text)    -> Vec<Range>      // for gutter markers
 - Identity: mapping a range between identical texts returns it unchanged.
 
 ### `store`
-**Role:** persistence. Reads and writes `Review`s and revision snapshots.
+**Role:** persistence. Reads and writes `Review`s.
 
-**Layout** — `$PTAL_DATA_DIR` or `$XDG_DATA_HOME/ptal` or `~/.local/share/ptal`:
+**Layout** — `$PTAL_DATA_DIR` or `$XDG_DATA_HOME/ptal` or `~/.local/share/ptal`
+(empty variables count as unset):
 
 ```
-<data>/<slug>-<hash8>/        slug = file name; hash8 = of canonical abs path
-  review.json                 Review (schema_version, path, revisions, threads)
-  revisions/<sha256>.txt      immutable snapshots
+<data>/<slug>-<hash8>/        slug = file name sanitized to [A-Za-z0-9._-];
+                              hash8 = of the canonical absolute path
+  review.json                 Review (schema_version, path, next_id, threads)
+  review.lock                 advisory lock file; never renamed or replaced
 ```
 
 **Invariants**
-- Review identity is the canonicalized absolute path of the file. Moving the
-  file starts a new review (a future `ptal move` may migrate).
-- Writes are atomic (write temp file, fsync, rename). A crash leaves the old
-  or the new `review.json`, never a partial one.
-- Snapshots are immutable and write-once; a snapshot is written before any
-  `review.json` that references it.
-- Every mutation is read-modify-write under an exclusive advisory lock on the
-  review directory. No caller holds state across a lock release and writes it
-  back. This is what lets the TUI and a CLI-driving agent run concurrently.
+- Review identity is the canonicalized absolute path of the file, so a
+  symlink or `./` path reaches the same review. Moving the file starts a new
+  review.
+- Writes are atomic (write `review.json.tmp`, fsync, rename). A crash leaves
+  the old or the new `review.json`, never a partial one; a stale temp file is
+  overwritten by the next write.
+- Every mutation is read-modify-write under an exclusive advisory lock on
+  `review.lock`. The lock is a separate file because `review.json` is replaced
+  by rename, which would orphan a lock held on it. Acquisition retries for ~5s,
+  then fails with `Locked`.
+- A `review.json` with a newer `schema_version` is refused (`UnsupportedSchema`)
+  and left untouched.
+- An unchanged review is not rewritten.
 
-**Contract:** `with_review(path, |&mut Review| -> R) -> Result<R>` is the only
-mutation primitive; `load(path)` is a shared-lock read. Nothing else writes.
+**Contract:** `with_review(file, |&mut Review| -> Result<R>) -> Result<R>` is
+the only mutation primitive; an `Err` from the closure writes nothing.
+`load(file)` takes no lock: rename makes each read a consistent snapshot. A
+review with no `review.json` loads as empty without touching disk.
+
+*Deferred:* `revisions/` snapshots.
 
 ### `review`
 **Role:** the application core and the **only write path**. Each operation is
