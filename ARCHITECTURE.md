@@ -163,10 +163,15 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 - `resolve(file, id, author, note?)` — marks the thread resolved; a note is
   appended as a second comment by the resolver.
 
+Free function `file_lines(file)` returns the file's lines under the rule
+below, so a front end that displays the file shows exactly what
+`add_thread` quotes.
+
 **Invariants**
 - Lines are read with `str::lines()` (`\n` or `\r\n`, final newline
-  ignored); the file must be valid UTF-8. The same helper takes the quote at
-  `add_thread` and checks it in `view`.
+  ignored); the file must be valid UTF-8. `file_lines` is the one helper: it
+  supplies the quote at `add_thread`, the check in `view`, and the TUI's
+  display.
 - `state` is `outdated` iff the stored range no longer exists in the file or
   its text differs from `quote`. There is no mapping between versions of the
   file: inserting lines above an anchor makes it `outdated`.
