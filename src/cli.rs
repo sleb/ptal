@@ -123,7 +123,8 @@ Workflow:
   3. ptal comments <file>             re-check: your edit moves or changes lines
   4. ptal resolve <file> <id> --as <name> [--note \"what changed\"]
 
-Use `ptal add` to raise a question of your own on a line or range.
+Use `ptal add <file> --lines <N|A-B> \"<body>\" --as <name>` to raise a
+question of your own on a line or range.
 
 Output is JSON when stdout is not a terminal, or with --json. `comments`
 prints one document:
@@ -1127,6 +1128,20 @@ c2  open  outdated  lines 2-3
             help[edit..resolve].contains("ptal comments"),
             "no re-check between editing and resolving:\n{help}"
         );
+    }
+
+    #[test]
+    fn top_level_help_shows_how_to_call_add() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let line = help
+            .lines()
+            .find(|line| line.contains("ptal add"))
+            .expect("a line that introduces `ptal add`");
+        assert!(line.contains("--lines"), "{line}");
+        assert!(line.contains("--as"), "{line}");
     }
 
     #[test]
