@@ -120,7 +120,8 @@ from disk, so each call sees the other side's latest writes.
 Workflow:
   1. ptal comments <file>             list open threads (--all adds resolved)
   2. edit the file to address them    ptal never modifies the reviewed file
-  3. ptal resolve <file> <id> --as <name> [--note \"what changed\"]
+  3. ptal comments <file>             re-check: your edit moves or changes lines
+  4. ptal resolve <file> <id> --as <name> [--note \"what changed\"]
 
 Use `ptal add` to raise a question of your own on a line or range.
 
@@ -137,9 +138,10 @@ prints one document:
    }]}
 
 `state` is \"outdated\" when the quoted lines are no longer at the stored range,
-including after lines were inserted above them. Re-read the file and, if the
-comment still applies, re-anchor it with `ptal add` rather than trusting the
-stale range.
+including after lines were inserted above them. Your own edits cause this:
+threads you just addressed turn outdated, which is expected, so resolve them.
+For one you did not address, re-read the file and, if the comment still
+applies, re-anchor it with `ptal add` rather than trusting the stale range.
 
 `add` and `resolve` print {\"file\", \"thread\"} (no `state`).
 
@@ -1111,6 +1113,20 @@ c2  open  outdated  lines 2-3
         ] {
             at(needle);
         }
+    }
+
+    #[test]
+    fn top_level_help_says_to_recheck_after_editing() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let edit = help.find("edit the file").expect("workflow edit step");
+        let resolve = help.find("ptal resolve").expect("workflow resolve step");
+        assert!(
+            help[edit..resolve].contains("ptal comments"),
+            "no re-check between editing and resolving:\n{help}"
+        );
     }
 
     #[test]
