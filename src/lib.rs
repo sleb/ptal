@@ -3,6 +3,7 @@
 //! Front ends (`cli`, `tui`) are thin layers over this library and arrive in
 //! later stories.
 
+pub mod cli;
 pub mod error;
 pub mod model;
 pub mod review;

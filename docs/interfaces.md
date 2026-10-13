@@ -24,11 +24,11 @@ acceptance criteria and link here instead of restating commands.
 | List open threads | `ptal comments <file>` | Gutter marker on commented lines | `view(include_resolved=false)` |
 | Read thread text | `comments` output: id, status, `state`, range, quote, comments | n/a | `view` |
 | List resolved threads | `ptal comments <file> --all` | n/a | `view(include_resolved=true)` |
-| Comment on one line | `ptal add <file> --lines N-N "text" --as <name>` | `enter` on the line, type, `enter` saves, `esc` cancels | `add_thread` |
+| Comment on one line | `ptal add <file> --lines N "text" --as <name>` | `enter` on the line, type, `enter` saves, `esc` cancels | `add_thread` |
 | Comment on a range | `ptal add <file> --lines A-B "text" --as <name>` | n/a | `add_thread` |
 | Resolve a thread | `ptal resolve <file> <id> --as <name> [--note "..."]` | n/a | `resolve` |
 | See whether a thread is stale | `state: "current" \| "outdated"` in `comments` | n/a | `view` |
-| Learn the tool | `ptal --help`, with an example per command | n/a | none |
+| Learn the tool | `ptal --help` (workflow, JSON shape, exit codes); `ptal <command> --help` has an example | n/a | none |
 
 ## Cross-cutting
 
@@ -36,9 +36,25 @@ acceptance criteria and link here instead of restating commands.
 |---|---|---|
 | Author | `--as <name>` or `PTAL_AUTHOR`; never invented | `$USER` |
 | Output | JSON when stdout is not a TTY or with `--json`; readable on a TTY | Rendered screen |
-| Errors | JSON on stderr when not a TTY; exit `0` success, `1` runtime, `2` usage or not found | Shown in the UI |
+| Errors | `{"error": {"code", "message"}}` on stderr when not a TTY or with `--json`; exit codes below | Shown in the UI |
 | Seeing the other side's writes | Every call reads from disk | Re-reads after its own writes; reopen to see the agent's |
 | Reviewed file | Read-only | Read-only |
+
+## Exit codes
+
+Success prints data on stdout and exits `0`. On failure stdout is empty and
+stderr carries one error. The table below is pinned by a unit test in
+`src/cli.rs`.
+
+| Exit | Meaning | Error codes |
+|---|---|---|
+| `0` | Success (also `--help`, `--version`) | none |
+| `2` | The caller can fix the invocation | `usage`, `missing_author`, `not_found`, `invalid_range`, `empty_body` |
+| `1` | Runtime failure | `file_unreadable`, `locked`, `unsupported_schema`, `io`, `corrupt`, `no_data_dir` |
+
+`no_data_dir` is reported only by commands that read or write review data.
+`--help`, `--version` and usage errors never touch the data directory, so they
+behave the same with `PTAL_DATA_DIR`, `XDG_DATA_HOME` and `HOME` all unset.
 
 ## Deliberate asymmetries
 
