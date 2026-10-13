@@ -6,7 +6,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Widget};
 
-use super::app::{App, Mode};
+use super::app::{App, Marker, Mode};
 
 /// Draw `app` onto `frame`. Reads state only; never mutates it.
 pub fn render(app: &App, frame: &mut Frame) {
@@ -37,8 +37,6 @@ pub fn render(app: &App, frame: &mut Frame) {
     }
 }
 
-const MARKER: &str = "● ";
-const NO_MARKER: &str = "  ";
 const TAB: &str = "    ";
 
 fn draw_file(app: &App, buf: &mut Buffer, area: Rect) {
@@ -69,14 +67,23 @@ fn draw_file(app: &App, buf: &mut Buffer, area: Rect) {
             Style::new()
         };
         buf.set_style(row, style);
-        let marker = if app.marker(index).is_some() {
-            MARKER
-        } else {
-            NO_MARKER
-        };
         let text = line.replace('\t', TAB);
-        let row_text = format!("{marker}{:>digits$}│{text}", index + 1);
+        let row_text = format!("  {:>digits$}│{text}", index + 1);
         buf.set_stringn(row.x, row.y, row_text, usize::from(row.width), style);
+        if let Some(marker) = app.marker(index) {
+            let (glyph, color) = glyph(marker);
+            buf.set_stringn(row.x, row.y, glyph, 1, style.patch(color));
+        }
+    }
+}
+
+/// The gutter glyph and the style it adds. The glyph differs by marker, not
+/// just the color, so it survives a monochrome terminal.
+fn glyph(marker: Marker) -> (&'static str, Style) {
+    match marker {
+        Marker::Waiting => ("◆", Style::new().fg(Color::Yellow)),
+        Marker::Open => ("●", Style::new()),
+        Marker::Resolved => ("○", Style::new().add_modifier(Modifier::DIM)),
     }
 }
 
@@ -244,6 +251,42 @@ plan.md  L1/12  enter:comment q:quit"
    7│line 7
 plan.md  L1/12  1 outdated  enter:comment q:quit"
         );
+    }
+
+    #[test]
+    fn gutter_glyph_and_style_follow_the_marker() {
+        use crate::model::Comment;
+        let said = |mut v: ThreadView, author: &str| {
+            v.thread.comments = vec![Comment {
+                id: "x".into(),
+                author: author.into(),
+                body: "b".into(),
+                created_at: "2026-10-12T10:00:00Z".into(),
+            }];
+            v
+        };
+        let mut resolved = said(open_thread("c3", (3, 3), State::Current), "claude");
+        resolved.thread.status = Status::Resolved {
+            resolved_by: "claude".into(),
+            resolved_at: "2026-10-12T10:00:00Z".into(),
+        };
+        let threads = [
+            said(open_thread("c1", (1, 1), State::Current), "scott"),
+            said(open_thread("c2", (2, 2), State::Current), "claude"),
+            resolved,
+        ];
+        let app = app_with(lines(4), &threads, 8);
+
+        let terminal = draw(&app, W, 8);
+
+        let buffer = terminal.backend().buffer();
+        let cell = |y: u16| &buffer[(0, y)];
+        assert_eq!(cell(0).symbol(), "●");
+        assert_eq!(cell(1).symbol(), "◆");
+        assert_eq!(cell(1).fg, Color::Yellow);
+        assert_eq!(cell(2).symbol(), "○");
+        assert!(cell(2).modifier.contains(Modifier::DIM));
+        assert_eq!(cell(3).symbol(), " ");
     }
 
     #[test]
