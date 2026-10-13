@@ -48,6 +48,7 @@ impl Failure {
             Failure::Core(error) => match error {
                 Error::EmptyAuthor => ("missing_author", EXIT_CALLER),
                 Error::NotFound(_) => ("not_found", EXIT_CALLER),
+                Error::AlreadyOpen(_) => ("already_open", EXIT_CALLER),
                 Error::InvalidRange { .. } => ("invalid_range", EXIT_CALLER),
                 Error::EmptyBody => ("empty_body", EXIT_CALLER),
                 Error::FileUnreadable { .. } => ("file_unreadable", EXIT_RUNTIME),
@@ -546,6 +547,11 @@ mod tests {
                 2,
             ),
             (Failure::Core(Error::EmptyBody), "empty_body", 2),
+            (
+                Failure::Core(Error::AlreadyOpen("c1".into())),
+                "already_open",
+                2,
+            ),
             (
                 Failure::Core(Error::FileUnreadable {
                     path: path.clone(),
