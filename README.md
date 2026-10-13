@@ -9,10 +9,10 @@ your comments through a small JSON CLI, edits the file, replies, and resolves
 threads. You re-open ptal and see what changed. Comments, replies, and resolved
 state persist across rounds and revisions.
 
-> **Status:** core library, the agent CLI (`comments`, `add`, `resolve`), and
-> a minimal TUI (scroll a file, comment on a line, see where threads are)
-> implemented. Replies, ranges, resolving from the TUI, and live refresh are
-> planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
+> **Status:** core library, the agent CLI (`comments`, `add`, `resolve`, `reply`,
+> `reopen`), and a minimal TUI (scroll a file, comment on a line, see where
+> threads are) implemented. Replying and resolving from the TUI, ranges, and
+> live refresh are planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why not a PR?
 
@@ -23,7 +23,7 @@ plans, specs-in-progress, notes. It is inspired by
 - One file per review. No code-review mode, no multi-file tabs.
 - No tmux integration. Open a pane, run `ptal plan.md`, go back to the agent.
 - Agent-agnostic. The contract is JSON on stdout, not a plugin.
-- Threads nest arbitrarily and can be resolved and reopened.
+- Threads are flat conversations that can be resolved and reopened (nested replies are deferred).
 - Comments live in your user data directory, never in your repo.
 
 ## Usage
@@ -71,7 +71,9 @@ terminal.
 ptal comments plan.md          # open threads: id, status, state, line range, quote, comments
 ptal comments plan.md --all    # include resolved
 ptal add plan.md --lines 12-14 "Why not X?" --as claude
+ptal reply plan.md c3 "Which of the two do you mean?" --as claude
 ptal resolve plan.md c3 --as claude --note "Done, see step 2."
+ptal reopen plan.md c3 --as scott --note "Not fixed."
 ptal --help                    # the full agent guide: workflow, JSON shape, exit codes
 ```
 
@@ -82,11 +84,17 @@ means the invocation can be fixed, `1` is a runtime failure (see
 your agent of choice is just: *"run `ptal comments <file>`, edit the file to
 address each thread, then `ptal resolve` it."*
 
-**Planned, not built:** `ptal reply` (threaded replies) and `ptal schema`
-(JSON Schema for all output).
+**Planned, not built:** `ptal schema` (JSON Schema for all output).
 
 The full command and key map, agent and human side by side, is in
 [docs/interfaces.md](docs/interfaces.md).
+
+## Troubleshooting
+
+**The agent keeps answering itself, or never sees a thread as waiting.** A
+thread is waiting on you when its last comment's author is not your `--as`
+name (exact match). Use one stable name per agent (set `PTAL_AUTHOR`), and
+don't reuse the human's `$USER`.
 
 ## Where data lives
 

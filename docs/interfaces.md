@@ -28,8 +28,10 @@ acceptance criteria and link here instead of restating commands.
 | Edit the draft | n/a | `←`/`→`, `Home`/`End` move; `backspace`/`delete` remove; single line | none |
 | Comment on a range | `ptal add <file> --lines A-B "text" --as <name>` | n/a | `add_thread` |
 | Resolve a thread | `ptal resolve <file> <id> --as <name> [--note "..."]` | n/a | `resolve` |
+| Reply to a thread | `ptal reply <file> <id> "text" --as <name>` (reopens a resolved thread) | n/a | `reply` |
+| Reopen a thread | `ptal reopen <file> <id> --as <name> [--note "..."]` (`already_open` if open) | n/a | `reopen` |
 | See whether a thread is stale | `state: "current" \| "outdated"` in `comments` | n/a | `view` |
-| Learn the tool | `ptal --help` (workflow, JSON shape, exit codes); `ptal <command> --help` has an example | n/a | none |
+| Learn the tool | `ptal --help` (workflow, conversation model, JSON shape, exit codes); `ptal <command> --help` has an example | n/a | none |
 
 ## Cross-cutting
 
@@ -50,7 +52,7 @@ stderr carries one error. The table below is pinned by a unit test in
 | Exit | Meaning | Error codes |
 |---|---|---|
 | `0` | Success (also `--help`, `--version`) | none |
-| `2` | The caller can fix the invocation | `usage`, `missing_author`, `not_found`, `invalid_range`, `empty_body` |
+| `2` | The caller can fix the invocation | `usage`, `missing_author`, `not_found`, `invalid_range`, `empty_body`, `already_open` |
 | `1` | Runtime failure | `file_unreadable`, `locked`, `unsupported_schema`, `io`, `corrupt`, `no_data_dir`, `not_a_terminal`, `terminal` |
 
 `no_data_dir` is reported only by commands that read or write review data.
@@ -65,7 +67,7 @@ the TUI runs.
 ## Bare `ptal <file>` and subcommand names
 
 `ptal <file>` opens the TUI. A first argument that is exactly `comments`,
-`add`, or `resolve` is the subcommand; to open a file with one of those names,
+`add`, `resolve`, `reply`, or `reopen` is the subcommand; to open a file with one of those names,
 write `./comments`. With no arguments, `ptal` prints help and exits `2`. The
 `--json` flag is accepted with a file and has no effect on the TUI. Unlike
 the agent commands, the TUI takes its author from `$USER` only (never
@@ -76,8 +78,8 @@ the terminal is taken over.
 
 - **Navigation and quitting** are TUI-only; the agent has no cursor.
 - **The MVP TUI only adds single-line comments and shows where threads are.**
-  Reading thread text, ranges, resolving, and seeing resolved or outdated state
-  are CLI-only for now. Threads whose quoted text no longer matches are not
+  Reading thread text, ranges, resolving, replying, reopening, and seeing
+  resolved or outdated state are CLI-only for now. Threads whose quoted text no longer matches are not
   marked in the gutter; the footer counts them (`N outdated`).
 - **Ranges and long lines.** The TUI comments on one line at a time, and long
   file lines are truncated at the screen edge (no wrapping yet).

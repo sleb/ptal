@@ -32,14 +32,14 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 |---|---|
 | `model` | Built: `Review`, `Thread`, `Status`, `Comment`, `Anchor`, `State` |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
-| `review` | Built (MVP subset): `add_thread`, `view`, `resolve` |
-| `cli` | Built (MVP subset): `comments`, `add`, `resolve` |
+| `review` | Built (MVP subset): `add_thread`, `view`, `resolve`, `reply`, `reopen` |
+| `cli` | Built (MVP subset): `comments`, `add`, `resolve`, `reply`, `reopen` |
 | `tui` | Built (MVP subset): `Normal`/`Input` modes, gutter markers, add a one-line comment |
 | `anchor`, `highlight`, `diffview` | Deferred |
 
 Deferred within built components: revisions and snapshots, anchor mapping
-between file versions, nested replies, edit, delete, reopen, `acknowledge`,
-`ptal schema` and `ptal reply` in the CLI. In the MVP, `state` compares the
+between file versions, nested replies, edit, delete, `acknowledge`, and
+`ptal schema` in the CLI. In the MVP, `state` compares the
 quote against the file at the stored lines, with no mapping. Sections below describe deferred design where
 they say so.
 
@@ -76,7 +76,8 @@ threads are never silently dropped or silently re-pointed at the wrong text.
 - `Thread` — `{ id, anchor, status, comments }`. Its id is its first
   comment's id.
 - `Status` — `open` or `resolved`; `resolved_by` and `resolved_at` appear on
-  the wire only when resolved.
+  the wire only when resolved. Reopening, or replying to a resolved thread,
+  makes the thread `open` and drops them.
 - `Comment` — `{ id, author, body, created_at }`. Timestamps are RFC 3339 UTC.
 - `Anchor` — `{ start_line, end_line, quote }` (1-based, inclusive); `quote`
   is the anchored lines joined by `\n`.
@@ -86,7 +87,7 @@ threads are never silently dropped or silently re-pointed at the wrong text.
 **Invariants**
 - Comment ids are short, human-typeable, and unique within a review (`c1`,
   `c2`, …), assigned from `next_id`, a monotonic counter that is never reused.
-  Threads and resolve notes draw from the same counter.
+  Threads, replies and notes draw from the same counter.
 - `start_line <= end_line`, both within the file when the thread is created;
   `quote` is exactly those lines.
 - Status lives on the thread.
@@ -162,6 +163,12 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
   each with a computed `state`.
 - `resolve(file, id, author, note?)` — marks the thread resolved; a note is
   appended as a second comment by the resolver.
+- `reply(file, id, body, author)` — appends a comment to the thread. A reply
+  to a resolved thread sets it `open` in the same write; no extra comment is
+  synthesised.
+- `reopen(file, id, author, note?)` — makes a resolved thread `open`; a note
+  is appended as a comment by the reopener. Reopening an open thread is
+  `AlreadyOpen` and writes nothing, so the note is dropped.
 
 Free function `file_lines(file)` returns the file's lines under the rule
 below, so a front end that displays the file shows exactly what
@@ -179,15 +186,19 @@ below, so a front end that displays the file shows exactly what
   nothing.
 - Every message has a non-empty `author` and `body`.
 - `resolve` on a resolved thread is a no-op success: the new note is ignored
-  and nothing is written.
+  and nothing is written. (`reopen` on an open thread is the opposite:
+  `AlreadyOpen`.)
+- Error precedence: `reply` checks author, body, then thread id; `reopen`
+  checks author, thread id, then status. An id is allocated only after the
+  thread is found, so a failed write never burns one.
 
 **Contract:** returns typed results and typed errors (`NotFound`,
-`InvalidRange`, `FileUnreadable`, `Locked`, `UnsupportedSchema`, `EmptyAuthor`,
-`EmptyBody`, `Io`, `Corrupt`). No printing, no terminal awareness. This is the
+`AlreadyOpen`, `InvalidRange`, `FileUnreadable`, `Locked`,
+`UnsupportedSchema`, `EmptyAuthor`, `EmptyBody`, `Io`, `Corrupt`). No printing, no terminal awareness. This is the
 API both front ends share. Mapping errors to exit codes belongs to `cli`.
 
-*Deferred:* `sync` and revisions, `reply`, `edit`, `delete`, `reopen`,
-`acknowledge`, `as_of` views.
+*Deferred:* `sync` and revisions, `edit`, `delete`, `acknowledge`, `as_of`
+views.
 
 ### `cli`
 
@@ -197,7 +208,7 @@ with the process facts (store, clock, `PTAL_AUTHOR`, TTY flags) injected via
 `Env`, so every path is testable in-process; `main` only fills `Env` from the
 real process.
 
-Commands: `comments`, `add`, `resolve`. Bare `ptal <file>` launches the TUI
+Commands: `comments`, `add`, `resolve`, `reply`, `reopen`. Bare `ptal <file>` launches the TUI
 (`args_conflicts_with_subcommands`; a file named like a subcommand is written
 `./name`). `run` splits into `run_command` and `launch_tui`; the latter
 refuses everything it can before the terminal is touched: no TTY on stdin and
@@ -211,10 +222,15 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
 - `comments` prints `{"file", "threads": [...]}`. Each thread is self-contained:
   id, `status`, `state`, `anchor` with the quote, and its flat list of
   `comments` (resolved threads add `resolved_by`/`resolved_at`). Default is
-  open threads; `--all` includes resolved. Threads are in id order. There is no
-  reply tree yet.
-- `add` and `resolve` print `{"file", "thread"}` (no `state`: it is a read-time
-  concept). Resolving a resolved thread succeeds and prints it unchanged.
+  open threads; `--all` includes resolved. Threads are in id order. Replies are
+  flat: there is no reply tree yet.
+- `add`, `reply`, `resolve` and `reopen` print `{"file", "thread"}` (no
+  `state`: it is a read-time concept). Resolving a resolved thread succeeds
+  and prints it unchanged; reopening an open thread fails with `already_open`
+  (exit `2`).
+- There is no `waiting_on` field. A thread is waiting on an agent when its
+  last comment's `author` is not the agent's `--as` name (exact match); the
+  help says so and tells agents to use one stable name.
 - Errors are one line on stderr, `{"error": {"code", "message"}}` (readable
   text on a TTY stderr unless `--json`). The code-to-exit mapping is the
   `Failure::classify` table, pinned by a unit test and documented in
@@ -228,7 +244,7 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   workflow, the JSON shape, exit codes, and env vars; every command has an
   example.
 
-*Deferred:* `reply`, `reopen`, `ptal schema`; output shapes are the `model`
+*Deferred:* `ptal schema`; output shapes are the `model`
 types, so changing them is a `schema_version` bump.
 
 ### `tui`
