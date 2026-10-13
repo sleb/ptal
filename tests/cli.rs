@@ -157,3 +157,38 @@ fn a_closed_stdout_pipe_ends_quietly() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stderr(&out), "", "no panic message on a closed pipe");
 }
+
+/// A process with no resolvable data directory.
+fn without_data_dir(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_ptal"))
+        .args(args)
+        .env_remove("PTAL_DATA_DIR")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("HOME")
+        .env_remove("PTAL_AUTHOR")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn help_and_version_need_no_data_dir() {
+    for flag in ["--help", "--version"] {
+        let out = without_data_dir(&[flag]);
+        assert_eq!(out.status.code(), Some(0), "{flag}: {}", stderr(&out));
+        assert_eq!(stderr(&out), "", "{flag}");
+    }
+}
+
+#[test]
+fn usage_errors_need_no_data_dir() {
+    let out = without_data_dir(&["comments"]);
+    assert_failure(&out, 2, "usage");
+}
+
+#[test]
+fn a_command_that_needs_the_store_reports_no_data_dir() {
+    let sb = sandbox("one\n");
+    let file = sb.file.to_str().unwrap();
+    let out = without_data_dir(&["comments", file]);
+    assert_failure(&out, 1, "no_data_dir");
+}

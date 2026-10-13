@@ -52,6 +52,10 @@ stderr carries one error. The table below is pinned by a unit test in
 | `2` | The caller can fix the invocation | `usage`, `missing_author`, `not_found`, `invalid_range`, `empty_body` |
 | `1` | Runtime failure | `file_unreadable`, `locked`, `unsupported_schema`, `io`, `corrupt`, `no_data_dir` |
 
+`no_data_dir` is reported only by commands that read or write review data.
+`--help`, `--version` and usage errors never touch the data directory, so they
+behave the same with `PTAL_DATA_DIR`, `XDG_DATA_HOME` and `HOME` all unset.
+
 ## Deliberate asymmetries
 
 - **Navigation and quitting** are TUI-only; the agent has no cursor.

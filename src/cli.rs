@@ -66,8 +66,10 @@ impl Failure {
 /// Everything `run` needs from the process, injected so tests can drive every
 /// path in-process.
 pub struct Env<C: Clock> {
-    /// Review operations (store and clock).
-    pub reviews: Reviews<C>,
+    /// Review operations (store and clock). `None` when no data directory
+    /// could be resolved; only commands that need the store then fail, with
+    /// `no_data_dir`, so `--help`, `--version` and usage errors still work.
+    pub reviews: Option<Reviews<C>>,
     /// Value of `PTAL_AUTHOR`, if set.
     pub author_env: Option<String>,
     /// Whether stdout is a terminal (selects readable output).
@@ -356,7 +358,10 @@ where
 }
 
 fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure> {
-    let reviews = &env.reviews;
+    let reviews = env
+        .reviews
+        .as_ref()
+        .ok_or(Failure::Core(Error::NoDataDir))?;
     let author = |flag: &Option<String>| resolve_author(flag.as_deref(), env.author_env.as_deref());
     match command {
         Command::Comments { file, all } => Ok(Output::Threads(reviews.view(file, *all)?)),
@@ -419,21 +424,10 @@ pub fn error_json(failure: &Failure) -> String {
 pub fn main() -> ExitCode {
     let stdout_is_tty = io::stdout().is_terminal();
     let stderr_is_tty = io::stderr().is_terminal();
-    let store = match Store::from_env() {
-        Ok(store) => store,
-        Err(error) => {
-            let failure = Failure::from(error);
-            let text = if stderr_is_tty {
-                format!("error: {}\n", failure.message())
-            } else {
-                error_line(&failure)
-            };
-            let (_, code) = failure.classify();
-            return ExitCode::from(finish(&mut io::stderr(), &text, code));
-        }
-    };
     let env = Env {
-        reviews: Reviews::with_clock(store, SystemClock),
+        reviews: Store::from_env()
+            .ok()
+            .map(|store| Reviews::with_clock(store, SystemClock)),
         author_env: std::env::var("PTAL_AUTHOR").ok(),
         stdout_is_tty,
         stderr_is_tty,
@@ -576,7 +570,7 @@ mod tests {
         fn env(&self, author: Option<&str>, tty: bool) -> Env<fn() -> String> {
             let clock: fn() -> String = || NOW.to_string();
             Env {
-                reviews: Reviews::with_clock(Store::new(&self.data), clock),
+                reviews: Some(Reviews::with_clock(Store::new(&self.data), clock)),
                 author_env: author.map(String::from),
                 stdout_is_tty: tty,
                 stderr_is_tty: tty,
@@ -603,6 +597,13 @@ mod tests {
             }
         }
 
+        fn env_without_store(&self, tty: bool) -> Env<fn() -> String> {
+            Env {
+                reviews: None,
+                ..self.env(None, tty)
+            }
+        }
+
         fn canonical(&self) -> String {
             fs::canonicalize(&self.file)
                 .unwrap()
@@ -626,6 +627,39 @@ mod tests {
             .unwrap();
         reviews.add_thread(&fx.file, 2, 3, "Why?", "scott").unwrap();
         fx
+    }
+
+    #[test]
+    fn without_a_store_help_and_usage_errors_still_work() {
+        let fx = fixture("one\n");
+        let env = fx.env_without_store(false);
+
+        let help = fx.run_with(&["--help"], &env);
+        let usage = fx.run_with(&["comments"], &env);
+
+        assert_eq!((help.code, help.stderr.as_str()), (0, ""));
+        assert_eq!(usage.code, 2);
+        assert_eq!(usage.error_code(), "usage");
+    }
+
+    #[test]
+    fn without_a_store_commands_fail_with_no_data_dir() {
+        let fx = fixture("one\n");
+
+        let out = fx.run_with(&["comments", "FILE"], &fx.env_without_store(false));
+
+        assert_eq!(out.code, 1);
+        assert_eq!(out.stdout, "");
+        assert_eq!(out.error_code(), "no_data_dir");
+    }
+
+    #[test]
+    fn json_flag_forces_json_errors_on_a_terminal() {
+        let fx = fixture("one\n");
+
+        let out = fx.run_with(&["comments", "FILE", "--json"], &fx.env_without_store(true));
+
+        assert_eq!(out.error_code(), "no_data_dir");
     }
 
     #[test]
