@@ -60,6 +60,10 @@ pub struct App {
     pub(super) rows: usize,
     pub(super) mode: Mode,
     pub(super) status: Option<String>,
+    /// The reviewed file's path as shown in the footer.
+    file: String,
+    /// Who the comments will be written as, shown in the input box.
+    author: String,
     /// 0-based lines inside an open, current thread's range.
     markers: BTreeSet<usize>,
     /// Open threads whose quote no longer matches; not markable.
@@ -68,6 +72,8 @@ pub struct App {
 
 /// Terminal rows taken by the footer in Normal mode.
 const FOOTER_ROWS: usize = 1;
+/// Terminal rows taken by the bordered input box (it replaces the footer).
+const INPUT_BOX_ROWS: usize = 3;
 
 impl App {
     /// A view over `lines` on a terminal `rows` tall, with gutter markers
@@ -80,12 +86,32 @@ impl App {
             rows: usize::from(rows),
             mode: Mode::Normal,
             status: None,
+            file: String::new(),
+            author: String::new(),
             markers: BTreeSet::new(),
             outdated: 0,
         };
         app.set_threads(threads);
         app.clamp_view();
         app
+    }
+
+    /// Label the screen with the file path and the commenting author.
+    #[must_use]
+    pub fn labeled(mut self, file: impl Into<String>, author: impl Into<String>) -> Self {
+        self.file = file.into();
+        self.author = author.into();
+        self
+    }
+
+    /// The file path shown in the footer.
+    pub fn file(&self) -> &str {
+        &self.file
+    }
+
+    /// The author comments are written as.
+    pub fn author(&self) -> &str {
+        &self.author
     }
 
     /// The file's lines as displayed.
@@ -144,7 +170,11 @@ impl App {
     /// Rows available to the file view; never zero, so the arithmetic in
     /// `clamp_view` and the half-page step stay total on tiny terminals.
     pub(super) fn height(&self) -> usize {
-        self.rows.saturating_sub(FOOTER_ROWS).max(1)
+        let chrome = match self.mode {
+            Mode::Normal => FOOTER_ROWS,
+            Mode::Input { .. } => INPUT_BOX_ROWS,
+        };
+        self.rows.saturating_sub(chrome).max(1)
     }
 
     fn last_line(&self) -> usize {
@@ -184,10 +214,16 @@ impl App {
 
 /// Apply `event` to `app`; return the effect the driver must perform.
 pub fn update(app: &mut App, event: Event) -> Option<Effect> {
+    let effect = apply(app, event);
+    // Resizes and mode changes both alter the view height.
+    app.clamp_view();
+    effect
+}
+
+fn apply(app: &mut App, event: Event) -> Option<Effect> {
     match event {
         Event::Resize(_, rows) => {
             app.rows = usize::from(rows);
-            app.clamp_view();
             None
         }
         Event::Saved { id, threads } => {
@@ -711,5 +747,20 @@ mod tests {
 
         assert_eq!(marked(&a), [3, 4]);
         assert_eq!(a.outdated(), 1);
+    }
+
+    #[test]
+    fn input_box_shrinks_the_view_and_keeps_the_cursor_visible() {
+        let mut a = app(20, 7); // view height 6 in Normal
+        send(&mut a, [ch('j'), ch('j'), ch('j'), ch('j'), ch('j')]);
+        assert_eq!(at(&a), (5, 0), "cursor on the last visible row");
+
+        send(&mut a, [press(KeyCode::Enter)]);
+
+        assert_eq!(a.height(), 4, "7 rows minus a 3-row input box");
+        assert!(a.top <= a.cursor && a.cursor < a.top + 4, "{:?}", at(&a));
+        send(&mut a, [press(KeyCode::Esc)]);
+        assert_eq!(a.height(), 6);
+        assert!(a.top <= a.cursor && a.cursor < a.top + 6, "{:?}", at(&a));
     }
 }

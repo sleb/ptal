@@ -3,3 +3,4 @@
 //! Depends on [`crate::review`] and [`crate::model`] only, never on `store`.
 
 pub mod app;
+pub mod render;
