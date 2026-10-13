@@ -13,9 +13,13 @@ as=(--as scott)
 
 case $round in
   1)
-    ptal add "$plan" --lines 1 "Why this approach and not the simpler one?" "${as[@]}"
-    ptal add "$plan" --lines 3 "Cut this step; it is out of scope." "${as[@]}"
-    ptal add "$plan" --lines 5 "We should fix this to be better." "${as[@]}"
+    # Pick lines from the plan the agent actually wrote: the first table data row,
+    # the first numbered step, and the first bullet. Falls back to line 1.
+    line_of() { grep -n -m1 -E "$1" "$plan" | cut -d: -f1 || true; }
+    row=$(line_of '^\| *1 *\|'); step=$(line_of '^1\. '); bullet=$(line_of '^- ')
+    ptal add "$plan" --lines "${row:-1}" "Why this approach and not the simpler one?" "${as[@]}"
+    ptal add "$plan" --lines "${step:-1}" "Cut this step; it is out of scope." "${as[@]}"
+    ptal add "$plan" --lines "${bullet:-1}" "We should fix this to be better." "${as[@]}"
     ;;
   2)
     # Replies target the threads the agent left open; ids come from `ptal comments`.
