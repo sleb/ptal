@@ -87,6 +87,43 @@ fn add_comments_resolve_round_trip_through_the_binary() {
 }
 
 #[test]
+fn reply_and_reopen_carry_a_conversation_through_the_binary() {
+    let sb = sandbox("one\ntwo\n");
+    sb.run_json(&["add", "FILE", "--lines", "1", "Why?", "--as", "scott"]);
+    sb.run_json(&["resolve", "FILE", "c1", "--as", "claude"]);
+
+    let replied = sb.run_json(&["reply", "FILE", "c1", "Not convinced", "--as", "scott"]);
+    assert_eq!(replied["thread"]["status"], "open");
+    sb.run_json(&[
+        "resolve", "FILE", "c1", "--as", "claude", "--note", "Reworded",
+    ]);
+    let reopened = sb.run_json(&[
+        "reopen", "FILE", "c1", "--as", "scott", "--note", "Still no",
+    ]);
+    assert_eq!(reopened["thread"]["status"], "open");
+
+    let open = sb.run_json(&["comments", "FILE"]);
+    let thread = &open["threads"][0];
+    assert_eq!(thread["id"], "c1");
+    let comments = thread["comments"].as_array().unwrap();
+    let ids: Vec<&str> = comments.iter().map(|c| c["id"].as_str().unwrap()).collect();
+    let bodies: Vec<&str> = comments
+        .iter()
+        .map(|c| c["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["c1", "c2", "c3", "c4"]);
+    assert_eq!(bodies, ["Why?", "Not convinced", "Reworded", "Still no"]);
+}
+
+#[test]
+fn reply_without_an_author_is_a_caller_error() {
+    let sb = sandbox("one\n");
+    sb.run_json(&["add", "FILE", "--lines", "1", "Why?", "--as", "scott"]);
+
+    assert_failure(&sb.run(&["reply", "FILE", "c1", "Hi"]), 2, "missing_author");
+}
+
+#[test]
 fn every_failure_kind_has_empty_stdout_one_json_line_and_its_exit_code() {
     let sb = sandbox("one\n");
 
