@@ -5,11 +5,20 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::review::ThreadView;
+
 /// What the user is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     /// Scrolling the file.
     Normal,
+    /// Typing a comment on the cursor line.
+    Input {
+        /// The comment so far.
+        draft: String,
+        /// Insertion point as a `char` index into `draft`.
+        cursor: usize,
+    },
 }
 
 /// An input to [`update`].
@@ -19,11 +28,22 @@ pub enum Event {
     Key(KeyEvent),
     /// The terminal is now `width` x `height` cells.
     Resize(u16, u16),
+    /// The driver saved the pending comment as thread `id`; `threads` is the
+    /// re-read view of the file's threads.
+    Saved {
+        id: String,
+        threads: Vec<ThreadView>,
+    },
+    /// The driver could not save the pending comment.
+    SaveFailed(String),
 }
 
 /// Something `update` wants the driver to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
+    /// Add a thread on `line` (1-based) with `body`, then answer with
+    /// [`Event::Saved`] or [`Event::SaveFailed`].
+    Save { line: u32, body: String },
     /// Leave the TUI.
     Quit,
 }
@@ -36,6 +56,7 @@ pub struct App {
     pub(super) top: usize,
     pub(super) rows: usize,
     pub(super) mode: Mode,
+    pub(super) status: Option<String>,
 }
 
 /// Terminal rows taken by the footer in Normal mode.
@@ -50,6 +71,7 @@ impl App {
             top: 0,
             rows: usize::from(rows),
             mode: Mode::Normal,
+            status: None,
         };
         app.clamp_view();
         app
@@ -73,6 +95,11 @@ impl App {
     /// The current mode.
     pub fn mode(&self) -> &Mode {
         &self.mode
+    }
+
+    /// A one-line message for the footer (a save result), if any.
+    pub fn status(&self) -> Option<&str> {
+        self.status.as_deref()
     }
 
     /// Rows available to the file view; never zero, so the arithmetic in
@@ -124,7 +151,22 @@ pub fn update(app: &mut App, event: Event) -> Option<Effect> {
             app.clamp_view();
             None
         }
-        Event::Key(key) if key.kind == KeyEventKind::Press => normal_key(app, key),
+        Event::Saved { id, .. } => {
+            app.mode = Mode::Normal;
+            app.status = Some(format!("added {id}"));
+            None
+        }
+        Event::SaveFailed(message) => {
+            app.status = Some(message);
+            None
+        }
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            app.status = None;
+            match app.mode {
+                Mode::Normal => normal_key(app, key),
+                Mode::Input { .. } => input_key(app, key),
+            }
+        }
         Event::Key(_) => None,
     }
 }
@@ -142,9 +184,58 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Char('G') | KeyCode::End => app.move_to(app.last_line()),
         KeyCode::PageDown => app.scroll_half_page(true),
         KeyCode::PageUp => app.scroll_half_page(false),
+        KeyCode::Enter if !app.lines.is_empty() => {
+            app.mode = Mode::Input {
+                draft: String::new(),
+                cursor: 0,
+            };
+        }
         _ => {}
     }
     None
+}
+
+fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    let Mode::Input { draft, cursor } = &mut app.mode else {
+        return None;
+    };
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let len = draft.chars().count();
+    match key.code {
+        KeyCode::Char('c') if ctrl => app.mode = Mode::Normal,
+        KeyCode::Esc => app.mode = Mode::Normal,
+        KeyCode::Enter if draft.trim().is_empty() => {}
+        KeyCode::Enter => {
+            return Some(Effect::Save {
+                line: u32::try_from(app.cursor + 1).unwrap_or(u32::MAX),
+                body: draft.clone(),
+            });
+        }
+        KeyCode::Char(c) if !ctrl => {
+            draft.insert(byte_index(draft, *cursor), c);
+            *cursor += 1;
+        }
+        KeyCode::Backspace if *cursor > 0 => {
+            *cursor -= 1;
+            draft.remove(byte_index(draft, *cursor));
+        }
+        KeyCode::Delete if *cursor < len => {
+            draft.remove(byte_index(draft, *cursor));
+        }
+        KeyCode::Left => *cursor = cursor.saturating_sub(1),
+        KeyCode::Right => *cursor = (*cursor + 1).min(len),
+        KeyCode::Home => *cursor = 0,
+        KeyCode::End => *cursor = len,
+        _ => {}
+    }
+    None
+}
+
+/// Byte offset of the `index`th `char` of `text` (its length if past the end).
+fn byte_index(text: &str, index: usize) -> usize {
+    text.char_indices()
+        .nth(index)
+        .map_or(text.len(), |(i, _)| i)
 }
 
 #[cfg(test)]
@@ -323,5 +414,184 @@ mod tests {
         );
 
         assert_eq!(at(&a), (0, 0));
+    }
+
+    // --- Input mode ---
+
+    fn typed(app: &mut App, text: &str) {
+        send(app, text.chars().map(ch));
+    }
+
+    fn draft(app: &App) -> (&str, usize) {
+        match &app.mode {
+            Mode::Input { draft, cursor } => (draft, *cursor),
+            Mode::Normal => panic!("not in Input mode"),
+        }
+    }
+
+    fn input_app() -> App {
+        let mut a = app(5, 10);
+        send(&mut a, [ch('j'), ch('j'), press(KeyCode::Enter)]);
+        a
+    }
+
+    #[test]
+    fn enter_opens_an_empty_draft_for_the_current_line() {
+        let a = input_app();
+
+        assert_eq!(draft(&a), ("", 0));
+        assert_eq!(a.cursor, 2);
+    }
+
+    #[test]
+    fn enter_on_an_empty_file_is_a_no_op() {
+        let mut a = App::new(Vec::new(), 10);
+
+        assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
+        assert_eq!(a.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn typing_inserts_and_backspace_removes_whole_chars() {
+        let mut a = input_app();
+
+        typed(&mut a, "aé😀");
+        assert_eq!(draft(&a), ("aé😀", 3));
+        send(&mut a, [press(KeyCode::Backspace)]);
+        assert_eq!(draft(&a), ("aé", 2));
+        send(
+            &mut a,
+            [press(KeyCode::Backspace), press(KeyCode::Backspace)],
+        );
+        send(&mut a, [press(KeyCode::Backspace)]);
+        assert_eq!(draft(&a), ("", 0));
+    }
+
+    #[test]
+    fn arrows_home_end_and_delete_edit_mid_draft_without_splitting_chars() {
+        let mut a = input_app();
+        typed(&mut a, "aé😀z");
+
+        send(&mut a, [press(KeyCode::Left), press(KeyCode::Left)]);
+        assert_eq!(draft(&a).1, 2);
+        typed(&mut a, "X");
+        assert_eq!(draft(&a), ("aéX😀z", 3));
+        send(&mut a, [press(KeyCode::Delete)]);
+        assert_eq!(draft(&a), ("aéXz", 3));
+        send(&mut a, [press(KeyCode::Backspace)]);
+        assert_eq!(draft(&a), ("aéz", 2));
+        send(&mut a, [press(KeyCode::Home), press(KeyCode::Left)]);
+        assert_eq!(draft(&a).1, 0);
+        send(&mut a, [press(KeyCode::Backspace)]);
+        assert_eq!(draft(&a), ("aéz", 0), "backspace at the start is a no-op");
+        send(&mut a, [press(KeyCode::End), press(KeyCode::Right)]);
+        assert_eq!(draft(&a).1, 3);
+        send(&mut a, [press(KeyCode::Delete)]);
+        assert_eq!(draft(&a), ("aéz", 3), "delete at the end is a no-op");
+    }
+
+    #[test]
+    fn esc_discards_the_draft_and_keeps_the_cursor() {
+        let mut a = input_app();
+        typed(&mut a, "hello");
+
+        assert_eq!(update(&mut a, press(KeyCode::Esc)), None);
+
+        assert_eq!(a.mode, Mode::Normal);
+        assert_eq!(a.cursor, 2);
+        send(&mut a, [press(KeyCode::Enter)]);
+        assert_eq!(draft(&a), ("", 0));
+    }
+
+    #[test]
+    fn enter_on_a_blank_draft_stays_in_input_with_no_effect() {
+        let mut a = input_app();
+        typed(&mut a, "  ");
+
+        assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
+
+        assert_eq!(draft(&a), ("  ", 2));
+    }
+
+    #[test]
+    fn enter_with_text_asks_to_save_on_a_one_based_line_and_waits() {
+        let mut a = input_app();
+        typed(&mut a, "why?");
+
+        let effect = update(&mut a, press(KeyCode::Enter));
+
+        assert_eq!(
+            effect,
+            Some(Effect::Save {
+                line: 3,
+                body: "why?".into()
+            })
+        );
+        assert_eq!(draft(&a), ("why?", 4));
+    }
+
+    #[test]
+    fn saved_returns_to_normal_and_says_what_was_added() {
+        let mut a = input_app();
+        typed(&mut a, "why?");
+        update(&mut a, press(KeyCode::Enter));
+
+        update(
+            &mut a,
+            Event::Saved {
+                id: "c3".into(),
+                threads: vec![],
+            },
+        );
+
+        assert_eq!(a.mode, Mode::Normal);
+        assert_eq!(a.status.as_deref(), Some("added c3"));
+        send(&mut a, [ch('j')]);
+        assert_eq!(a.status, None, "the flash clears on the next key");
+    }
+
+    #[test]
+    fn save_failure_keeps_the_draft_and_shows_the_message() {
+        let mut a = input_app();
+        typed(&mut a, "why?");
+        update(&mut a, press(KeyCode::Enter));
+
+        update(&mut a, Event::SaveFailed("review is locked".into()));
+
+        assert_eq!(draft(&a), ("why?", 4));
+        assert_eq!(a.status.as_deref(), Some("review is locked"));
+    }
+
+    #[test]
+    fn normal_commands_are_just_text_in_input_mode() {
+        let mut a = input_app();
+        let mut events: Vec<Event> = "jqgG".chars().map(ch).collect();
+        events.extend([press(KeyCode::Up), press(KeyCode::PageDown)]);
+
+        for event in events {
+            assert_eq!(update(&mut a, event), None);
+        }
+
+        assert_eq!(draft(&a), ("jqgG", 4));
+        assert_eq!(a.cursor, 2);
+    }
+
+    #[test]
+    fn ctrl_c_cancels_input_and_a_second_one_quits() {
+        let mut a = input_app();
+        typed(&mut a, "draft");
+
+        assert_eq!(update(&mut a, ctrl('c')), None);
+        assert_eq!(a.mode, Mode::Normal);
+        assert_eq!(update(&mut a, ctrl('c')), Some(Effect::Quit));
+    }
+
+    #[test]
+    fn ctrl_chords_do_not_insert_text() {
+        let mut a = input_app();
+
+        send(&mut a, [ctrl('d'), ctrl('u')]);
+
+        assert_eq!(draft(&a), ("", 0));
     }
 }
