@@ -161,6 +161,7 @@ fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
             draft: "ok".into(),
             cursor: 2,
             from_panel: None,
+            reply_to: None,
         }
     );
     assert!(app.status().unwrap().contains("invalid line range"));
@@ -271,4 +272,81 @@ fn a_resolved_thread_shows_hollow_and_is_listed_as_resolved_by_the_agent() {
     );
     let _ = sb.press(&mut app, &["esc"]);
     assert_eq!(app.mode(), &Mode::Normal);
+}
+
+#[test]
+fn r_replies_to_the_selected_thread_and_the_comment_lands_last() {
+    let sb = sandbox(PLAN);
+    sb.reviews
+        .add_thread(&sb.file, 3, 3, "rename?", "scott")
+        .unwrap();
+    sb.reviews
+        .reply(&sb.file, "c1", "Renamed it.", "claude")
+        .unwrap();
+    let mut app = sb.open();
+    assert!(screen(&app).contains("◆ 3│three"), "{}", screen(&app));
+
+    let flow = sb.press(&mut app, &["j", "j", "enter", "r", "t", "h", "x", "enter"]);
+
+    assert_eq!(flow, ControlFlow::Continue(()));
+    let json = cli_comments(&sb);
+    let comments = json["threads"][0]["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 3);
+    assert_eq!(comments[2]["author"], "scott");
+    assert_eq!(comments[2]["body"], "thx");
+    let panel = screen(&app);
+    assert!(matches!(app.mode(), Mode::Panel { .. }), "{panel}");
+    assert!(panel.contains("thx"), "{panel}");
+    assert!(panel.contains("replied c1"), "{panel}");
+    let _ = sb.press(&mut app, &["esc"]);
+    assert!(screen(&app).contains("● 3│three"), "{}", screen(&app));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_reply_keeps_the_draft_and_shows_the_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let sb = sandbox(PLAN);
+    sb.reviews
+        .add_thread(&sb.file, 3, 3, "rename?", "claude")
+        .unwrap();
+    let mut app = sb.open();
+    let _ = sb.press(&mut app, &["j", "j", "enter", "r", "o", "k"]);
+    // A read-only store directory makes the write fail without touching
+    // the thread, so the failure is the store's, not the model's.
+    let mut dirs = vec![sb.data.clone()];
+    let mut all = vec![];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(&dir).unwrap().flatten() {
+            if entry.file_type().unwrap().is_dir() {
+                dirs.push(entry.path());
+            }
+        }
+        all.push(dir);
+    }
+    for dir in &all {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).unwrap();
+    }
+
+    let flow = sb.press(&mut app, &["enter"]);
+
+    for dir in &all {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    assert_eq!(flow, ControlFlow::Continue(()));
+    assert!(
+        matches!(app.mode(), Mode::Input { draft, reply_to: Some(id), .. } if draft == "ok" && id == "c1"),
+        "{:?}",
+        app.mode()
+    );
+    let status = app.status().unwrap();
+    assert!(status.to_lowercase().contains("permission"), "{status}");
+    assert_eq!(
+        cli_comments(&sb)["threads"][0]["comments"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }

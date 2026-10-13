@@ -24,9 +24,10 @@ use ratatui::crossterm::terminal::{
 };
 
 use crate::error::Result;
+use crate::model::Thread;
 use crate::review::{Clock, Reviews, ThreadView, file_lines};
 
-use app::{App, Effect, Event, update};
+use app::{App, Done, Effect, Event, update};
 use render::render;
 
 /// A file and its threads, read but not yet sized for a terminal.
@@ -163,21 +164,39 @@ pub fn step<C: Clock>(
     match update(app, event) {
         None => ControlFlow::Continue(()),
         Some(Effect::Quit) => ControlFlow::Break(()),
-        Some(Effect::Save { line, body }) => {
-            let answer = match reviews.add_thread(file, line, line, &body, author) {
-                Ok(thread) => Event::Saved {
-                    id: thread.id,
-                    // The comment is already stored; if the re-read fails
-                    // the screen loses its markers rather than offering a
-                    // retry that would duplicate the comment.
-                    threads: reviews.view(file, true).unwrap_or_default(),
-                },
-                Err(error) => Event::SaveFailed(error.to_string()),
-            };
-            update(app, answer);
-            ControlFlow::Continue(())
+        Some(Effect::Add { line, body }) => {
+            let written = reviews.add_thread(file, line, line, &body, author);
+            answer(app, reviews, file, Done::Added, written)
+        }
+        Some(Effect::Reply { id, body }) => {
+            let written = reviews.reply(file, &id, &body, author);
+            answer(app, reviews, file, Done::Replied, written)
         }
     }
+}
+
+/// Turn the result of a write into the event that tells `app` about it.
+///
+/// The write is already stored when the re-read runs; if the re-read fails
+/// the screen loses its markers rather than offering a retry that would
+/// duplicate the comment.
+fn answer<C: Clock>(
+    app: &mut App,
+    reviews: &Reviews<C>,
+    file: &Path,
+    done: Done,
+    written: Result<Thread>,
+) -> ControlFlow<()> {
+    let event = match written {
+        Ok(thread) => Event::Saved {
+            id: thread.id,
+            done,
+            threads: reviews.view(file, true).unwrap_or_default(),
+        },
+        Err(error) => Event::SaveFailed(error.to_string()),
+    };
+    update(app, event);
+    ControlFlow::Continue(())
 }
 
 #[cfg(test)]

@@ -25,7 +25,7 @@ pub enum Mode {
         /// First visible row of the panel's content.
         scroll: usize,
     },
-    /// Typing a comment on the cursor line.
+    /// Typing a comment: a new thread on the cursor line, or a reply.
     Input {
         /// The comment so far.
         draft: String,
@@ -34,6 +34,11 @@ pub enum Mode {
         /// The panel's `(selected, scroll)` this box was opened from, which
         /// `esc` and a successful save return to.
         from_panel: Option<(usize, usize)>,
+        /// The id of the thread being replied to; `None` adds a new thread.
+        ///
+        /// Captured when `r` is pressed, so a re-read between the keypress
+        /// and the write cannot retarget the reply.
+        reply_to: Option<String>,
     },
 }
 
@@ -44,14 +49,40 @@ pub enum Event {
     Key(KeyEvent),
     /// The terminal is now `width` x `height` cells.
     Resize(u16, u16),
-    /// The driver saved the pending comment as thread `id`; `threads` is the
-    /// re-read view of the file's threads.
+    /// The driver wrote `done` to thread `id`; `threads` is the re-read view
+    /// of the file's threads.
     Saved {
+        /// The thread written to: the new thread for an add.
         id: String,
+        done: Done,
         threads: Vec<ThreadView>,
     },
-    /// The driver could not save the pending comment.
+    /// The driver could not perform the write. A pending draft is kept.
     SaveFailed(String),
+}
+
+/// Which write an [`Event::Saved`] reports; it picks the footer message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Done {
+    /// A new thread was added.
+    Added,
+    /// A comment was appended to a thread.
+    Replied,
+    /// A thread was resolved.
+    Resolved,
+    /// A thread was reopened.
+    Reopened,
+}
+
+impl Done {
+    fn verb(self) -> &'static str {
+        match self {
+            Done::Added => "added",
+            Done::Replied => "replied",
+            Done::Resolved => "resolved",
+            Done::Reopened => "reopened",
+        }
+    }
 }
 
 /// Something `update` wants the driver to do.
@@ -59,7 +90,9 @@ pub enum Event {
 pub enum Effect {
     /// Add a thread on `line` (1-based) with `body`, then answer with
     /// [`Event::Saved`] or [`Event::SaveFailed`].
-    Save { line: u32, body: String },
+    Add { line: u32, body: String },
+    /// Append `body` to thread `id`; answered like [`Effect::Add`].
+    Reply { id: String, body: String },
     /// Leave the TUI.
     Quit,
 }
@@ -323,6 +356,20 @@ impl App {
         }
     }
 
+    /// Open the panel on the cursor line with thread `id` selected (the
+    /// first thread if the re-read no longer lists it).
+    fn back_to_panel(&mut self, id: &str) {
+        self.mode = Mode::Panel {
+            selected: 0,
+            scroll: 0,
+        };
+        let index = self
+            .threads_on(self.cursor)
+            .iter()
+            .position(|t| t.thread.id == id);
+        self.select_thread(index.unwrap_or(0));
+    }
+
     fn move_to(&mut self, cursor: usize) {
         self.cursor = cursor;
         self.clamp_view();
@@ -370,7 +417,7 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.rows = usize::from(rows);
             None
         }
-        Event::Saved { id, threads } => {
+        Event::Saved { id, done, threads } => {
             app.threads = threads;
             let from_panel = matches!(
                 app.mode,
@@ -381,17 +428,9 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             );
             app.mode = Mode::Normal;
             if from_panel {
-                app.mode = Mode::Panel {
-                    selected: 0,
-                    scroll: 0,
-                };
-                let index = app
-                    .threads_on(app.cursor)
-                    .iter()
-                    .position(|t| t.thread.id == id);
-                app.select_thread(index.unwrap_or(0));
+                app.back_to_panel(&id);
             }
-            app.status = Some(format!("added {id}"));
+            app.status = Some(format!("{} {id}", done.verb()));
             None
         }
         Event::SaveFailed(message) => {
@@ -431,6 +470,7 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 draft: String::new(),
                 cursor: 0,
                 from_panel: None,
+                reply_to: None,
             };
         }
         _ => {}
@@ -454,7 +494,22 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 draft: String::new(),
                 cursor: 0,
                 from_panel: Some((selected, scroll)),
+                reply_to: None,
             };
+        }
+        KeyCode::Char('r') if !ctrl => {
+            let id = app
+                .threads_on(app.cursor)
+                .get(selected)
+                .map(|view| view.thread.id.clone());
+            if let Some(id) = id {
+                app.mode = Mode::Input {
+                    draft: String::new(),
+                    cursor: 0,
+                    from_panel: Some((selected, scroll)),
+                    reply_to: Some(id),
+                };
+            }
         }
         KeyCode::Tab if !shift => app.select_thread((selected + 1) % count),
         KeyCode::Tab | KeyCode::BackTab => app.select_thread((selected + count - 1) % count),
@@ -480,6 +535,7 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         draft,
         cursor,
         from_panel,
+        reply_to,
     } = &mut app.mode
     else {
         return None;
@@ -495,9 +551,16 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Esc => app.mode = back,
         KeyCode::Enter if draft.trim().is_empty() => {}
         KeyCode::Enter => {
-            return Some(Effect::Save {
-                line: u32::try_from(app.cursor + 1).unwrap_or(u32::MAX),
-                body: draft.clone(),
+            let body = draft.clone();
+            return Some(match reply_to {
+                Some(id) => Effect::Reply {
+                    id: id.clone(),
+                    body,
+                },
+                None => Effect::Add {
+                    line: u32::try_from(app.cursor + 1).unwrap_or(u32::MAX),
+                    body,
+                },
             });
         }
         KeyCode::Char(c) if !ctrl => {
@@ -821,7 +884,7 @@ mod tests {
 
         assert_eq!(
             effect,
-            Some(Effect::Save {
+            Some(Effect::Add {
                 line: 3,
                 body: "why?".into()
             })
@@ -839,6 +902,7 @@ mod tests {
             &mut a,
             Event::Saved {
                 id: "c3".into(),
+                done: Done::Added,
                 threads: vec![],
             },
         );
@@ -1093,6 +1157,7 @@ mod tests {
             &mut a,
             Event::Saved {
                 id: "c1".into(),
+                done: Done::Added,
                 threads,
             },
         );
@@ -1360,6 +1425,7 @@ mod tests {
             &mut a,
             [Event::Saved {
                 id: "c9".into(),
+                done: Done::Added,
                 threads: vec![],
             }],
         );
@@ -1398,7 +1464,7 @@ mod tests {
 
         assert_eq!(
             effect,
-            Some(Effect::Save {
+            Some(Effect::Add {
                 line: 2,
                 body: "new".into()
             })
@@ -1419,6 +1485,7 @@ mod tests {
             &mut a,
             Event::Saved {
                 id: "c9".into(),
+                done: Done::Added,
                 threads,
             },
         );
@@ -1493,5 +1560,137 @@ mod tests {
         send(&mut a, [press(KeyCode::Esc)]);
         assert_eq!(a.height(), 6);
         assert!(a.top <= a.cursor && a.cursor < a.top + 6, "{:?}", at(&a));
+    }
+
+    // --- replying from the panel ---
+
+    /// The panel on line 2 holding `c1` (by claude) and `c2` (by claude),
+    /// with `c2` selected.
+    fn two_threads_panel() -> App {
+        let threads = [chatty("c1", (2, 2), 1), chatty("c2", (2, 2), 1)];
+        let mut a = panel_app(&threads, 20);
+        send(
+            &mut a,
+            [ch('j'), press(KeyCode::Enter), press(KeyCode::Tab)],
+        );
+        a
+    }
+
+    fn reply_target(a: &App) -> Option<&str> {
+        match &a.mode {
+            Mode::Input { reply_to, .. } => reply_to.as_deref(),
+            other => panic!("not in Input mode: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn r_in_the_panel_opens_a_reply_to_the_selected_threads_id() {
+        let mut a = two_threads_panel();
+
+        assert_eq!(update(&mut a, ch('r')), None);
+
+        assert_eq!(reply_target(&a), Some("c2"));
+        assert_eq!(draft(&a), ("", 0));
+        assert!(matches!(
+            a.mode,
+            Mode::Input {
+                from_panel: Some((1, _)),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn r_is_unbound_in_normal_and_text_in_input() {
+        let mut normal = panel_app(&[chatty("c1", (2, 2), 1)], 12);
+        send(&mut normal, [ch('j'), ch('r')]);
+        assert_eq!(normal.mode, Mode::Normal);
+
+        let mut a = in_panel_input();
+        typed(&mut a, "rrr");
+        assert_eq!(draft(&a), ("rrr", 3));
+        assert_eq!(reply_target(&a), None, "a is an add, not a reply");
+    }
+
+    #[test]
+    fn enter_in_a_reply_asks_to_reply_to_that_thread_not_to_add() {
+        let mut a = two_threads_panel();
+        send(&mut a, [ch('r')]);
+        typed(&mut a, "ok");
+
+        let effect = update(&mut a, press(KeyCode::Enter));
+
+        assert_eq!(
+            effect,
+            Some(Effect::Reply {
+                id: "c2".into(),
+                body: "ok".into()
+            })
+        );
+        assert_eq!(draft(&a), ("ok", 2));
+    }
+
+    #[test]
+    fn a_blank_reply_stays_put_and_esc_returns_to_the_same_panel_view() {
+        for cancel in [press(KeyCode::Esc), ctrl('c')] {
+            let mut a = two_threads_panel();
+            let before = panel(&a);
+            send(&mut a, [ch('r')]);
+            typed(&mut a, "  ");
+            assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
+            assert_eq!(draft(&a), ("  ", 2));
+
+            update(&mut a, cancel);
+
+            assert_eq!(panel(&a), before);
+        }
+    }
+
+    #[test]
+    fn a_saved_reply_returns_to_the_panel_on_that_thread_and_says_replied() {
+        let mut a = two_threads_panel();
+        send(&mut a, [ch('r')]);
+        typed(&mut a, "ok");
+        update(&mut a, press(KeyCode::Enter));
+        let threads = vec![
+            chatty("c1", (2, 2), 1),
+            said_by(
+                view("c2", (2, 2), Status::Open, State::Current),
+                &["claude", "scott"],
+            ),
+        ];
+
+        update(
+            &mut a,
+            Event::Saved {
+                id: "c2".into(),
+                done: Done::Replied,
+                threads,
+            },
+        );
+
+        assert_eq!(panel(&a).0, 1);
+        assert_eq!(a.status.as_deref(), Some("replied c2"));
+    }
+
+    #[test]
+    fn a_failed_reply_keeps_the_draft_the_target_and_the_panel_origin() {
+        let mut a = two_threads_panel();
+        send(&mut a, [ch('r')]);
+        typed(&mut a, "ok");
+        update(&mut a, press(KeyCode::Enter));
+
+        update(&mut a, Event::SaveFailed("locked".into()));
+
+        assert_eq!(draft(&a), ("ok", 2));
+        assert_eq!(reply_target(&a), Some("c2"));
+        assert_eq!(a.status.as_deref(), Some("locked"));
+        assert!(matches!(
+            a.mode,
+            Mode::Input {
+                from_panel: Some(_),
+                ..
+            }
+        ));
     }
 }
