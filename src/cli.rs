@@ -124,8 +124,9 @@ Examples:
 const WORKFLOW: &str = "\
 Review a throwaway text file. A human comments on lines in the TUI, opened
 with `ptal <file>` (interactive terminals only; without one it fails with
-not_a_terminal). You read and answer those comments here. Every command reads
-from disk, so each call sees the other side's latest writes.
+not_a_terminal), so tell them to run it with the file's absolute path. You read
+and answer those comments here. Every command reads from disk, so each call
+sees the other side's latest writes.
 
 Workflow:
   1. ptal comments <file>             list open threads (--all adds resolved)
@@ -1416,6 +1417,19 @@ c2  open  outdated  lines 2-3
         assert!(
             help[edit..resolve].contains("ptal comments"),
             "no re-check between editing and resolving:\n{help}"
+        );
+    }
+
+    #[test]
+    fn top_level_help_says_to_hand_the_human_an_absolute_path() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let paragraph = paragraph_with(&help, &["not_a_terminal"]);
+        assert!(
+            paragraph.contains("absolute"),
+            "help never says which path to give the human:\n{paragraph}"
         );
     }
 
