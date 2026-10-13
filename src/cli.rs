@@ -126,6 +126,10 @@ Workflow:
 Use `ptal add <file> --lines <N|A-B> \"<body>\" --as <name>` to raise a
 question of your own on a line or range.
 
+Resolve a thread only when you addressed it. If a comment is unclear or you
+disagree, do not guess: leave the thread open, ask with `ptal add`, and tell
+the human.
+
 Output is JSON when stdout is not a terminal, or with --json. `comments`
 prints one document:
 
@@ -1142,6 +1146,21 @@ c2  open  outdated  lines 2-3
             .expect("a line that introduces `ptal add`");
         assert!(line.contains("--lines"), "{line}");
         assert!(line.contains("--as"), "{line}");
+    }
+
+    #[test]
+    fn top_level_help_says_unclear_comments_stay_open() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let paragraph = help
+            .split("\n\n")
+            .find(|paragraph| paragraph.contains("unclear"))
+            .unwrap_or_else(|| panic!("help never covers unclear comments:\n{help}"));
+        let paragraph = paragraph.to_lowercase();
+        assert!(paragraph.contains("resolve"), "{paragraph}");
+        assert!(paragraph.contains("open"), "{paragraph}");
     }
 
     #[test]
