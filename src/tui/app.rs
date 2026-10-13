@@ -229,6 +229,20 @@ impl App {
         self.clamp_view();
     }
 
+    /// Move to the nearest covered line strictly after (or before) the
+    /// cursor; stay put when there is none.
+    fn jump_to_covered(&mut self, forward: bool) {
+        let covered = |line: &usize| self.marker(*line).is_some();
+        let target = if forward {
+            (self.cursor + 1..self.lines.len()).find(covered)
+        } else {
+            (0..self.cursor).rev().find(covered)
+        };
+        if let Some(line) = target {
+            self.move_to(line);
+        }
+    }
+
     fn scroll_half_page(&mut self, down: bool) {
         let step = (self.height() / 2).max(1);
         if down {
@@ -288,6 +302,8 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Char('k') | KeyCode::Up => app.move_to(app.cursor.saturating_sub(1)),
         KeyCode::Char('g') | KeyCode::Home => app.move_to(0),
         KeyCode::Char('G') | KeyCode::End => app.move_to(app.last_line()),
+        KeyCode::Char(']') => app.jump_to_covered(true),
+        KeyCode::Char('[') => app.jump_to_covered(false),
         KeyCode::PageDown => app.scroll_half_page(true),
         KeyCode::PageUp => app.scroll_half_page(false),
         KeyCode::Enter if !app.lines.is_empty() => {
@@ -908,6 +924,59 @@ mod tests {
         assert_eq!(a.marker(4), Some(Marker::Open));
         assert_eq!(a.marker(0), Some(Marker::Open), "outdated, by stored range");
         assert_eq!(a.outdated(), 1);
+    }
+
+    // --- ] and [ ---
+
+    fn jump_app() -> App {
+        let threads = [
+            view("c1", (3, 3), Status::Open, State::Current),
+            view("c2", (6, 7), resolved(), State::Current),
+            view("c3", (10, 10), Status::Open, State::Outdated),
+        ];
+        let lines = (1..=12).map(|i| i.to_string()).collect();
+        App::open(lines, &threads, 6)
+    }
+
+    #[test]
+    fn brackets_jump_between_covered_lines_and_stop_at_the_ends() {
+        let mut a = jump_app();
+        let mut visited = vec![];
+
+        for _ in 0..5 {
+            send(&mut a, [ch(']')]);
+            visited.push(a.cursor);
+        }
+        assert_eq!(visited, [2, 5, 6, 9, 9], "no wrap past the last");
+
+        let mut back = vec![];
+        for _ in 0..5 {
+            send(&mut a, [ch('[')]);
+            back.push(a.cursor);
+        }
+        assert_eq!(back, [6, 5, 2, 2, 2], "no wrap before the first");
+    }
+
+    #[test]
+    fn jumping_scrolls_the_view_to_the_cursor() {
+        let mut a = jump_app();
+
+        send(&mut a, [ch(']'), ch(']'), ch(']'), ch(']')]);
+
+        assert_eq!(a.cursor, 9);
+        assert!(a.top <= a.cursor && a.cursor < a.top + a.height());
+    }
+
+    #[test]
+    fn brackets_do_nothing_without_threads_and_are_text_in_input() {
+        let mut none = app(5, 10);
+        send(&mut none, [ch(']'), ch('[')]);
+        assert_eq!(none.cursor, 0);
+
+        let mut a = input_app();
+        typed(&mut a, "][");
+        assert_eq!(draft(&a), ("][", 2));
+        assert_eq!(a.cursor, 2);
     }
 
     #[test]
