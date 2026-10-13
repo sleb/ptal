@@ -13,13 +13,15 @@ as=(--as scott)
 
 case $round in
   1)
-    # Pick lines from the plan the agent actually wrote: the first table data row,
-    # the first numbered step, and the first bullet. Falls back to line 1.
-    line_of() { grep -n -m1 -E "$1" "$plan" | cut -d: -f1 || true; }
-    row=$(line_of '^\| *1 *\|'); step=$(line_of '^1\. '); bullet=$(line_of '^- ')
-    ptal add "$plan" --lines "${row:-1}" "Why this approach and not the simpler one?" "${as[@]}"
-    ptal add "$plan" --lines "${step:-1}" "Cut this step; it is out of scope." "${as[@]}"
-    ptal add "$plan" --lines "${bullet:-1}" "We should fix this to be better." "${as[@]}"
+    # The task fixes the plan's headings, so seed on them: the first line under
+    # `## Goal`, the last numbered step (the README step), and the first risk bullet.
+    after() { awk -v h="$1" -v pat="$2" '$0==h{f=1;next} f&&$0~pat{print NR;exit}' "$plan"; }
+    goal=$(after '## Goal' '[^[:space:]]')
+    step=$(awk '/^## Steps/{f=1;next} /^## /{f=0} f&&/^[0-9]+\. /{n=NR} END{print n}' "$plan")
+    risk=$(after '## Risks' '^- ')
+    ptal add "$plan" --lines "${goal:-1}" "Why this approach and not the simpler one?" "${as[@]}"
+    ptal add "$plan" --lines "${step:-1}" "Add a step before this one that runs shellcheck on deploy.sh." "${as[@]}"
+    ptal add "$plan" --lines "${risk:-1}" "We should fix this to be better." "${as[@]}"
     ;;
   2)
     # Replies target the threads the agent left open; ids come from `ptal comments`.

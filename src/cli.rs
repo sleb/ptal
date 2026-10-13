@@ -131,15 +131,16 @@ sees the other side's latest writes.
 Workflow:
   1. ptal comments <file>             list open threads (--all adds resolved)
   2. edit the file to address them    ptal never modifies the reviewed file
-  3. ptal comments <file>             re-check: your edit moves or changes lines
+  3. ptal comments <file>             re-check: edits can leave threads outdated
   4. ptal reply <file> <id> \"<body>\" --as <name>
      ptal resolve <file> <id> --as <name> [--note \"what changed\"]
      ptal reopen <file> <id> --as <name> [--note \"why\"]
 
 Threads are conversations. `ptal reply` asks, answers or discusses;
-`ptal resolve` closes a thread you addressed; `ptal reopen` takes a resolved
-thread back. A reply to a resolved thread reopens it, so use `reopen` only
-when you have nothing to say; reopening an open thread is already_open.
+`ptal resolve` closes a thread you addressed, and its --note is the closing
+comment (don't reply first); `ptal reopen` takes a resolved thread back. A
+reply to a resolved thread reopens it, so use `reopen` only when you have
+nothing to say; reopening an open thread is already_open.
 
 A thread is waiting on you when its last comment is not yours: its author
 differs from your --as name (exact match), so use the same --as name every
@@ -1431,6 +1432,30 @@ c2  open  outdated  lines 2-3
             paragraph.contains("absolute"),
             "help never says which path to give the human:\n{paragraph}"
         );
+    }
+
+    #[test]
+    fn top_level_help_says_why_to_recheck_after_editing() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let line = help
+            .lines()
+            .find(|line| line.contains("re-check"))
+            .expect("a re-check workflow line");
+        assert!(line.contains("outdated"), "{line}");
+    }
+
+    #[test]
+    fn top_level_help_says_resolve_note_is_the_closing_comment() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let paragraph = paragraph_with(&help, &["Threads are conversations"]);
+        assert!(paragraph.contains("--note"), "{paragraph}");
+        assert!(paragraph.contains("don't reply first"), "{paragraph}");
     }
 
     #[test]
