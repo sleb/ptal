@@ -1,0 +1,159 @@
+//! The real process contract: streams, exit status, and env handling, driven
+//! through the built `ptal` binary. Rendering details are covered in-process
+//! in `src/cli.rs`.
+
+use std::fs;
+use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
+
+struct Sandbox {
+    _tmp: tempfile::TempDir,
+    data: PathBuf,
+    file: PathBuf,
+}
+
+fn sandbox(content: &str) -> Sandbox {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("plan.md");
+    fs::write(&file, content).unwrap();
+    let data = tmp.path().join("data");
+    Sandbox {
+        _tmp: tmp,
+        data,
+        file,
+    }
+}
+
+impl Sandbox {
+    fn command(&self, args: &[&str]) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_ptal"));
+        cmd.args(args)
+            .env("PTAL_DATA_DIR", &self.data)
+            .env_remove("PTAL_AUTHOR");
+        cmd
+    }
+
+    /// Run with `FILE` replaced by the sandbox file.
+    fn run(&self, args: &[&str]) -> Output {
+        let file = self.file.to_str().unwrap();
+        let args: Vec<&str> = args
+            .iter()
+            .map(|a| if *a == "FILE" { file } else { a })
+            .collect();
+        self.command(&args).output().unwrap()
+    }
+
+    fn run_json(&self, args: &[&str]) -> serde_json::Value {
+        let out = self.run(args);
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+        assert_eq!(stderr(&out), "", "{args:?}");
+        serde_json::from_slice(&out.stdout).unwrap()
+    }
+}
+
+fn stderr(out: &Output) -> String {
+    String::from_utf8(out.stderr.clone()).unwrap()
+}
+
+fn assert_failure(out: &Output, exit: i32, code: &str) {
+    assert_eq!(out.status.code(), Some(exit), "{}", stderr(out));
+    assert!(out.stdout.is_empty(), "stdout: {:?}", out.stdout);
+    let err = stderr(out);
+    assert_eq!(err.lines().count(), 1, "{err:?}");
+    let json: serde_json::Value = serde_json::from_str(&err).unwrap();
+    assert_eq!(json["error"]["code"], code, "{err}");
+}
+
+#[test]
+fn add_comments_resolve_round_trip_through_the_binary() {
+    let sb = sandbox("one\ntwo\nthree\n");
+
+    let added = sb.run_json(&["add", "FILE", "--lines", "2-3", "Why?", "--as", "scott"]);
+    assert_eq!(added["thread"]["id"], "c1");
+
+    let open = sb.run_json(&["comments", "FILE"]);
+    assert_eq!(open["threads"][0]["state"], "current");
+
+    let resolved = sb.run_json(&["resolve", "FILE", "c1", "--as", "claude", "--note", "Fixed"]);
+    assert_eq!(resolved["thread"]["status"], "resolved");
+
+    let open = sb.run_json(&["comments", "FILE"]);
+    assert_eq!(open["threads"].as_array().unwrap().len(), 0);
+
+    let all = sb.run_json(&["comments", "FILE", "--all"]);
+    let comments = all["threads"][0]["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 2);
+    assert_eq!(comments[1]["body"], "Fixed");
+}
+
+#[test]
+fn every_failure_kind_has_empty_stdout_one_json_line_and_its_exit_code() {
+    let sb = sandbox("one\n");
+
+    assert_failure(&sb.run(&["frobnicate"]), 2, "usage");
+    assert_failure(&sb.run(&["comments"]), 2, "usage");
+    assert_failure(
+        &sb.run(&["add", "FILE", "--lines", "1", "Hi"]),
+        2,
+        "missing_author",
+    );
+    assert_failure(
+        &sb.run(&["resolve", "FILE", "c9", "--as", "claude"]),
+        2,
+        "not_found",
+    );
+    assert_failure(
+        &sb.run(&["add", "FILE", "--lines", "5", "Hi", "--as", "x"]),
+        2,
+        "invalid_range",
+    );
+    assert_failure(
+        &sb.run(&["comments", "/no/such/plan.md"]),
+        1,
+        "file_unreadable",
+    );
+}
+
+#[test]
+fn ptal_author_stands_in_for_the_as_flag() {
+    let sb = sandbox("one\n");
+    let file = sb.file.to_str().unwrap();
+
+    let out = sb
+        .command(&["add", file, "--lines", "1", "Hi"])
+        .env("PTAL_AUTHOR", "claude")
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["thread"]["comments"][0]["author"], "claude");
+}
+
+#[test]
+fn help_goes_to_stdout_and_exits_zero() {
+    let sb = sandbox("one\n");
+
+    let out = sb.run(&["--help"]);
+
+    assert!(out.status.success());
+    assert!(stderr(&out).is_empty());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("ptal resolve"));
+}
+
+#[test]
+fn a_closed_stdout_pipe_ends_quietly() {
+    let sb = sandbox("one\n");
+
+    let mut child = sb
+        .command(&["--help"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stderr(&out), "", "no panic message on a closed pipe");
+}
