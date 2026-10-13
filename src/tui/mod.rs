@@ -26,7 +26,7 @@ use crate::review::{Clock, Reviews, ThreadView, file_lines};
 use app::{App, Effect, Event, update};
 use render::render;
 
-/// A file and its open threads, read but not yet sized for a terminal.
+/// A file and its threads, read but not yet sized for a terminal.
 ///
 /// Loading is split from [`Loaded::into_app`] so that a missing file is
 /// reported before the terminal is queried or touched.
@@ -35,13 +35,13 @@ pub struct Loaded {
     threads: Vec<ThreadView>,
 }
 
-/// Read `file` and its open threads.
+/// Read `file` and all its threads, resolved ones included.
 ///
 /// # Errors
 /// [`crate::Error::FileUnreadable`] plus any store error.
 pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<Loaded> {
     let lines = file_lines(file)?;
-    let threads = reviews.view(file, false)?;
+    let threads = reviews.view(file, true)?;
     Ok(Loaded { lines, threads })
 }
 
@@ -166,7 +166,7 @@ pub fn step<C: Clock>(
                     // The comment is already stored; if the re-read fails
                     // the screen loses its markers rather than offering a
                     // retry that would duplicate the comment.
-                    threads: reviews.view(file, false).unwrap_or_default(),
+                    threads: reviews.view(file, true).unwrap_or_default(),
                 },
                 Err(error) => Event::SaveFailed(error.to_string()),
             };

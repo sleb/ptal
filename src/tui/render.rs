@@ -69,7 +69,7 @@ fn draw_file(app: &App, buf: &mut Buffer, area: Rect) {
             Style::new()
         };
         buf.set_style(row, style);
-        let marker = if app.is_marked(index) {
+        let marker = if app.marker(index).is_some() {
             MARKER
         } else {
             NO_MARKER
@@ -240,7 +240,7 @@ plan.md  L1/12  enter:comment q:quit"
 ●  3│line 3
    4│line 4
    5│line 5
-   6│line 6
+●  6│line 6
    7│line 7
 plan.md  L1/12  1 outdated  enter:comment q:quit"
         );

@@ -5,8 +5,6 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use std::collections::BTreeSet;
-
 use crate::model::{State, Status};
 use crate::review::ThreadView;
 
@@ -64,10 +62,23 @@ pub struct App {
     file: String,
     /// Who the comments will be written as, shown in the input box.
     author: String,
-    /// 0-based lines inside an open, current thread's range.
-    markers: BTreeSet<usize>,
-    /// Open threads whose quote no longer matches; not markable.
-    outdated: usize,
+    /// Every thread of the file, resolved and outdated included, in store
+    /// order. Re-read from disk after each write; never patched locally.
+    threads: Vec<ThreadView>,
+}
+
+/// What a gutter cell says about the threads covering a line.
+///
+/// Declared strongest first, so the marker for a line is the minimum over
+/// the threads covering it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Marker {
+    /// An open thread whose last comment is not by the current author.
+    Waiting,
+    /// An open thread whose last word is the current author's.
+    Open,
+    /// Only resolved threads cover the line.
+    Resolved,
 }
 
 /// Terminal rows taken by the footer in Normal mode.
@@ -77,7 +88,7 @@ const INPUT_BOX_ROWS: usize = 3;
 
 impl App {
     /// A view over `lines` on a terminal `rows` tall, with gutter markers
-    /// for `threads`.
+    /// for `threads` (every thread, resolved ones too).
     pub fn open(lines: Vec<String>, threads: &[ThreadView], rows: u16) -> Self {
         let mut app = App {
             lines,
@@ -88,10 +99,8 @@ impl App {
             status: None,
             file: String::new(),
             author: String::new(),
-            markers: BTreeSet::new(),
-            outdated: 0,
+            threads: threads.to_vec(),
         };
-        app.set_threads(threads);
         app.clamp_view();
         app
     }
@@ -139,31 +148,52 @@ impl App {
         self.status.as_deref()
     }
 
-    /// Whether 0-based `line` is inside an open, current thread.
-    pub fn is_marked(&self, line: usize) -> bool {
-        self.markers.contains(&line)
+    /// The gutter marker for 0-based `line`, if any thread covers it.
+    ///
+    /// A thread covers its stored range whatever its `state`, so outdated
+    /// threads stay reachable.
+    pub fn marker(&self, line: usize) -> Option<Marker> {
+        self.threads_on(line)
+            .into_iter()
+            .map(|view| self.marker_of(view))
+            .min()
     }
 
-    /// How many open threads are outdated (and so not shown in the gutter).
+    /// Every thread covering 0-based `line`, in store order.
+    pub fn threads_on(&self, line: usize) -> Vec<&ThreadView> {
+        self.threads
+            .iter()
+            .filter(|view| self.covers(view, line))
+            .collect()
+    }
+
+    /// How many open threads are outdated.
     pub fn outdated(&self) -> usize {
-        self.outdated
+        self.threads
+            .iter()
+            .filter(|t| t.thread.status == Status::Open && t.state == State::Outdated)
+            .count()
     }
 
-    /// Replace markers from a fresh view of the file's threads.
-    fn set_threads(&mut self, threads: &[ThreadView]) {
-        let open = threads.iter().filter(|t| t.thread.status == Status::Open);
-        self.outdated = 0;
-        self.markers.clear();
-        for view in open {
-            match view.state {
-                State::Outdated => self.outdated += 1,
-                State::Current => {
-                    let anchor = &view.thread.anchor;
-                    let first = (anchor.start_line as usize).saturating_sub(1);
-                    let last = (anchor.end_line as usize).min(self.lines.len());
-                    self.markers.extend(first..last);
-                }
-            }
+    /// Whether `view`'s stored range, clamped to the file, holds `line`.
+    fn covers(&self, view: &ThreadView, line: usize) -> bool {
+        let anchor = &view.thread.anchor;
+        let first = (anchor.start_line as usize).saturating_sub(1);
+        let last = (anchor.end_line as usize).min(self.lines.len());
+        (first..last).contains(&line)
+    }
+
+    fn marker_of(&self, view: &ThreadView) -> Marker {
+        let open = view.thread.status == Status::Open;
+        let theirs = view
+            .thread
+            .comments
+            .last()
+            .is_some_and(|comment| comment.author != self.author);
+        match (open, theirs) {
+            (true, true) => Marker::Waiting,
+            (true, false) => Marker::Open,
+            (false, _) => Marker::Resolved,
         }
     }
 
@@ -227,7 +257,7 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             None
         }
         Event::Saved { id, threads } => {
-            app.set_threads(&threads);
+            app.threads = threads;
             app.mode = Mode::Normal;
             app.status = Some(format!("added {id}"));
             None
@@ -673,7 +703,7 @@ mod tests {
 
     // --- markers ---
 
-    use crate::model::{Anchor, State, Status, Thread};
+    use crate::model::{Anchor, Comment, State, Status, Thread};
 
     fn view(id: &str, (start, end): (u32, u32), status: Status, state: State) -> ThreadView {
         ThreadView {
@@ -691,6 +721,21 @@ mod tests {
         }
     }
 
+    /// `view` with a comment by each of `authors`, in order.
+    fn said_by(mut v: ThreadView, authors: &[&str]) -> ThreadView {
+        v.thread.comments = authors
+            .iter()
+            .enumerate()
+            .map(|(i, author)| Comment {
+                id: format!("{}-{i}", v.thread.id),
+                author: (*author).into(),
+                body: format!("body {i}"),
+                created_at: "2026-10-12T10:00:00Z".into(),
+            })
+            .collect();
+        v
+    }
+
     fn resolved() -> Status {
         Status::Resolved {
             resolved_by: "claude".into(),
@@ -698,22 +743,113 @@ mod tests {
         }
     }
 
-    fn marked(a: &App) -> Vec<usize> {
-        (0..a.lines.len()).filter(|&i| a.is_marked(i)).collect()
+    fn open_view(threads: &[ThreadView], n: usize) -> App {
+        let lines = (1..=n).map(|i| i.to_string()).collect();
+        App::open(lines, threads, 10).labeled("plan.md", "scott")
+    }
+
+    fn markers(a: &App) -> Vec<Option<Marker>> {
+        (0..a.lines.len()).map(|i| a.marker(i)).collect()
     }
 
     #[test]
-    fn only_open_current_threads_mark_lines_and_outdated_ones_are_counted() {
-        let threads = [
+    fn an_open_current_thread_marks_its_range_as_open() {
+        let threads = [said_by(
             view("c1", (2, 3), Status::Open, State::Current),
-            view("c2", (5, 5), Status::Open, State::Outdated),
-            view("c3", (1, 1), resolved(), State::Current),
+            &["scott"],
+        )];
+
+        let a = open_view(&threads, 4);
+
+        let open = Some(Marker::Open);
+        assert_eq!(markers(&a), [None, open, open, None], "0-based 2..=3");
+    }
+
+    #[test]
+    fn a_thread_whose_last_comment_is_by_someone_else_is_waiting_on_you() {
+        let threads = [
+            said_by(
+                view("c1", (1, 1), Status::Open, State::Current),
+                &["scott", "claude"],
+            ),
+            said_by(
+                view("c2", (2, 2), Status::Open, State::Current),
+                &["claude", "scott"],
+            ),
+            view("c3", (3, 3), Status::Open, State::Current),
         ];
-        let lines = (1..=6).map(|i| i.to_string()).collect();
 
-        let a = App::open(lines, &threads, 10);
+        let a = open_view(&threads, 3);
 
-        assert_eq!(marked(&a), [1, 2], "0-based lines of 2..=3");
+        assert_eq!(
+            markers(&a),
+            [
+                Some(Marker::Waiting),
+                Some(Marker::Open),
+                Some(Marker::Open)
+            ],
+            "my own last word, or no comments at all, is not waiting"
+        );
+    }
+
+    #[test]
+    fn resolved_only_lines_are_resolved_and_open_threads_outrank_them() {
+        let threads = [
+            said_by(view("c1", (1, 2), resolved(), State::Current), &["claude"]),
+            said_by(view("c2", (2, 3), Status::Open, State::Current), &["scott"]),
+            said_by(
+                view("c3", (3, 3), Status::Open, State::Current),
+                &["claude"],
+            ),
+        ];
+
+        let a = open_view(&threads, 4);
+
+        assert_eq!(
+            markers(&a),
+            [
+                Some(Marker::Resolved),
+                Some(Marker::Open),
+                Some(Marker::Waiting),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn a_resolved_thread_is_never_waiting() {
+        let threads = [said_by(
+            view("c1", (1, 1), resolved(), State::Current),
+            &["scott", "claude"],
+        )];
+
+        let a = open_view(&threads, 1);
+
+        assert_eq!(a.marker(0), Some(Marker::Resolved));
+    }
+
+    #[test]
+    fn outdated_threads_cover_their_stored_range_and_only_open_ones_are_counted() {
+        let threads = [
+            said_by(
+                view("c1", (2, 2), Status::Open, State::Outdated),
+                &["scott"],
+            ),
+            said_by(view("c2", (4, 4), resolved(), State::Outdated), &["scott"]),
+            said_by(view("c3", (1, 1), Status::Open, State::Current), &["scott"]),
+        ];
+
+        let a = open_view(&threads, 4);
+
+        assert_eq!(
+            markers(&a),
+            [
+                Some(Marker::Open),
+                Some(Marker::Open),
+                None,
+                Some(Marker::Resolved)
+            ]
+        );
         assert_eq!(a.outdated(), 1);
     }
 
@@ -723,11 +859,34 @@ mod tests {
 
         let a = App::open(vec!["a".into(), "b".into()], &threads, 10);
 
-        assert_eq!(marked(&a), [1]);
+        assert_eq!(a.marker(1), Some(Marker::Open));
+        assert_eq!(a.marker(2), None);
+        assert!(a.threads_on(5).is_empty());
     }
 
     #[test]
-    fn saved_replaces_the_markers_with_the_reread_threads() {
+    fn threads_on_lists_covering_threads_in_store_order() {
+        let threads = [
+            view("c1", (1, 3), resolved(), State::Current),
+            view("c2", (3, 3), Status::Open, State::Current),
+            view("c3", (2, 2), Status::Open, State::Outdated),
+        ];
+
+        let a = open_view(&threads, 3);
+
+        let ids = |line| -> Vec<&str> {
+            a.threads_on(line)
+                .iter()
+                .map(|t| t.thread.id.as_str())
+                .collect()
+        };
+        assert_eq!(ids(0), ["c1"]);
+        assert_eq!(ids(1), ["c1", "c3"]);
+        assert_eq!(ids(2), ["c1", "c2"]);
+    }
+
+    #[test]
+    fn saved_replaces_everything_with_the_reread_threads() {
         let mut a = app(5, 10);
         send(&mut a, [press(KeyCode::Enter)]);
         typed(&mut a, "x");
@@ -745,7 +904,9 @@ mod tests {
             },
         );
 
-        assert_eq!(marked(&a), [3, 4]);
+        assert_eq!(a.marker(3), Some(Marker::Open));
+        assert_eq!(a.marker(4), Some(Marker::Open));
+        assert_eq!(a.marker(0), Some(Marker::Open), "outdated, by stored range");
         assert_eq!(a.outdated(), 1);
     }
 

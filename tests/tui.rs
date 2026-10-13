@@ -116,7 +116,7 @@ fn a_saved_comment_shows_in_the_gutter_and_after_reopening() {
     let flow = sb.press(&mut app, &["j", "j", "enter", "x", "enter"]);
 
     assert_eq!(flow, ControlFlow::Continue(()));
-    assert!(app.is_marked(2));
+    assert!(app.marker(2).is_some());
     assert_eq!(app.status(), Some("added c1"));
     let reopened = sb.open();
     assert!(
@@ -136,7 +136,7 @@ fn threads_added_with_a_range_mark_every_line_on_open() {
 
     let app = sb.open();
 
-    let marked: Vec<bool> = (0..5).map(|i| app.is_marked(i)).collect();
+    let marked: Vec<bool> = (0..5).map(|i| app.marker(i).is_some()).collect();
     assert_eq!(marked, [false, true, true, true, false]);
 }
 
