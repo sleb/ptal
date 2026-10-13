@@ -112,6 +112,10 @@ Examples:
   ptal resolve plan.md c3 --as claude
   ptal resolve plan.md c3 --as claude --note \"Done, see step 2.\"";
 
+const REPLY_EXAMPLE: &str = "\
+Examples:
+  ptal reply plan.md c3 \"Which of the two do you mean?\" --as claude";
+
 const WORKFLOW: &str = "\
 Review a throwaway text file. A human comments on lines in the TUI, opened
 with `ptal <file>` (interactive terminals only; without one it fails with
@@ -225,6 +229,18 @@ enum Command {
         #[arg(long)]
         note: Option<String>,
     },
+    /// Add a comment to a thread.
+    #[command(after_long_help = REPLY_EXAMPLE)]
+    Reply {
+        file: PathBuf,
+        /// Thread id, e.g. `c3`.
+        id: String,
+        /// The comment text.
+        body: String,
+        /// Who is replying; falls back to `PTAL_AUTHOR`.
+        #[arg(long = "as", value_name = "NAME")]
+        author: Option<String>,
+    },
 }
 
 /// Parse `A-B` or a bare `N` (sugar for `N-N`). Range validity against the
@@ -262,13 +278,15 @@ enum Output {
     Threads(Vec<ThreadView>),
     Added(Thread),
     Resolved(Thread),
+    /// The thread, and the id of the comment just added to it.
+    Replied(Thread),
 }
 
 impl Output {
     fn to_json(&self, file: &Path) -> String {
         let value = match self {
             Output::Threads(threads) => json!({ "file": file, "threads": threads }),
-            Output::Added(thread) | Output::Resolved(thread) => {
+            Output::Added(thread) | Output::Resolved(thread) | Output::Replied(thread) => {
                 json!({ "file": file, "thread": thread })
             }
         };
@@ -288,6 +306,10 @@ impl Output {
                 format!("{} added (lines {start_line}-{end_line})\n", thread.id)
             }
             Output::Resolved(thread) => format!("{} resolved\n", thread.id),
+            Output::Replied(thread) => {
+                let reply = thread.comments.last().map_or("", |c| c.id.as_str());
+                format!("{} replied ({reply})\n", thread.id)
+            }
         }
     }
 }
@@ -386,7 +408,8 @@ fn run_command<C: Clock>(
     let file = match command {
         Command::Comments { file, .. }
         | Command::Add { file, .. }
-        | Command::Resolve { file, .. } => file,
+        | Command::Resolve { file, .. }
+        | Command::Reply { file, .. } => file,
     };
     let output = dispatch(command, env)?;
     let canonical = std::fs::canonicalize(file).map_err(|source| {
@@ -461,6 +484,15 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
                 &author,
                 note.as_deref(),
             )?))
+        }
+        Command::Reply {
+            file,
+            id,
+            body,
+            author: flag,
+        } => {
+            let author = author(flag)?;
+            Ok(Output::Replied(reviews.reply(file, id, body, &author)?))
         }
     }
 }
@@ -969,6 +1001,125 @@ mod tests {
         assert_eq!(out.stdout, "");
         assert_eq!(out.error_code(), "not_found");
         assert_eq!(fx.review_bytes(), before);
+    }
+
+    #[test]
+    fn reply_appends_a_comment_and_prints_the_thread() {
+        let fx = fixture_with_two_threads();
+
+        let out = fx.run(&[
+            "reply",
+            "FILE",
+            "c1",
+            "Typo fixed",
+            "--as",
+            "claude",
+            "--json",
+        ]);
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_eq!(out.stderr, "");
+        let json = out.json();
+        assert_eq!(json["file"], fx.canonical());
+        let thread = &json["thread"];
+        assert_eq!(thread["id"], "c1");
+        assert!(thread.get("state").is_none());
+        let comments = thread["comments"].as_array().unwrap();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[1]["id"], "c3");
+        assert_eq!(comments[1]["author"], "claude");
+        assert_eq!(comments[1]["body"], "Typo fixed");
+    }
+
+    #[test]
+    fn comments_after_a_reply_shows_it_last_under_the_same_thread_id() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["reply", "FILE", "c1", "one", "--as", "claude"]);
+        fx.run(&["reply", "FILE", "c1", "two", "--as", "scott"]);
+
+        let listed = fx.run(&["comments", "FILE"]).json();
+
+        let thread = &listed["threads"][0];
+        assert_eq!(thread["id"], "c1");
+        let bodies: Vec<&str> = thread["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(bodies, ["Typo?", "one", "two"]);
+    }
+
+    #[test]
+    fn replying_to_a_resolved_thread_brings_it_back_to_the_default_view() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["resolve", "FILE", "c1", "--as", "claude"]);
+        assert_eq!(
+            fx.run(&["comments", "FILE"]).json()["threads"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        fx.run(&["reply", "FILE", "c1", "Still wrong", "--as", "scott"]);
+
+        let listed = fx.run(&["comments", "FILE"]).json();
+        let threads = listed["threads"].as_array().unwrap();
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0]["id"], "c1");
+        assert_eq!(threads[0]["status"], "open");
+        assert!(threads[0].get("resolved_by").is_none());
+        assert!(threads[0].get("resolved_at").is_none());
+    }
+
+    #[test]
+    fn reply_failures_exit_2_with_their_codes_and_leave_the_review_untouched() {
+        let fx = fixture_with_two_threads();
+        let before = fx.review_bytes();
+
+        for (args, code) in [
+            (
+                &["reply", "FILE", "c99", "hi", "--as", "claude"][..],
+                "not_found",
+            ),
+            (
+                &["reply", "FILE", "c1", "  ", "--as", "claude"],
+                "empty_body",
+            ),
+            (&["reply", "FILE", "c1", "hi"], "missing_author"),
+        ] {
+            let out = fx.run(args);
+            assert_eq!(out.code, 2, "{args:?}");
+            assert_eq!(out.stdout, "", "{args:?}");
+            assert_eq!(out.error_code(), code, "{args:?}");
+        }
+        assert_eq!(fx.review_bytes(), before);
+    }
+
+    #[test]
+    fn reply_falls_back_to_ptal_author() {
+        let fx = fixture_with_two_threads();
+
+        let out = fx.run_with(
+            &["reply", "FILE", "c1", "hi"],
+            &fx.env(Some("codex"), false),
+        );
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_eq!(out.json()["thread"]["comments"][1]["author"], "codex");
+    }
+
+    #[test]
+    fn reply_on_a_terminal_prints_the_thread_and_the_new_comment_id() {
+        let fx = fixture_with_two_threads();
+
+        let out = fx.run_with(
+            &["reply", "FILE", "c1", "hi", "--as", "claude"],
+            &fx.env(None, true),
+        );
+
+        assert_eq!(out.stdout, "c1 replied (c3)\n");
     }
 
     #[test]
