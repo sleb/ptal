@@ -242,7 +242,9 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   against the file is the core's `InvalidRange`.
 - `--help` is part of the product: the top-level help carries the agent
   workflow, the JSON shape, exit codes, and env vars; every command has an
-  example.
+  example. It states facts about the tool (what a command does, what a field
+  means), not policy: when to resolve, what to ask, how to hand over to the
+  human belong to the user's own skill or prompt, which ptal does not ship.
 
 *Deferred:* `ptal schema`; output shapes are the `model`
 types, so changing them is a `schema_version` bump.

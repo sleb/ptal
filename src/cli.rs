@@ -124,9 +124,9 @@ Examples:
 const WORKFLOW: &str = "\
 Review a throwaway text file. A human comments on lines in the TUI, opened
 with `ptal <file>` (interactive terminals only; without one it fails with
-not_a_terminal), so tell them to run it with the file's absolute path. You read
-and answer those comments here. Every command reads from disk, so each call
-sees the other side's latest writes.
+not_a_terminal). Their terminal's working directory may differ from yours, so
+give them an absolute path. You read and answer those comments here. Every
+command reads from disk, so each call sees the other side's latest writes.
 
 Workflow:
   1. ptal comments <file>             list open threads (--all adds resolved)
@@ -136,24 +136,17 @@ Workflow:
      ptal resolve <file> <id> --as <name> [--note \"what changed\"]
      ptal reopen <file> <id> --as <name> [--note \"why\"]
 
-Threads are conversations. `ptal reply` asks, answers or discusses;
-`ptal resolve` closes a thread you addressed, and its --note is the closing
-comment (don't reply first); `ptal reopen` takes a resolved thread back. A
-reply to a resolved thread reopens it, so use `reopen` only when you have
-nothing to say; reopening an open thread is already_open.
+Threads are conversations. `ptal reply` adds a comment to a thread;
+`ptal resolve` closes it, and its --note is recorded as a comment;
+`ptal reopen` takes a resolved thread back. A reply to a resolved thread
+reopens it.
 
 A thread is waiting on you when its last comment is not yours: its author
 differs from your --as name (exact match), so use the same --as name every
 time. Only open threads are listed by default.
 
-Use `ptal add <file> --lines <N|A-B> \"<body>\" --as <name>` to raise a
-question of your own on a line or range. That starts a new thread; it is not
-for answering one, use `ptal reply`.
-
-Resolve a thread only when you addressed it. If a comment is unclear or you
-disagree, do not guess: leave the thread open, ask with `ptal reply`, and tell
-the human. When you resolve on a reading of an ambiguous comment, state your
-interpretation in --note so the human can correct it.
+`ptal add <file> --lines <N|A-B> \"<body>\" --as <name>` starts a new thread
+on a line or range; to answer an existing thread, use `ptal reply`.
 
 Output is JSON when stdout is not a terminal, or with --json. `comments`
 prints one document:
@@ -168,10 +161,8 @@ prints one document:
    }]}
 
 `state` is \"outdated\" when the quoted lines are no longer at the stored range,
-including after lines were inserted above them. Your own edits cause this:
-threads you just addressed turn outdated, which is expected, so resolve them.
-For one you did not address, re-read the file and, if the comment still
-applies, re-anchor it with `ptal add` rather than trusting the stale range.
+including after lines were inserted above them, so your own edits can cause
+it.
 
 `add`, `reply`, `resolve` and `reopen` print {\"file\", \"thread\"} (no `state`).
 
@@ -1422,43 +1413,6 @@ c2  open  outdated  lines 2-3
     }
 
     #[test]
-    fn top_level_help_says_to_hand_the_human_an_absolute_path() {
-        let fx = fixture("one\n");
-
-        let help = fx.run(&["--help"]).stdout;
-
-        let paragraph = paragraph_with(&help, &["not_a_terminal"]);
-        assert!(
-            paragraph.contains("absolute"),
-            "help never says which path to give the human:\n{paragraph}"
-        );
-    }
-
-    #[test]
-    fn top_level_help_says_why_to_recheck_after_editing() {
-        let fx = fixture("one\n");
-
-        let help = fx.run(&["--help"]).stdout;
-
-        let line = help
-            .lines()
-            .find(|line| line.contains("re-check"))
-            .expect("a re-check workflow line");
-        assert!(line.contains("outdated"), "{line}");
-    }
-
-    #[test]
-    fn top_level_help_says_resolve_note_is_the_closing_comment() {
-        let fx = fixture("one\n");
-
-        let help = fx.run(&["--help"]).stdout;
-
-        let paragraph = paragraph_with(&help, &["Threads are conversations"]);
-        assert!(paragraph.contains("--note"), "{paragraph}");
-        assert!(paragraph.contains("don't reply first"), "{paragraph}");
-    }
-
-    #[test]
     fn top_level_help_shows_how_to_call_add() {
         let fx = fixture("one\n");
 
@@ -1473,19 +1427,29 @@ c2  open  outdated  lines 2-3
     }
 
     #[test]
-    fn top_level_help_says_unclear_comments_stay_open() {
+    fn top_level_help_states_what_each_thread_command_does() {
         let fx = fixture("one\n");
 
         let help = fx.run(&["--help"]).stdout;
 
-        let paragraph = help
-            .split("\n\n")
-            .find(|paragraph| paragraph.contains("unclear"))
-            .unwrap_or_else(|| panic!("help never covers unclear comments:\n{help}"));
-        let paragraph = paragraph.to_lowercase();
-        assert!(paragraph.contains("resolve"), "{paragraph}");
-        assert!(paragraph.contains("open"), "{paragraph}");
-        assert!(paragraph.contains("ptal reply"), "{paragraph}");
+        let paragraph = paragraph_with(&help, &["Threads are conversations"]);
+        for needle in ["ptal reply", "ptal resolve", "ptal reopen", "--note"] {
+            assert!(paragraph.contains(needle), "{needle}: {paragraph}");
+        }
+        let flat = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains("A reply to a resolved thread reopens it"),
+            "{flat}"
+        );
+    }
+
+    #[test]
+    fn top_level_help_says_to_give_the_human_an_absolute_path() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        paragraph_with(&help, &["not_a_terminal", "absolute path"]);
     }
 
     fn paragraph_with(help: &str, needles: &[&str]) -> String {
@@ -1522,25 +1486,6 @@ c2  open  outdated  lines 2-3
     }
 
     #[test]
-    fn top_level_help_says_when_to_reply_resolve_and_reopen() {
-        let fx = fixture("one\n");
-
-        let help = fx.run(&["--help"]).stdout;
-
-        paragraph_with(
-            &help,
-            &[
-                "ptal reply",
-                "ptal resolve",
-                "ptal reopen",
-                "ask",
-                "addressed",
-                "back",
-            ],
-        );
-    }
-
-    #[test]
     fn top_level_help_defines_waiting_on_you_as_the_last_comment_not_yours() {
         let fx = fixture("one\n");
 
@@ -1551,21 +1496,12 @@ c2  open  outdated  lines 2-3
     }
 
     #[test]
-    fn top_level_help_says_to_state_the_interpretation_on_resolve() {
-        let fx = fixture("one\n");
-
-        let help = fx.run(&["--help"]).stdout;
-
-        paragraph_with(&help, &["interpretation", "--note"]);
-    }
-
-    #[test]
     fn top_level_help_says_add_is_for_new_threads_not_answers() {
         let fx = fixture("one\n");
 
         let help = fx.run(&["--help"]).stdout;
 
-        let paragraph = paragraph_with(&help, &["new thread", "not"]);
+        let paragraph = paragraph_with(&help, &["new thread", "ptal reply"]);
         assert!(paragraph.contains("answer"), "{paragraph}");
         assert!(paragraph.contains("ptal add"), "{paragraph}");
     }
