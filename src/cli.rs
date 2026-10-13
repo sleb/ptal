@@ -120,9 +120,15 @@ from disk, so each call sees the other side's latest writes.
 Workflow:
   1. ptal comments <file>             list open threads (--all adds resolved)
   2. edit the file to address them    ptal never modifies the reviewed file
-  3. ptal resolve <file> <id> --as <name> [--note \"what changed\"]
+  3. ptal comments <file>             re-check: your edit moves or changes lines
+  4. ptal resolve <file> <id> --as <name> [--note \"what changed\"]
 
-Use `ptal add` to raise a question of your own on a line or range.
+Use `ptal add <file> --lines <N|A-B> \"<body>\" --as <name>` to raise a
+question of your own on a line or range.
+
+Resolve a thread only when you addressed it. If a comment is unclear or you
+disagree, do not guess: leave the thread open, ask with `ptal add`, and tell
+the human.
 
 Output is JSON when stdout is not a terminal, or with --json. `comments`
 prints one document:
@@ -137,9 +143,10 @@ prints one document:
    }]}
 
 `state` is \"outdated\" when the quoted lines are no longer at the stored range,
-including after lines were inserted above them. Re-read the file and, if the
-comment still applies, re-anchor it with `ptal add` rather than trusting the
-stale range.
+including after lines were inserted above them. Your own edits cause this:
+threads you just addressed turn outdated, which is expected, so resolve them.
+For one you did not address, re-read the file and, if the comment still
+applies, re-anchor it with `ptal add` rather than trusting the stale range.
 
 `add` and `resolve` print {\"file\", \"thread\"} (no `state`).
 
@@ -1111,6 +1118,49 @@ c2  open  outdated  lines 2-3
         ] {
             at(needle);
         }
+    }
+
+    #[test]
+    fn top_level_help_says_to_recheck_after_editing() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let edit = help.find("edit the file").expect("workflow edit step");
+        let resolve = help.find("ptal resolve").expect("workflow resolve step");
+        assert!(
+            help[edit..resolve].contains("ptal comments"),
+            "no re-check between editing and resolving:\n{help}"
+        );
+    }
+
+    #[test]
+    fn top_level_help_shows_how_to_call_add() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let line = help
+            .lines()
+            .find(|line| line.contains("ptal add"))
+            .expect("a line that introduces `ptal add`");
+        assert!(line.contains("--lines"), "{line}");
+        assert!(line.contains("--as"), "{line}");
+    }
+
+    #[test]
+    fn top_level_help_says_unclear_comments_stay_open() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let paragraph = help
+            .split("\n\n")
+            .find(|paragraph| paragraph.contains("unclear"))
+            .unwrap_or_else(|| panic!("help never covers unclear comments:\n{help}"));
+        let paragraph = paragraph.to_lowercase();
+        assert!(paragraph.contains("resolve"), "{paragraph}");
+        assert!(paragraph.contains("open"), "{paragraph}");
     }
 
     #[test]
