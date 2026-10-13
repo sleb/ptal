@@ -6,7 +6,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Widget};
 
-use super::app::{App, Mode};
+use super::app::{App, Marker, Mode};
 
 /// Draw `app` onto `frame`. Reads state only; never mutates it.
 pub fn render(app: &App, frame: &mut Frame) {
@@ -15,11 +15,9 @@ pub fn render(app: &App, frame: &mut Frame) {
         return;
     }
     let buf = frame.buffer_mut();
-    let chrome = match app.mode() {
-        Mode::Normal => 1,
-        Mode::Input { .. } => 3,
-    };
-    let chrome = chrome.min(area.height);
+    let chrome = u16::try_from(app.chrome_rows())
+        .unwrap_or(u16::MAX)
+        .min(area.height);
     let view = Rect {
         height: area.height - chrome,
         ..area
@@ -33,12 +31,25 @@ pub fn render(app: &App, frame: &mut Frame) {
     draw_file(app, buf, view);
     match app.mode() {
         Mode::Normal => draw_footer(app, buf, bottom),
-        Mode::Input { draft, cursor } => draw_input(app, draft, *cursor, buf, bottom),
+        Mode::Panel { scroll, .. } => {
+            // The footer is the panel's last row; the box takes the rest.
+            let rows = bottom.height.saturating_sub(1);
+            let panel = Rect {
+                height: rows,
+                ..bottom
+            };
+            let footer = Rect {
+                y: bottom.y + rows,
+                height: bottom.height - rows,
+                ..bottom
+            };
+            draw_panel(app, *scroll, buf, panel);
+            draw_footer(app, buf, footer);
+        }
+        Mode::Input { draft, cursor, .. } => draw_input(app, draft, *cursor, buf, bottom),
     }
 }
 
-const MARKER: &str = "● ";
-const NO_MARKER: &str = "  ";
 const TAB: &str = "    ";
 
 fn draw_file(app: &App, buf: &mut Buffer, area: Rect) {
@@ -69,14 +80,23 @@ fn draw_file(app: &App, buf: &mut Buffer, area: Rect) {
             Style::new()
         };
         buf.set_style(row, style);
-        let marker = if app.is_marked(index) {
-            MARKER
-        } else {
-            NO_MARKER
-        };
         let text = line.replace('\t', TAB);
-        let row_text = format!("{marker}{:>digits$}│{text}", index + 1);
+        let row_text = format!("  {:>digits$}│{text}", index + 1);
         buf.set_stringn(row.x, row.y, row_text, usize::from(row.width), style);
+        if let Some(marker) = app.marker(index) {
+            let (glyph, color) = glyph(marker);
+            buf.set_stringn(row.x, row.y, glyph, 1, style.patch(color));
+        }
+    }
+}
+
+/// The gutter glyph and the style it adds. The glyph differs by marker, not
+/// just the color, so it survives a monochrome terminal.
+fn glyph(marker: Marker) -> (&'static str, Style) {
+    match marker {
+        Marker::Waiting => ("◆", Style::new().fg(Color::Yellow)),
+        Marker::Open => ("●", Style::new()),
+        Marker::Resolved => ("○", Style::new().add_modifier(Modifier::DIM)),
     }
 }
 
@@ -97,7 +117,11 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
     if app.outdated() > 0 {
         parts.push(format!("{} outdated", app.outdated()));
     }
-    parts.push("enter:comment q:quit".to_string());
+    let hints = match app.mode() {
+        Mode::Panel { .. } => "tab:next a:add j/k:scroll esc:close",
+        _ => "enter:thread/comment ]/[:jump q:quit",
+    };
+    parts.push(hints.to_string());
     buf.set_stringn(
         area.x,
         area.y,
@@ -105,6 +129,27 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
         usize::from(area.width),
         Style::new(),
     );
+}
+
+fn draw_panel(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
+    if area.is_empty() {
+        return;
+    }
+    let block = Block::bordered().title(format!("Threads on line {}", app.cursor() + 1));
+    let inner = block.inner(area);
+    block.render(area, buf);
+    let Some(layout) = app.panel_layout() else {
+        return;
+    };
+    let rows = layout.lines.iter().skip(scroll).zip(inner.rows());
+    for (line, row) in rows {
+        let style = if line.dim {
+            Style::new().add_modifier(Modifier::DIM)
+        } else {
+            Style::new()
+        };
+        buf.set_stringn(row.x, row.y, &line.text, usize::from(row.width), style);
+    }
 }
 
 fn draw_input(app: &App, draft: &str, cursor: usize, buf: &mut Buffer, area: Rect) {
@@ -144,14 +189,14 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::{Color, Modifier};
 
-    const W: u16 = 52;
+    const W: u16 = 66;
 
     fn lines(n: usize) -> Vec<String> {
         (1..=n).map(|i| format!("line {i}")).collect()
     }
 
     fn app_with(lines: Vec<String>, threads: &[ThreadView], rows: u16) -> App {
-        App::open(lines, threads, rows).labeled("plan.md", "scott")
+        App::open(lines, threads, "scott", (W, rows)).labeled("plan.md")
     }
 
     fn draw(app: &App, width: u16, rows: u16) -> Terminal<TestBackend> {
@@ -204,6 +249,242 @@ mod tests {
         }
     }
 
+    fn talk(
+        id: &str,
+        range: (u32, u32),
+        quote: &str,
+        status: Status,
+        state: State,
+        said: &[(&str, &str)],
+    ) -> ThreadView {
+        use crate::model::Comment;
+        let mut view = open_thread(id, range, state);
+        view.thread.anchor.quote = quote.into();
+        view.thread.status = status;
+        view.thread.comments = said
+            .iter()
+            .enumerate()
+            .map(|(i, (author, body))| Comment {
+                id: format!("{id}-{i}"),
+                author: (*author).into(),
+                body: (*body).into(),
+                created_at: format!("2026-10-12T09:{:02}:30Z", 30 + i),
+            })
+            .collect();
+        view
+    }
+
+    fn resolved_by_claude() -> Status {
+        Status::Resolved {
+            resolved_by: "claude".into(),
+            resolved_at: "2026-10-12T10:00:00Z".into(),
+        }
+    }
+
+    /// A panel row: border, `text` padded to the box's inner width, border.
+    fn boxed(text: &str) -> String {
+        format!("│{text:<inner$}│", inner = usize::from(W) - 2)
+    }
+
+    fn box_top(title: &str) -> String {
+        format!(
+            "┌{title}{}┐",
+            "─".repeat(usize::from(W) - 2 - title.chars().count())
+        )
+    }
+
+    fn box_bottom() -> String {
+        format!("└{}┘", "─".repeat(usize::from(W) - 2))
+    }
+
+    fn panel_app(threads: &[ThreadView]) -> App {
+        let mut app = app_with(lines(12), threads, 16);
+        key(&mut app, KeyCode::Enter);
+        app
+    }
+
+    const PANEL_FOOTER: &str = "plan.md  L1/12  tab:next a:add j/k:scroll esc:close";
+
+    #[test]
+    fn the_panel_shows_the_thread_in_a_box_above_the_footer() {
+        let threads = [talk(
+            "c1",
+            (1, 1),
+            "line 1",
+            Status::Open,
+            State::Current,
+            &[("scott", "Why this?"), ("claude", "Because.")],
+        )];
+        let app = panel_app(&threads);
+
+        let screen = screen(&draw(&app, W, 16));
+
+        let expected = [
+            "◆  1│line 1",
+            "   2│line 2",
+            "   3│line 3",
+            "   4│line 4",
+            "   5│line 5",
+            "   6│line 6",
+            "   7│line 7",
+            &box_top("Threads on line 1"),
+            &boxed("▶ c1 open"),
+            &boxed("  > line 1"),
+            &boxed("  scott · 2026-10-12 09:30Z"),
+            &boxed("    Why this?"),
+            &boxed("  claude · 2026-10-12 09:31Z"),
+            &boxed("    Because."),
+            &box_bottom(),
+            PANEL_FOOTER,
+        ]
+        .join("\n");
+        assert_eq!(screen, expected);
+    }
+
+    #[test]
+    fn two_threads_stack_and_the_marker_follows_the_selection() {
+        let threads = [
+            talk(
+                "c1",
+                (1, 1),
+                "a",
+                Status::Open,
+                State::Current,
+                &[("scott", "mine")],
+            ),
+            talk(
+                "c2",
+                (1, 1),
+                "a",
+                Status::Open,
+                State::Current,
+                &[("claude", "theirs")],
+            ),
+        ];
+        let mut app = panel_app(&threads);
+
+        let first = screen(&draw(&app, W, 16));
+        assert!(first.contains("│  c1 open"), "{first}");
+        assert!(
+            first.contains("│▶ c2 open"),
+            "waiting thread starts selected"
+        );
+
+        key(&mut app, KeyCode::Tab);
+        let second = screen(&draw(&app, W, 16));
+        assert!(second.contains("│▶ c1 open"), "{second}");
+        assert!(second.contains("│  c2 open"));
+    }
+
+    #[test]
+    fn a_resolved_thread_is_dim_and_says_who_resolved_it() {
+        let threads = [talk(
+            "c1",
+            (1, 1),
+            "a",
+            resolved_by_claude(),
+            State::Current,
+            &[("scott", "hm")],
+        )];
+        let app = panel_app(&threads);
+
+        let terminal = draw(&app, W, 16);
+
+        let text = screen(&terminal);
+        assert!(text.contains("│▶ c1 resolved by claude"), "{text}");
+        let buffer = terminal.backend().buffer();
+        // Row 8 is the header; column 1 is its marker.
+        assert!(buffer[(1, 8)].modifier.contains(Modifier::DIM));
+        assert!(!buffer[(0, 8)].modifier.contains(Modifier::DIM), "border");
+    }
+
+    #[test]
+    fn an_outdated_thread_is_labeled_in_the_panel() {
+        let threads = [talk(
+            "c1",
+            (1, 1),
+            "old text",
+            Status::Open,
+            State::Outdated,
+            &[("scott", "x")],
+        )];
+        let app = panel_app(&threads);
+
+        let text = screen(&draw(&app, W, 16));
+
+        assert!(text.contains("│▶ c1 open · outdated"), "{text}");
+        assert!(text.contains("│  > old text"));
+    }
+
+    #[test]
+    fn a_scrolled_panel_starts_at_its_scroll_row() {
+        let threads = [talk(
+            "c1",
+            (1, 1),
+            "line 1",
+            Status::Open,
+            State::Current,
+            &[
+                ("scott", "Why this?"),
+                ("claude", "Because."),
+                ("scott", "Ok."),
+            ],
+        )];
+        let mut app = panel_app(&threads);
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+
+        let text = screen(&draw(&app, W, 16));
+
+        let rows: Vec<&str> = text.lines().collect();
+        assert_eq!(rows[8], boxed("  scott · 2026-10-12 09:30Z"));
+        assert!(!text.contains("▶ c1 open"));
+    }
+
+    #[test]
+    fn typing_from_the_panel_swaps_the_box_for_the_input_and_keeps_the_file() {
+        let threads = [talk(
+            "c1",
+            (1, 1),
+            "a",
+            Status::Open,
+            State::Current,
+            &[("claude", "hi")],
+        )];
+        let mut app = panel_app(&threads);
+        key(&mut app, KeyCode::Char('a'));
+        type_text(&mut app, "ok");
+
+        let text = screen(&draw(&app, W, 16));
+
+        assert!(text.contains("┌Comment on line 1 as scott"), "{text}");
+        assert!(text.contains("│ok"));
+        assert!(!text.contains("Threads on line"));
+        assert!(text.starts_with("◆  1│line 1"));
+    }
+
+    #[test]
+    fn the_cursor_line_stays_highlighted_above_the_panel() {
+        let threads = [talk(
+            "c1",
+            (3, 3),
+            "line 3",
+            Status::Open,
+            State::Current,
+            &[("claude", "hi")],
+        )];
+        let mut app = app_with(lines(12), &threads, 16);
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Enter);
+
+        let terminal = draw(&app, W, 16);
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(6, 2)].bg, Color::DarkGray);
+        assert_eq!(buffer[(6, 1)].bg, Color::Reset);
+    }
+
     #[test]
     fn normal_mode_shows_gutter_text_and_a_footer() {
         let app = app_with(lines(12), &[], 8);
@@ -219,7 +500,7 @@ mod tests {
    5│line 5
    6│line 6
    7│line 7
-plan.md  L1/12  enter:comment q:quit"
+plan.md  L1/12  enter:thread/comment ]/[:jump q:quit"
         );
     }
 
@@ -240,10 +521,46 @@ plan.md  L1/12  enter:comment q:quit"
 ●  3│line 3
    4│line 4
    5│line 5
-   6│line 6
+●  6│line 6
    7│line 7
-plan.md  L1/12  1 outdated  enter:comment q:quit"
+plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit"
         );
+    }
+
+    #[test]
+    fn gutter_glyph_and_style_follow_the_marker() {
+        use crate::model::Comment;
+        let said = |mut v: ThreadView, author: &str| {
+            v.thread.comments = vec![Comment {
+                id: "x".into(),
+                author: author.into(),
+                body: "b".into(),
+                created_at: "2026-10-12T10:00:00Z".into(),
+            }];
+            v
+        };
+        let mut resolved = said(open_thread("c3", (3, 3), State::Current), "claude");
+        resolved.thread.status = Status::Resolved {
+            resolved_by: "claude".into(),
+            resolved_at: "2026-10-12T10:00:00Z".into(),
+        };
+        let threads = [
+            said(open_thread("c1", (1, 1), State::Current), "scott"),
+            said(open_thread("c2", (2, 2), State::Current), "claude"),
+            resolved,
+        ];
+        let app = app_with(lines(4), &threads, 8);
+
+        let terminal = draw(&app, W, 8);
+
+        let buffer = terminal.backend().buffer();
+        let cell = |y: u16| &buffer[(0, y)];
+        assert_eq!(cell(0).symbol(), "●");
+        assert_eq!(cell(1).symbol(), "◆");
+        assert_eq!(cell(1).fg, Color::Yellow);
+        assert_eq!(cell(2).symbol(), "○");
+        assert!(cell(2).modifier.contains(Modifier::DIM));
+        assert_eq!(cell(3).symbol(), " ");
     }
 
     #[test]
@@ -301,7 +618,7 @@ plan.md  L1/12  1 outdated  enter:comment q:quit"
 
         let first = screen.lines().next().unwrap();
         assert_eq!(first, "  24│line 24");
-        assert!(screen.ends_with("L30/30  enter:comment q:quit"));
+        assert!(screen.ends_with("L30/30  enter:thread/comment ]/[:jump q:quit"));
     }
 
     #[test]
@@ -322,6 +639,8 @@ plan.md  L1/12  1 outdated  enter:comment q:quit"
                     app_with(lines(5), &[open_thread("c1", (1, 2), State::Current)], rows);
                 draw(&app, width, rows);
                 key(&mut app, KeyCode::Enter);
+                draw(&app, width, rows);
+                key(&mut app, KeyCode::Char('a'));
                 type_text(&mut app, "hello");
                 draw(&app, width, rows);
             }
@@ -336,7 +655,7 @@ plan.md  L1/12  1 outdated  enter:comment q:quit"
 
         assert_eq!(
             screen,
-            "(empty file)\n\n\nplan.md  L0/0  enter:comment q:quit"
+            "(empty file)\n\n\nplan.md  L0/0  enter:thread/comment ]/[:jump q:quit"
         );
     }
 

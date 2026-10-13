@@ -10,9 +10,9 @@ threads. You re-open ptal and see what changed. Comments, replies, and resolved
 state persist across rounds and revisions.
 
 > **Status:** core library, the agent CLI (`comments`, `add`, `resolve`, `reply`,
-> `reopen`), and a minimal TUI (scroll a file, comment on a line, see where
-> threads are) implemented. Replying and resolving from the TUI, ranges, and
-> live refresh are planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
+> `reopen`), and a TUI (scroll a file, comment on a line, read threads and the
+> agent's replies, jump between threads) implemented. Replying and resolving
+> from the TUI, ranges, and live refresh are planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why not a PR?
 
@@ -41,12 +41,19 @@ ptal plan.md            # open the TUI
 | `j` / `k` (or `↓` / `↑`) | Down / up |
 | `ctrl+d` / `ctrl+u` (or `PgDn` / `PgUp`) | Half page down / up |
 | `g` / `G` (or `Home` / `End`) | Top / bottom |
-| `enter` | Comment on the current line; `enter` saves, `esc` cancels |
+| `enter` | On a threaded line: open the thread panel. Otherwise comment on the line; `enter` saves, `esc` cancels |
+| `]` / `[` | Next / previous threaded line |
+| `tab` / `shift+tab` | In the panel: next / previous thread on the line |
+| `j` / `k` | In the panel: scroll |
+| `a` | In the panel: add a thread on this line |
+| `esc` (or `q`, `ctrl+c`) | In the panel: close it |
 | `q` (or `ctrl+c`) | Quit |
 
-Comments are written as `$USER`. A `●` in the gutter marks lines inside an
-open thread; the footer counts threads whose quoted text has since changed
-(`N outdated`). The TUI needs an interactive terminal: run without one it
+Comments are written as `$USER`. The gutter marks lines inside a thread: `●`
+open, `◆` open and waiting on you (its last comment is not yours), `○`
+resolved. The thread panel shows each thread's status, `outdated` state,
+quoted text and comments; resolved threads are dimmed. The footer counts open
+threads whose quoted text has since changed (`N outdated`). The TUI needs an interactive terminal: run without one it
 exits `1` with a `not_a_terminal` JSON error.
 
 **Planned**
@@ -58,7 +65,6 @@ exits `1` with a `not_a_terminal` JSON error.
 | `e` | Edit your own comment |
 | `x` | Resolve / reopen the focused thread |
 | `s` | Toggle the comment sidebar |
-| `[` / `]` | Previous / next thread |
 | `R` | Show / hide resolved threads |
 | `n` / `N` | Next / previous line changed since you last reviewed |
 

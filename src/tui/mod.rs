@@ -1,10 +1,13 @@
-//! The human-facing terminal UI: a read-only file view with line comments.
+//! The human-facing terminal UI: a read-only file view with line comments and
+//! a panel for reading the threads on a line.
 //!
 //! Depends on [`crate::review`] and [`crate::model`] only, never on `store`.
-//! [`app`] is the pure state machine, [`mod@render`] the pure drawing; this
+//! [`app`] is the pure state machine, [`panel`] the pure thread layout,
+//! [`mod@render`] the pure drawing; this
 //! module is the driver that performs the effects `update` asks for.
 
 pub mod app;
+pub mod panel;
 pub mod render;
 
 use std::io;
@@ -26,7 +29,7 @@ use crate::review::{Clock, Reviews, ThreadView, file_lines};
 use app::{App, Effect, Event, update};
 use render::render;
 
-/// A file and its open threads, read but not yet sized for a terminal.
+/// A file and its threads, read but not yet sized for a terminal.
 ///
 /// Loading is split from [`Loaded::into_app`] so that a missing file is
 /// reported before the terminal is queried or touched.
@@ -35,29 +38,30 @@ pub struct Loaded {
     threads: Vec<ThreadView>,
 }
 
-/// Read `file` and its open threads.
+/// Read `file` and all its threads, resolved ones included.
 ///
 /// # Errors
 /// [`crate::Error::FileUnreadable`] plus any store error.
 pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<Loaded> {
     let lines = file_lines(file)?;
-    let threads = reviews.view(file, false)?;
+    let threads = reviews.view(file, true)?;
     Ok(Loaded { lines, threads })
 }
 
 impl Loaded {
-    /// A fresh [`App`] over this file on a terminal `rows` tall.
-    pub fn into_app(self, file: &Path, author: &str, rows: u16) -> App {
-        App::open(self.lines, &self.threads, rows).labeled(file.display().to_string(), author)
+    /// A fresh [`App`] over this file on a terminal of `size` (cols, rows).
+    pub fn into_app(self, file: &Path, author: &str, size: (u16, u16)) -> App {
+        App::open(self.lines, &self.threads, author, size).labeled(file.display().to_string())
     }
 }
 
-/// Terminal rows, for sizing [`Loaded::into_app`] before the session starts.
+/// Terminal (columns, rows), for sizing [`Loaded::into_app`] before the
+/// session starts.
 ///
 /// # Errors
 /// The size could not be queried (there is no terminal).
-pub fn terminal_rows() -> io::Result<u16> {
-    ratatui::crossterm::terminal::size().map(|(_, rows)| rows)
+pub fn terminal_size() -> io::Result<(u16, u16)> {
+    ratatui::crossterm::terminal::size()
 }
 
 /// Put the terminal into TUI mode: raw input on the alternate screen.
@@ -166,7 +170,7 @@ pub fn step<C: Clock>(
                     // The comment is already stored; if the re-read fails
                     // the screen loses its markers rather than offering a
                     // retry that would duplicate the comment.
-                    threads: reviews.view(file, false).unwrap_or_default(),
+                    threads: reviews.view(file, true).unwrap_or_default(),
                 },
                 Err(error) => Event::SaveFailed(error.to_string()),
             };

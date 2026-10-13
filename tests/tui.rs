@@ -15,6 +15,9 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+const COLS: u16 = 60;
+const ROWS: u16 = 24;
+
 struct Sandbox {
     _tmp: tempfile::TempDir,
     data: PathBuf,
@@ -40,7 +43,7 @@ impl Sandbox {
     fn open(&self) -> App {
         load(&self.reviews, &self.file)
             .unwrap()
-            .into_app(&self.file, "scott", 24)
+            .into_app(&self.file, "scott", (COLS, ROWS))
     }
 
     /// Feed `keys` through `step`; `Break` stops the script early.
@@ -57,6 +60,7 @@ fn key(name: &str) -> KeyEvent {
     let code = match name {
         "enter" => KeyCode::Enter,
         "esc" => KeyCode::Esc,
+        "tab" => KeyCode::Tab,
         n if n.chars().count() == 1 => KeyCode::Char(n.chars().next().unwrap()),
         n => panic!("unknown key {n}"),
     };
@@ -64,12 +68,12 @@ fn key(name: &str) -> KeyEvent {
 }
 
 fn screen(app: &App) -> String {
-    let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(COLS, ROWS)).unwrap();
     terminal.draw(|frame| render(app, frame)).unwrap();
     let buffer = terminal.backend().buffer().clone();
     buffer
         .content()
-        .chunks(40)
+        .chunks(usize::from(COLS))
         .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n")
@@ -116,7 +120,7 @@ fn a_saved_comment_shows_in_the_gutter_and_after_reopening() {
     let flow = sb.press(&mut app, &["j", "j", "enter", "x", "enter"]);
 
     assert_eq!(flow, ControlFlow::Continue(()));
-    assert!(app.is_marked(2));
+    assert!(app.marker(2).is_some());
     assert_eq!(app.status(), Some("added c1"));
     let reopened = sb.open();
     assert!(
@@ -136,7 +140,7 @@ fn threads_added_with_a_range_mark_every_line_on_open() {
 
     let app = sb.open();
 
-    let marked: Vec<bool> = (0..5).map(|i| app.is_marked(i)).collect();
+    let marked: Vec<bool> = (0..5).map(|i| app.marker(i).is_some()).collect();
     assert_eq!(marked, [false, true, true, true, false]);
 }
 
@@ -155,7 +159,8 @@ fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
         app.mode(),
         &Mode::Input {
             draft: "ok".into(),
-            cursor: 2
+            cursor: 2,
+            from_panel: None,
         }
     );
     assert!(app.status().unwrap().contains("invalid line range"));
@@ -178,4 +183,92 @@ fn the_reviewed_file_is_not_modified_by_a_comment_round() {
         fs::metadata(&sb.file).unwrap().modified().unwrap(),
     );
     assert_eq!(before, after);
+}
+
+/// The comments command's JSON for the sandbox's file, via the real binary.
+fn cli_comments(sb: &Sandbox) -> serde_json::Value {
+    let out = Command::new(env!("CARGO_BIN_EXE_ptal"))
+        .args(["comments", sb.file.to_str().unwrap()])
+        .env("PTAL_DATA_DIR", &sb.data)
+        .output()
+        .unwrap();
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+#[test]
+fn an_agent_reply_shows_as_waiting_and_is_readable_in_the_panel() {
+    let sb = sandbox(PLAN);
+    sb.reviews
+        .add_thread(&sb.file, 3, 3, "Is this the right name?", "scott")
+        .unwrap();
+    sb.reviews
+        .reply(&sb.file, "c1", "Renamed it, see the diff.", "claude")
+        .unwrap();
+
+    let mut app = sb.open();
+
+    assert!(screen(&app).contains("◆ 3│three"), "{}", screen(&app));
+    let _ = sb.press(&mut app, &["j", "j", "enter"]);
+    let panel = screen(&app);
+    assert!(panel.contains("c1 open"), "{panel}");
+    assert!(panel.contains("> three"), "{panel}");
+    assert!(panel.contains("Is this the right name?"), "{panel}");
+    assert!(panel.contains("claude ·"), "{panel}");
+    assert!(panel.contains("Renamed it, see the diff."), "{panel}");
+}
+
+#[test]
+fn a_from_the_panel_adds_a_second_thread_beside_the_first() {
+    let sb = sandbox(PLAN);
+    sb.reviews
+        .add_thread(&sb.file, 3, 3, "first", "claude")
+        .unwrap();
+    let before = (
+        fs::read(&sb.file).unwrap(),
+        fs::metadata(&sb.file).unwrap().modified().unwrap(),
+    );
+    let mut app = sb.open();
+
+    let flow = sb.press(&mut app, &["j", "j", "enter", "a", "s", "e", "c", "enter"]);
+
+    assert_eq!(flow, ControlFlow::Continue(()));
+    let panel = screen(&app);
+    assert!(panel.contains("c2 open"), "{panel}");
+    assert!(panel.contains("first"), "{panel}");
+    let json = cli_comments(&sb);
+    let threads = json["threads"].as_array().unwrap();
+    assert_eq!(threads.len(), 2);
+    for thread in threads {
+        assert_eq!(thread["anchor"]["start_line"], 3);
+    }
+    assert_eq!(threads[1]["comments"][0]["author"], "scott");
+    assert_eq!(threads[1]["comments"][0]["body"], "sec");
+    let after = (
+        fs::read(&sb.file).unwrap(),
+        fs::metadata(&sb.file).unwrap().modified().unwrap(),
+    );
+    assert_eq!(before, after, "the reviewed file is untouched");
+}
+
+#[test]
+fn a_resolved_thread_shows_hollow_and_is_listed_as_resolved_by_the_agent() {
+    let sb = sandbox(PLAN);
+    sb.reviews
+        .add_thread(&sb.file, 3, 3, "rename?", "scott")
+        .unwrap();
+    sb.reviews
+        .resolve(&sb.file, "c1", "claude", Some("done"))
+        .unwrap();
+
+    let mut app = sb.open();
+
+    assert!(screen(&app).contains("○ 3│three"), "{}", screen(&app));
+    let _ = sb.press(&mut app, &["j", "j", "enter"]);
+    assert!(
+        screen(&app).contains("c1 resolved by claude"),
+        "{}",
+        screen(&app)
+    );
+    let _ = sb.press(&mut app, &["esc"]);
+    assert_eq!(app.mode(), &Mode::Normal);
 }
