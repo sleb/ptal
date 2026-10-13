@@ -9,9 +9,10 @@ your comments through a small JSON CLI, edits the file, replies, and resolves
 threads. You re-open ptal and see what changed. Comments, replies, and resolved
 state persist across rounds and revisions.
 
-> **Status:** core library and the agent CLI (`comments`, `add`, `resolve`)
-> implemented; the TUI is pending. See [ARCHITECTURE.md](ARCHITECTURE.md).
-> The TUI keybindings below are the intended shape, not yet runnable.
+> **Status:** core library, the agent CLI (`comments`, `add`, `resolve`), and
+> a minimal TUI (scroll a file, comment on a line, see where threads are)
+> implemented. Replies, ranges, resolving from the TUI, and live refresh are
+> planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why not a PR?
 
@@ -31,14 +32,27 @@ plans, specs-in-progress, notes. It is inspired by
 ptal plan.md            # open the TUI
 ```
 
-### Keys (proposed)
+### Keys
+
+**Available**
 
 | Key | Action |
 |---|---|
-| `j` / `k` | Down / up |
-| `ctrl+d` / `ctrl+u` | Half page down / up |
-| `g` / `G` | Top / bottom |
-| `enter` | Comment on the current line |
+| `j` / `k` (or `↓` / `↑`) | Down / up |
+| `ctrl+d` / `ctrl+u` (or `PgDn` / `PgUp`) | Half page down / up |
+| `g` / `G` (or `Home` / `End`) | Top / bottom |
+| `enter` | Comment on the current line; `enter` saves, `esc` cancels |
+| `q` (or `ctrl+c`) | Quit |
+
+Comments are written as `$USER`. A `●` in the gutter marks lines inside an
+open thread; the footer counts threads whose quoted text has since changed
+(`N outdated`). The TUI needs an interactive terminal: run without one it
+exits `1` with a `not_a_terminal` JSON error.
+
+**Planned**
+
+| Key | Action |
+|---|---|
 | `v` | Visual select, then `enter` to comment on the range |
 | `r` | Reply to the focused comment |
 | `e` | Edit your own comment |
@@ -47,9 +61,6 @@ ptal plan.md            # open the TUI
 | `[` / `]` | Previous / next thread |
 | `R` | Show / hide resolved threads |
 | `n` / `N` | Next / previous line changed since you last reviewed |
-| `q` | Quit |
-
-Gutter markers show lines changed since the revision you last reviewed.
 
 ### For agents
 

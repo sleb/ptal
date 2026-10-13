@@ -15,6 +15,7 @@ use crate::error::Error;
 use crate::model::{Anchor, State, Status, Thread};
 use crate::review::{Clock, Reviews, SystemClock, ThreadView};
 use crate::store::Store;
+use crate::tui;
 
 /// The caller can fix the invocation: usage, author, unknown id, bad range.
 const EXIT_CALLER: u8 = 2;
@@ -28,6 +29,10 @@ pub enum Failure {
     Usage(String),
     /// A write command had neither `--as` nor `PTAL_AUTHOR`.
     MissingAuthor,
+    /// `ptal <file>` needs an interactive terminal on stdin and stdout.
+    NotATerminal,
+    /// The terminal failed while the TUI was running.
+    Terminal(io::Error),
     /// The core refused or failed.
     Core(Error),
 }
@@ -38,6 +43,8 @@ impl Failure {
         match self {
             Failure::Usage(_) => ("usage", EXIT_CALLER),
             Failure::MissingAuthor => ("missing_author", EXIT_CALLER),
+            Failure::NotATerminal => ("not_a_terminal", EXIT_RUNTIME),
+            Failure::Terminal(_) => ("terminal", EXIT_RUNTIME),
             Failure::Core(error) => match error {
                 Error::EmptyAuthor => ("missing_author", EXIT_CALLER),
                 Error::NotFound(_) => ("not_found", EXIT_CALLER),
@@ -58,6 +65,11 @@ impl Failure {
         match self {
             Failure::Usage(message) => message.clone(),
             Failure::MissingAuthor => "no author: pass --as <name> or set PTAL_AUTHOR".to_string(),
+            Failure::NotATerminal => {
+                "the interactive view needs a terminal; agents should use `ptal comments`"
+                    .to_string()
+            }
+            Failure::Terminal(error) => format!("terminal error: {error}"),
             Failure::Core(error) => error.to_string(),
         }
     }
@@ -72,6 +84,10 @@ pub struct Env<C: Clock> {
     pub reviews: Option<Reviews<C>>,
     /// Value of `PTAL_AUTHOR`, if set.
     pub author_env: Option<String>,
+    /// Value of `USER`, if set: who the TUI writes comments as.
+    pub user: Option<String>,
+    /// Whether stdin is a terminal (the TUI reads keys from it).
+    pub stdin_is_tty: bool,
     /// Whether stdout is a terminal (selects readable output).
     pub stdout_is_tty: bool,
     /// Whether stderr is a terminal (selects readable errors).
@@ -96,9 +112,10 @@ Examples:
   ptal resolve plan.md c3 --as claude --note \"Done, see step 2.\"";
 
 const WORKFLOW: &str = "\
-Review a throwaway text file. A human comments on lines in the TUI; you read
-and answer those comments here. Every command reads from disk, so each call
-sees the other side's latest writes.
+Review a throwaway text file. A human comments on lines in the TUI, opened
+with `ptal <file>` (interactive terminals only; without one it fails with
+not_a_terminal). You read and answer those comments here. Every command reads
+from disk, so each call sees the other side's latest writes.
 
 Workflow:
   1. ptal comments <file>             list open threads (--all adds resolved)
@@ -137,7 +154,7 @@ Exit codes:
   2  fix the invocation: usage, missing_author, not_found, invalid_range,
      empty_body
   1  runtime failure: file_unreadable, locked, unsupported_schema, io,
-     corrupt, no_data_dir
+     corrupt, no_data_dir, not_a_terminal, terminal
 
 Data lives under PTAL_DATA_DIR (default ~/.local/share/ptal).";
 
@@ -147,14 +164,21 @@ Data lives under PTAL_DATA_DIR (default ~/.local/share/ptal).";
     version,
     about = "Review a throwaway text file",
     long_about = WORKFLOW,
+    args_conflicts_with_subcommands = true,
+    arg_required_else_help = true,
+    override_usage = "ptal <FILE>\n       ptal [--json] <COMMAND>",
 )]
 struct Cli {
     /// Always print JSON, even on a terminal.
     #[arg(long, global = true)]
     json: bool,
 
+    /// Open FILE in the interactive view (a file named like a subcommand
+    /// needs a path: `./comments`).
+    file: Option<PathBuf>,
+
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -322,32 +346,19 @@ where
         Err(e) => return finish(out, &e.to_string(), 0),
     };
 
-    let file = match &cli.command {
-        Command::Comments { file, .. }
-        | Command::Add { file, .. }
-        | Command::Resolve { file, .. } => file,
+    let json = cli.json;
+    let result = match (cli.command, cli.file) {
+        (Some(command), _) => run_command(&command, env, out, json),
+        (None, Some(file)) => launch_tui(&file, env),
+        (None, None) => Err(Failure::Usage(
+            "a FILE or a COMMAND is required; see --help".to_string(),
+        )),
     };
-    let result = dispatch(&cli.command, env).and_then(|output| {
-        let canonical = std::fs::canonicalize(file).map_err(|source| {
-            Failure::Core(Error::FileUnreadable {
-                path: file.clone(),
-                source,
-            })
-        })?;
-        Ok((canonical, output))
-    });
     match result {
-        Ok((canonical, output)) => {
-            let text = if cli.json || !env.stdout_is_tty {
-                output.to_json(&canonical)
-            } else {
-                output.to_text()
-            };
-            finish(out, &text, 0)
-        }
+        Ok(()) => 0,
         Err(failure) => {
             let (_, code) = failure.classify();
-            let text = if env.stderr_is_tty && !cli.json {
+            let text = if env.stderr_is_tty && !json {
                 format!("error: {}\n", failure.message())
             } else {
                 error_line(&failure)
@@ -355,6 +366,59 @@ where
             finish(err, &text, code)
         }
     }
+}
+
+/// Execute an agent command and print its result to `out`.
+fn run_command<C: Clock>(
+    command: &Command,
+    env: &Env<C>,
+    out: &mut dyn Write,
+    json: bool,
+) -> Result<(), Failure> {
+    let file = match command {
+        Command::Comments { file, .. }
+        | Command::Add { file, .. }
+        | Command::Resolve { file, .. } => file,
+    };
+    let output = dispatch(command, env)?;
+    let canonical = std::fs::canonicalize(file).map_err(|source| {
+        Failure::Core(Error::FileUnreadable {
+            path: file.clone(),
+            source,
+        })
+    })?;
+    let text = if json || !env.stdout_is_tty {
+        output.to_json(&canonical)
+    } else {
+        output.to_text()
+    };
+    match finish(out, &text, 0) {
+        0 => Ok(()),
+        _ => Err(Failure::Terminal(io::Error::other(
+            "cannot write to stdout",
+        ))),
+    }
+}
+
+/// Open the interactive view. Everything that can be refused is refused
+/// here, before the terminal is touched.
+fn launch_tui<C: Clock>(file: &Path, env: &Env<C>) -> Result<(), Failure> {
+    if !(env.stdin_is_tty && env.stdout_is_tty) {
+        return Err(Failure::NotATerminal);
+    }
+    let author = env
+        .user
+        .as_deref()
+        .map(str::trim)
+        .filter(|user| !user.is_empty())
+        .ok_or(Failure::MissingAuthor)?;
+    let reviews = env
+        .reviews
+        .as_ref()
+        .ok_or(Failure::Core(Error::NoDataDir))?;
+    let rows = tui::terminal_rows().map_err(Failure::Terminal)?;
+    let app = tui::open(reviews, file, author, rows)?;
+    tui::run(app, reviews, file, author).map_err(Failure::Terminal)
 }
 
 fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure> {
@@ -429,6 +493,8 @@ pub fn main() -> ExitCode {
             .ok()
             .map(|store| Reviews::with_clock(store, SystemClock)),
         author_env: std::env::var("PTAL_AUTHOR").ok(),
+        user: std::env::var("USER").ok(),
+        stdin_is_tty: io::stdin().is_terminal(),
         stdout_is_tty,
         stderr_is_tty,
     };
@@ -459,6 +525,8 @@ mod tests {
         let table: Vec<(Failure, &str, u8)> = vec![
             (Failure::Usage("bad".into()), "usage", 2),
             (Failure::MissingAuthor, "missing_author", 2),
+            (Failure::NotATerminal, "not_a_terminal", 1),
+            (Failure::Terminal(io_err()), "terminal", 1),
             (Failure::Core(Error::EmptyAuthor), "missing_author", 2),
             (Failure::Core(Error::NotFound("c9".into())), "not_found", 2),
             (
@@ -572,6 +640,8 @@ mod tests {
             Env {
                 reviews: Some(Reviews::with_clock(Store::new(&self.data), clock)),
                 author_env: author.map(String::from),
+                user: Some("scott".into()),
+                stdin_is_tty: tty,
                 stdout_is_tty: tty,
                 stderr_is_tty: tty,
             }
@@ -907,7 +977,7 @@ mod tests {
         let fx = fixture("one\n");
 
         for args in [
-            &["frobnicate"][..],
+            &["--frobnicate"][..],
             &["comments"],
             &["comments", "FILE", "--nope"],
             &[],
@@ -923,7 +993,7 @@ mod tests {
     fn usage_errors_are_clap_text_on_a_tty_stderr() {
         let fx = fixture("one\n");
 
-        let out = fx.run_with(&["frobnicate"], &fx.env(None, true));
+        let out = fx.run_with(&["--frobnicate"], &fx.env(None, true));
 
         assert_eq!(out.code, 2);
         assert!(out.stderr.contains("frobnicate"));
@@ -1055,5 +1125,111 @@ c2  open  outdated  lines 2-3
                 "{command}:\n{help}"
             );
         }
+    }
+
+    // ---- bare `ptal <file>` (the TUI) --------------------------------------
+
+    #[test]
+    fn a_file_without_a_terminal_is_not_a_terminal() {
+        let fx = fixture("one\n");
+        let piped_out = Env {
+            stdout_is_tty: false,
+            stderr_is_tty: false,
+            ..fx.env(None, true)
+        };
+        let piped_in = Env {
+            stdin_is_tty: false,
+            stderr_is_tty: false,
+            ..fx.env(None, true)
+        };
+
+        for env in [fx.env(None, false), piped_out, piped_in] {
+            let out = fx.run_with(&["FILE"], &env);
+            assert_eq!(out.code, 1);
+            assert_eq!(out.stdout, "");
+            assert_eq!(out.error_code(), "not_a_terminal");
+        }
+        assert!(fx.review_bytes().is_empty());
+    }
+
+    #[test]
+    fn the_tui_needs_a_user_before_it_touches_the_terminal() {
+        let fx = fixture("one\n");
+        for user in [None, Some("  ".to_string())] {
+            let env = Env {
+                user,
+                stderr_is_tty: false,
+                ..fx.env(None, true)
+            };
+
+            let out = fx.run_with(&["FILE"], &env);
+
+            assert_eq!(out.code, 2);
+            assert_eq!(out.stdout, "");
+            assert_eq!(out.error_code(), "missing_author");
+        }
+    }
+
+    #[test]
+    fn the_tui_reports_a_missing_file_before_touching_the_terminal() {
+        let fx = fixture("one\n");
+        fs::remove_file(&fx.file).unwrap();
+
+        let out = fx.run_with(&["FILE", "--json"], &fx.env(None, true));
+
+        assert_eq!(out.code, 1);
+        assert_eq!(out.stdout, "");
+        assert_eq!(out.error_code(), "file_unreadable");
+    }
+
+    #[test]
+    fn a_path_named_like_a_subcommand_is_a_file_when_written_with_dot_slash() {
+        let fx = fixture("one\n");
+
+        let out = fx.run_with(&["./comments", "--json"], &fx.env(None, true));
+
+        assert_eq!(out.error_code(), "file_unreadable");
+        assert!(out.stderr.contains("./comments"), "{}", out.stderr);
+    }
+
+    #[test]
+    fn subcommands_still_parse_with_the_bare_file_form_present() {
+        let fx = fixture("one\n");
+
+        let out = fx.run(&["comments", "FILE"]);
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_eq!(out.json()["threads"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn no_arguments_print_help_and_exit_2() {
+        let fx = fixture("one\n");
+
+        let out = fx.run_with(&[], &fx.env(None, true));
+
+        assert_eq!(out.code, 2);
+        assert_eq!(out.stdout, "");
+        assert!(out.stderr.contains("Usage"), "{}", out.stderr);
+    }
+
+    #[test]
+    fn json_flag_alone_is_a_usage_error_not_a_hang() {
+        let fx = fixture("one\n");
+
+        let out = fx.run(&["--json"]);
+
+        assert_eq!(out.code, 2);
+        assert_eq!(out.error_code(), "usage");
+    }
+
+    #[test]
+    fn top_level_help_introduces_the_human_entry_point() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        assert!(help.contains("ptal <file>"), "{help}");
+        assert!(help.contains("not_a_terminal"), "{help}");
     }
 }

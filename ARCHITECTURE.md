@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built (MVP subset): `add_thread`, `view`, `resolve` |
 | `cli` | Built (MVP subset): `comments`, `add`, `resolve` |
-| `tui` | Next story |
+| `tui` | Built (MVP subset): `Normal`/`Input` modes, gutter markers, add a one-line comment |
 | `anchor`, `highlight`, `diffview` | Deferred |
 
 Deferred within built components: revisions and snapshots, anchor mapping
@@ -163,10 +163,15 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 - `resolve(file, id, author, note?)` — marks the thread resolved; a note is
   appended as a second comment by the resolver.
 
+Free function `file_lines(file)` returns the file's lines under the rule
+below, so a front end that displays the file shows exactly what
+`add_thread` quotes.
+
 **Invariants**
 - Lines are read with `str::lines()` (`\n` or `\r\n`, final newline
-  ignored); the file must be valid UTF-8. The same helper takes the quote at
-  `add_thread` and checks it in `view`.
+  ignored); the file must be valid UTF-8. `file_lines` is the one helper: it
+  supplies the quote at `add_thread`, the check in `view`, and the TUI's
+  display.
 - `state` is `outdated` iff the stored range no longer exists in the file or
   its text differs from `quote`. There is no mapping between versions of the
   file: inserting lines above an anchor makes it `outdated`.
@@ -192,8 +197,12 @@ with the process facts (store, clock, `PTAL_AUTHOR`, TTY flags) injected via
 `Env`, so every path is testable in-process; `main` only fills `Env` from the
 real process.
 
-Commands: `comments`, `add`, `resolve`. Bare `ptal <file>` (the TUI) is not
-built; how it coexists with subcommand names is decided with the TUI.
+Commands: `comments`, `add`, `resolve`. Bare `ptal <file>` launches the TUI
+(`args_conflicts_with_subcommands`; a file named like a subcommand is written
+`./name`). `run` splits into `run_command` and `launch_tui`; the latter
+refuses everything it can before the terminal is touched: no TTY on stdin and
+stdout (`not_a_terminal`), blank `$USER` (`missing_author`), unreadable file.
+The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
 
 **Contract**
 - **stdout** is data only: JSON when not a TTY (or `--json`), a readable
@@ -223,25 +232,51 @@ built; how it coexists with subcommand names is decided with the TUI.
 types, so changing them is a `schema_version` bump.
 
 ### `tui`
-*Not built yet.* Next story.
 
-**Role:** the human front end (ratatui + crossterm).
+**Role:** the human front end (ratatui; crossterm via `ratatui::crossterm`).
+Depends on `review` and `model` only.
 
-Internally: `App` state (cursor, selection, scroll, focused thread, mode),
-`Mode` = `Normal | Visual | Input(comment draft) | Help`, an `update(state,
-event)` function, and a pure `render(state, view)`.
+Three parts:
+
+- `tui::app`: `App` state (`lines`, `cursor`, `top`, terminal `rows`, `mode`,
+  gutter `markers`, `outdated` count, footer `status`), `Mode = Normal |
+  Input { draft, cursor }`, and `update(&mut App, Event) -> Option<Effect>`.
+  `Event` is `Key | Resize | Saved { id, threads } | SaveFailed`; `Effect` is
+  `Save { line, body } | Quit`. `update` does no I/O and reads no clock.
+- `tui::render`: `render(&App, &mut Frame)`, pure over state. One file line
+  is one screen row (long lines are truncated, tabs shown as four spaces).
+  Gutter: `●` on lines inside an open, current thread, then the line number,
+  then `│`. Footer: path (or the last save message), `L<line>/<total>`,
+  `N outdated`, key hints. In `Input` the bordered 3-row box replaces the
+  footer and the view shrinks to stay above it; the draft scrolls sideways
+  instead of wrapping, and the cursor is a reversed cell.
+- `tui` (module root): the driver. `open` loads lines (`review::file_lines`)
+  and open threads; `step(app, event, reviews, file, author)` is the only
+  place effects are performed (`Save` → `Reviews::add_thread`, then
+  `Reviews::view` → `Event::Saved`); `run` is the blocking loop (read event →
+  `step` → draw) on a `TerminalSession`.
 
 **Invariants**
-- All keys are handled in `update`; `render` is pure over state and holds no
-  logic. The state machine can be tested without a terminal.
-- The TUI owns no persistent state. Every write goes through `review`; after a
-  write it re-reads `view` rather than patching local state.
-- External change is expected: the agent edits the file or writes comments
-  while the TUI is open. The TUI polls the file and `review.json` mtimes and
-  re-syncs, preserving cursor position by mapping it through `anchor`.
-- Unsent comment drafts survive a re-sync.
-- Terminal state is always restored on exit, including panic.
-- Display only; never mutates the reviewed file.
+- All keys are handled in `update`; `render` holds no logic. The state
+  machine is tested without a terminal.
+- The TUI owns no persistent state. Every write goes through `review`; after
+  a write it re-reads `view` rather than patching local state.
+- `top <= cursor < top + height` after every event, where height is the rows
+  left after the footer (or input box).
+- A failed save keeps the draft and mode and shows the error; nothing is lost
+  silently.
+- The terminal is restored on every exit path: `TerminalSession` restores on
+  drop (normal return, `?`, unwinding), and a chained panic hook restores
+  before the panic message prints. `SIGTERM`/`SIGHUP` skip both and are not
+  handled.
+- Display only; never mutates the reviewed file (it is read once on open).
+
+*Deferred within `tui`:* `Visual` and `Help` modes; wrapping long lines in the
+file view; polling the file and `review.json` mtimes and re-syncing; draft
+survival across a re-sync; mapping the cursor through `anchor`; viewing,
+editing, and resolving threads; thread navigation. Until live refresh exists,
+the screen shows the file as read at open, while `add_thread` quotes the file
+as it is at save time.
 
 ### `highlight`
 *Deferred.*
@@ -296,8 +331,12 @@ state or `review`.
 - `cli`: in-process tests (golden JSON, TTY rendering, error table, help) in
   `src/cli.rs`; process tests in `tests/cli.rs` for streams, exit status, and
   env. Schema conformance is deferred with `ptal schema`.
-- `tui`: drive `update` with scripted key events and assert on state and on
-  `TestBackend` snapshots.
+- `tui`: scripted key events through `update` assert on state; `TestBackend`
+  snapshots (inline expected strings) cover Normal and Input rendering;
+  `tests/tui.rs` runs scripted rounds through `step` against a real
+  `Reviews`; the terminal guard and panic hook are tested with injected
+  `restore` functions (`tests/panic_hook.rs` is its own process because the
+  panic hook is global). A real-terminal check (pty) is manual.
 
 ## Deferred
 

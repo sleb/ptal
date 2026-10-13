@@ -99,8 +99,9 @@ impl<C: Clock> Reviews<C> {
         if body.trim().is_empty() {
             return Err(Error::EmptyBody);
         }
-        let text = read_text(file)?;
-        let quote = quote_of(&text, start, end).ok_or_else(|| invalid_range(&text, start, end))?;
+        let lines = file_lines(file)?;
+        let quote =
+            quote_of(&lines, start, end).ok_or_else(|| invalid_range(&lines, start, end))?;
         let created_at = self.clock.now();
 
         self.store.with_review(file, |review| {
@@ -147,14 +148,14 @@ impl<C: Clock> Reviews<C> {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn view(&self, file: &Path, include_resolved: bool) -> Result<Vec<ThreadView>> {
-        let text = read_text(file)?;
+        let lines = file_lines(file)?;
         let review = self.store.load(file)?;
         Ok(review
             .threads
             .into_iter()
             .filter(|t| include_resolved || t.status == Status::Open)
             .map(|thread| {
-                let current = quote_of(&text, thread.anchor.start_line, thread.anchor.end_line)
+                let current = quote_of(&lines, thread.anchor.start_line, thread.anchor.end_line)
                     .is_some_and(|q| q == thread.anchor.quote);
                 let state = if current {
                     State::Current
@@ -235,35 +236,50 @@ fn require_author(author: &str) -> Result<()> {
     }
 }
 
-fn read_text(file: &Path) -> Result<String> {
-    fs::read_to_string(file).map_err(|source| Error::FileUnreadable {
+/// The lines of `file`, split the way the core splits them everywhere.
+///
+/// Splitting is [`str::lines`]: `\n` or `\r\n`, ignoring a final trailing
+/// newline. `add_thread` quotes from, and `view` checks against, this same
+/// list, so a front end that displays it shows exactly what gets anchored.
+///
+/// # Errors
+/// [`Error::FileUnreadable`] if the file is missing, unreadable, or not
+/// UTF-8.
+///
+/// # Examples
+/// ```
+/// # use ptal::review::file_lines;
+/// # let dir = tempfile::tempdir()?;
+/// # let file = dir.path().join("plan.md");
+/// std::fs::write(&file, "# Plan\r\nstep one\n")?;
+/// assert_eq!(file_lines(&file)?, ["# Plan", "step one"]);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn file_lines(file: &Path) -> Result<Vec<String>> {
+    let text = fs::read_to_string(file).map_err(|source| Error::FileUnreadable {
         path: file.to_path_buf(),
         source,
-    })
+    })?;
+    Ok(text.lines().map(String::from).collect())
 }
 
-/// Lines `start..=end` (1-based) of `text` joined by `\n`, or `None` if the
+/// Lines `start..=end` (1-based) of `lines` joined by `\n`, or `None` if the
 /// range is empty, starts before line 1, or runs past the end.
-///
-/// Line splitting is [`str::lines`]: `\n` or `\r\n`, ignoring a final
-/// trailing newline. Shared by `add_thread` (to take the quote) and `view`
-/// (to check it), so both always agree on what a line is.
-fn quote_of(text: &str, start: u32, end: u32) -> Option<String> {
+fn quote_of(lines: &[String], start: u32, end: u32) -> Option<String> {
     if start == 0 || start > end {
         return None;
     }
-    let lines: Vec<&str> = text.lines().collect();
     let range = lines.get(start as usize - 1..end as usize)?;
     Some(range.join("\n"))
 }
 
-fn invalid_range(text: &str, start: u32, end: u32) -> Error {
+fn invalid_range(lines: &[String], start: u32, end: u32) -> Error {
     let reason = if start == 0 {
         "lines are numbered from 1"
     } else if start > end {
         "start is after end"
     } else {
-        debug_assert!(text.lines().count() < end as usize);
+        debug_assert!(lines.len() < end as usize);
         "range extends past the end of the file"
     };
     Error::InvalidRange { start, end, reason }
@@ -317,6 +333,42 @@ mod tests {
                 .into_iter()
                 .map(|v| v.thread.id)
                 .collect()
+        }
+    }
+
+    // --- file_lines ---
+
+    #[test]
+    fn file_lines_splits_like_str_lines() {
+        let fx = fixture();
+        fs::write(&fx.file, "one\r\ntwo\nthree").unwrap();
+
+        assert_eq!(file_lines(&fx.file).unwrap(), ["one", "two", "three"]);
+    }
+
+    #[test]
+    fn file_lines_of_a_missing_or_non_utf8_file_is_unreadable() {
+        let fx = fixture();
+        let binary = fx.file.with_file_name("bin.md");
+        fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
+
+        for path in [fx.file.with_file_name("nope.md"), binary] {
+            assert!(matches!(
+                file_lines(&path),
+                Err(Error::FileUnreadable { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn add_thread_quote_is_the_file_lines_entry() {
+        let fx = fixture();
+        fs::write(&fx.file, "a\r\nb\r\n\r\nd").unwrap();
+        let lines = file_lines(&fx.file).unwrap();
+
+        for n in 1..=lines.len() as u32 {
+            let thread = fx.reviews.add_thread(&fx.file, n, n, "x", "s").unwrap();
+            assert_eq!(thread.anchor.quote, lines[n as usize - 1]);
         }
     }
 
