@@ -158,7 +158,7 @@ mod tests {
     }
 
     fn app_with(lines: Vec<String>, threads: &[ThreadView], rows: u16) -> App {
-        App::open(lines, threads, rows).labeled("plan.md", "scott")
+        App::open(lines, threads, "scott", (W, rows)).labeled("plan.md")
     }
 
     fn draw(app: &App, width: u16, rows: u16) -> Terminal<TestBackend> {

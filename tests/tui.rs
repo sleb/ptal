@@ -40,7 +40,7 @@ impl Sandbox {
     fn open(&self) -> App {
         load(&self.reviews, &self.file)
             .unwrap()
-            .into_app(&self.file, "scott", 24)
+            .into_app(&self.file, "scott", (40, 24))
     }
 
     /// Feed `keys` through `step`; `Break` stops the script early.

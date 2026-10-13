@@ -55,6 +55,8 @@ pub struct App {
     pub(super) lines: Vec<String>,
     pub(super) cursor: usize,
     pub(super) top: usize,
+    /// Terminal width; the thread panel wraps to it.
+    pub(super) cols: usize,
     pub(super) rows: usize,
     pub(super) mode: Mode,
     pub(super) status: Option<String>,
@@ -87,29 +89,35 @@ const FOOTER_ROWS: usize = 1;
 const INPUT_BOX_ROWS: usize = 3;
 
 impl App {
-    /// A view over `lines` on a terminal `rows` tall, with gutter markers
-    /// for `threads` (every thread, resolved ones too).
-    pub fn open(lines: Vec<String>, threads: &[ThreadView], rows: u16) -> Self {
+    /// A view over `lines` on a terminal `cols` x `rows` cells, with gutter
+    /// markers for `threads` (every thread, resolved ones too). `author` is
+    /// who comments are written as, and whose last word is not "waiting".
+    pub fn open(
+        lines: Vec<String>,
+        threads: &[ThreadView],
+        author: &str,
+        (cols, rows): (u16, u16),
+    ) -> Self {
         let mut app = App {
             lines,
             cursor: 0,
             top: 0,
+            cols: usize::from(cols),
             rows: usize::from(rows),
             mode: Mode::Normal,
             status: None,
             file: String::new(),
-            author: String::new(),
+            author: author.to_string(),
             threads: threads.to_vec(),
         };
         app.clamp_view();
         app
     }
 
-    /// Label the screen with the file path and the commenting author.
+    /// Label the screen with the file path.
     #[must_use]
-    pub fn labeled(mut self, file: impl Into<String>, author: impl Into<String>) -> Self {
+    pub fn labeled(mut self, file: impl Into<String>) -> Self {
         self.file = file.into();
-        self.author = author.into();
         self
     }
 
@@ -266,7 +274,8 @@ pub fn update(app: &mut App, event: Event) -> Option<Effect> {
 
 fn apply(app: &mut App, event: Event) -> Option<Effect> {
     match event {
-        Event::Resize(_, rows) => {
+        Event::Resize(cols, rows) => {
+            app.cols = usize::from(cols);
             app.rows = usize::from(rows);
             None
         }
@@ -380,7 +389,7 @@ mod tests {
     /// `n` lines on a terminal of `rows` rows (one is the footer).
     fn app(n: usize, rows: u16) -> App {
         let lines = (1..=n).map(|i| format!("line {i}")).collect();
-        App::open(lines, &[], rows)
+        App::open(lines, &[], "scott", (80, rows))
     }
 
     fn send(app: &mut App, events: impl IntoIterator<Item = Event>) {
@@ -471,6 +480,16 @@ mod tests {
     }
 
     #[test]
+    fn open_and_resize_record_the_terminal_width_too() {
+        let mut a = app(3, 10);
+        assert_eq!((a.cols, a.rows), (80, 10));
+
+        send(&mut a, [Event::Resize(33, 7)]);
+
+        assert_eq!((a.cols, a.rows), (33, 7));
+    }
+
+    #[test]
     fn q_and_ctrl_c_quit() {
         for event in [ch('q'), ctrl('c')] {
             let mut a = app(3, 10);
@@ -528,7 +547,7 @@ mod tests {
 
     #[test]
     fn an_empty_file_ignores_moves_without_panicking() {
-        let mut a = App::open(Vec::new(), &[], 10);
+        let mut a = App::open(Vec::new(), &[], "scott", (80, 10));
 
         send(
             &mut a,
@@ -567,7 +586,7 @@ mod tests {
 
     #[test]
     fn enter_on_an_empty_file_is_a_no_op() {
-        let mut a = App::open(Vec::new(), &[], 10);
+        let mut a = App::open(Vec::new(), &[], "scott", (80, 10));
 
         assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
         assert_eq!(a.mode, Mode::Normal);
@@ -761,7 +780,7 @@ mod tests {
 
     fn open_view(threads: &[ThreadView], n: usize) -> App {
         let lines = (1..=n).map(|i| i.to_string()).collect();
-        App::open(lines, threads, 10).labeled("plan.md", "scott")
+        App::open(lines, threads, "scott", (80, 10)).labeled("plan.md")
     }
 
     fn markers(a: &App) -> Vec<Option<Marker>> {
@@ -873,7 +892,7 @@ mod tests {
     fn a_range_past_the_end_of_the_file_cannot_index_out_of_range() {
         let threads = [view("c1", (2, 99), Status::Open, State::Current)];
 
-        let a = App::open(vec!["a".into(), "b".into()], &threads, 10);
+        let a = App::open(vec!["a".into(), "b".into()], &threads, "scott", (80, 10));
 
         assert_eq!(a.marker(1), Some(Marker::Open));
         assert_eq!(a.marker(2), None);
@@ -935,7 +954,7 @@ mod tests {
             view("c3", (10, 10), Status::Open, State::Outdated),
         ];
         let lines = (1..=12).map(|i| i.to_string()).collect();
-        App::open(lines, &threads, 6)
+        App::open(lines, &threads, "scott", (80, 6))
     }
 
     #[test]

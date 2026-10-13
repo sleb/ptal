@@ -46,18 +46,19 @@ pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<Loaded> {
 }
 
 impl Loaded {
-    /// A fresh [`App`] over this file on a terminal `rows` tall.
-    pub fn into_app(self, file: &Path, author: &str, rows: u16) -> App {
-        App::open(self.lines, &self.threads, rows).labeled(file.display().to_string(), author)
+    /// A fresh [`App`] over this file on a terminal of `size` (cols, rows).
+    pub fn into_app(self, file: &Path, author: &str, size: (u16, u16)) -> App {
+        App::open(self.lines, &self.threads, author, size).labeled(file.display().to_string())
     }
 }
 
-/// Terminal rows, for sizing [`Loaded::into_app`] before the session starts.
+/// Terminal (columns, rows), for sizing [`Loaded::into_app`] before the
+/// session starts.
 ///
 /// # Errors
 /// The size could not be queried (there is no terminal).
-pub fn terminal_rows() -> io::Result<u16> {
-    ratatui::crossterm::terminal::size().map(|(_, rows)| rows)
+pub fn terminal_size() -> io::Result<(u16, u16)> {
+    ratatui::crossterm::terminal::size()
 }
 
 /// Put the terminal into TUI mode: raw input on the alternate screen.
