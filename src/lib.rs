@@ -8,5 +8,6 @@ pub mod error;
 pub mod model;
 pub mod review;
 pub mod store;
+pub mod tui;
 
 pub use error::{Error, Result};
