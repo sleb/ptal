@@ -24,7 +24,7 @@ case $turn in
     rm -rf "$b"
     mkdir -p "$b/skills" "$b/data"
     cp -R "$sandbox/a/skills/draft-plan" "$b/skills/draft-plan"
-    cp "$repo/scripts/fixtures/task.md" "$b/task.md"
+    cp "$repo/scripts/fixtures/task.md" "$repo/scripts/fixtures/deploy.sh" "$b/"
     run 1 "Follow skills/draft-plan/SKILL.md to plan the task in task.md."
     session=$(grep -o '"session_id":"[^"]*"' "$b/trace-1.jsonl" | head -1 | cut -d'"' -f4)
     echo "$session" > "$b/session"
