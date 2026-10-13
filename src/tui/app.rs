@@ -5,6 +5,9 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use std::collections::BTreeSet;
+
+use crate::model::{State, Status};
 use crate::review::ThreadView;
 
 /// What the user is doing.
@@ -57,14 +60,19 @@ pub struct App {
     pub(super) rows: usize,
     pub(super) mode: Mode,
     pub(super) status: Option<String>,
+    /// 0-based lines inside an open, current thread's range.
+    markers: BTreeSet<usize>,
+    /// Open threads whose quote no longer matches; not markable.
+    outdated: usize,
 }
 
 /// Terminal rows taken by the footer in Normal mode.
 const FOOTER_ROWS: usize = 1;
 
 impl App {
-    /// A view over `lines` on a terminal `rows` tall.
-    pub fn new(lines: Vec<String>, rows: u16) -> Self {
+    /// A view over `lines` on a terminal `rows` tall, with gutter markers
+    /// for `threads`.
+    pub fn open(lines: Vec<String>, threads: &[ThreadView], rows: u16) -> Self {
         let mut app = App {
             lines,
             cursor: 0,
@@ -72,7 +80,10 @@ impl App {
             rows: usize::from(rows),
             mode: Mode::Normal,
             status: None,
+            markers: BTreeSet::new(),
+            outdated: 0,
         };
+        app.set_threads(threads);
         app.clamp_view();
         app
     }
@@ -100,6 +111,34 @@ impl App {
     /// A one-line message for the footer (a save result), if any.
     pub fn status(&self) -> Option<&str> {
         self.status.as_deref()
+    }
+
+    /// Whether 0-based `line` is inside an open, current thread.
+    pub fn is_marked(&self, line: usize) -> bool {
+        self.markers.contains(&line)
+    }
+
+    /// How many open threads are outdated (and so not shown in the gutter).
+    pub fn outdated(&self) -> usize {
+        self.outdated
+    }
+
+    /// Replace markers from a fresh view of the file's threads.
+    fn set_threads(&mut self, threads: &[ThreadView]) {
+        let open = threads.iter().filter(|t| t.thread.status == Status::Open);
+        self.outdated = 0;
+        self.markers.clear();
+        for view in open {
+            match view.state {
+                State::Outdated => self.outdated += 1,
+                State::Current => {
+                    let anchor = &view.thread.anchor;
+                    let first = (anchor.start_line as usize).saturating_sub(1);
+                    let last = (anchor.end_line as usize).min(self.lines.len());
+                    self.markers.extend(first..last);
+                }
+            }
+        }
     }
 
     /// Rows available to the file view; never zero, so the arithmetic in
@@ -151,7 +190,8 @@ pub fn update(app: &mut App, event: Event) -> Option<Effect> {
             app.clamp_view();
             None
         }
-        Event::Saved { id, .. } => {
+        Event::Saved { id, threads } => {
+            app.set_threads(&threads);
             app.mode = Mode::Normal;
             app.status = Some(format!("added {id}"));
             None
@@ -258,7 +298,7 @@ mod tests {
     /// `n` lines on a terminal of `rows` rows (one is the footer).
     fn app(n: usize, rows: u16) -> App {
         let lines = (1..=n).map(|i| format!("line {i}")).collect();
-        App::new(lines, rows)
+        App::open(lines, &[], rows)
     }
 
     fn send(app: &mut App, events: impl IntoIterator<Item = Event>) {
@@ -406,7 +446,7 @@ mod tests {
 
     #[test]
     fn an_empty_file_ignores_moves_without_panicking() {
-        let mut a = App::new(Vec::new(), 10);
+        let mut a = App::open(Vec::new(), &[], 10);
 
         send(
             &mut a,
@@ -445,7 +485,7 @@ mod tests {
 
     #[test]
     fn enter_on_an_empty_file_is_a_no_op() {
-        let mut a = App::new(Vec::new(), 10);
+        let mut a = App::open(Vec::new(), &[], 10);
 
         assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
         assert_eq!(a.mode, Mode::Normal);
@@ -593,5 +633,83 @@ mod tests {
         send(&mut a, [ctrl('d'), ctrl('u')]);
 
         assert_eq!(draft(&a), ("", 0));
+    }
+
+    // --- markers ---
+
+    use crate::model::{Anchor, State, Status, Thread};
+
+    fn view(id: &str, (start, end): (u32, u32), status: Status, state: State) -> ThreadView {
+        ThreadView {
+            thread: Thread {
+                id: id.into(),
+                anchor: Anchor {
+                    start_line: start,
+                    end_line: end,
+                    quote: String::new(),
+                },
+                status,
+                comments: vec![],
+            },
+            state,
+        }
+    }
+
+    fn resolved() -> Status {
+        Status::Resolved {
+            resolved_by: "claude".into(),
+            resolved_at: "2026-10-12T10:00:00Z".into(),
+        }
+    }
+
+    fn marked(a: &App) -> Vec<usize> {
+        (0..a.lines.len()).filter(|&i| a.is_marked(i)).collect()
+    }
+
+    #[test]
+    fn only_open_current_threads_mark_lines_and_outdated_ones_are_counted() {
+        let threads = [
+            view("c1", (2, 3), Status::Open, State::Current),
+            view("c2", (5, 5), Status::Open, State::Outdated),
+            view("c3", (1, 1), resolved(), State::Current),
+        ];
+        let lines = (1..=6).map(|i| i.to_string()).collect();
+
+        let a = App::open(lines, &threads, 10);
+
+        assert_eq!(marked(&a), [1, 2], "0-based lines of 2..=3");
+        assert_eq!(a.outdated(), 1);
+    }
+
+    #[test]
+    fn a_range_past_the_end_of_the_file_cannot_index_out_of_range() {
+        let threads = [view("c1", (2, 99), Status::Open, State::Current)];
+
+        let a = App::open(vec!["a".into(), "b".into()], &threads, 10);
+
+        assert_eq!(marked(&a), [1]);
+    }
+
+    #[test]
+    fn saved_replaces_the_markers_with_the_reread_threads() {
+        let mut a = app(5, 10);
+        send(&mut a, [press(KeyCode::Enter)]);
+        typed(&mut a, "x");
+        update(&mut a, press(KeyCode::Enter));
+        let threads = vec![
+            view("c1", (4, 5), Status::Open, State::Current),
+            view("c2", (1, 1), Status::Open, State::Outdated),
+        ];
+
+        update(
+            &mut a,
+            Event::Saved {
+                id: "c1".into(),
+                threads,
+            },
+        );
+
+        assert_eq!(marked(&a), [3, 4]);
+        assert_eq!(a.outdated(), 1);
     }
 }
