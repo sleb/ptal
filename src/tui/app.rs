@@ -93,6 +93,10 @@ pub enum Effect {
     Add { line: u32, body: String },
     /// Append `body` to thread `id`; answered like [`Effect::Add`].
     Reply { id: String, body: String },
+    /// Resolve thread `id` with no note; answered like [`Effect::Add`].
+    Resolve { id: String },
+    /// Reopen thread `id` with no note; answered like [`Effect::Add`].
+    Reopen { id: String },
     /// Leave the TUI.
     Quit,
 }
@@ -267,6 +271,16 @@ impl App {
         }
     }
 
+    /// Whether the panel's selected thread is resolved.
+    pub fn selected_is_resolved(&self) -> bool {
+        let Mode::Panel { selected, .. } = self.mode else {
+            return false;
+        };
+        self.threads_on(self.cursor)
+            .get(selected)
+            .is_some_and(|view| view.thread.status != Status::Open)
+    }
+
     /// Rows of the bordered panel, border included.
     fn panel_rows(&self) -> usize {
         (self.rows / 2).max(PANEL_MIN_ROWS)
@@ -356,6 +370,25 @@ impl App {
         }
     }
 
+    /// Ask to resolve (`resolve`) or reopen the `selected` thread of the
+    /// cursor line, or say why there is nothing to do. The thread's id is
+    /// captured here, so a re-read before the write cannot retarget it.
+    fn change_status(&mut self, selected: usize, resolve: bool) -> Option<Effect> {
+        let view = *self.threads_on(self.cursor).get(selected)?;
+        let id = view.thread.id.clone();
+        let is_open = view.thread.status == Status::Open;
+        if is_open != resolve {
+            let now = if is_open { "open" } else { "resolved" };
+            self.status = Some(format!("{id} is already {now}"));
+            return None;
+        }
+        Some(if resolve {
+            Effect::Resolve { id }
+        } else {
+            Effect::Reopen { id }
+        })
+    }
+
     /// Open the panel on the cursor line with thread `id` selected (the
     /// first thread if the re-read no longer lists it).
     fn back_to_panel(&mut self, id: &str) {
@@ -421,10 +454,11 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.threads = threads;
             let from_panel = matches!(
                 app.mode,
-                Mode::Input {
-                    from_panel: Some(_),
-                    ..
-                }
+                Mode::Panel { .. }
+                    | Mode::Input {
+                        from_panel: Some(_),
+                        ..
+                    }
             );
             app.mode = Mode::Normal;
             if from_panel {
@@ -511,6 +545,8 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 };
             }
         }
+        KeyCode::Char('x') if !ctrl => return app.change_status(selected, true),
+        KeyCode::Char('o') if !ctrl => return app.change_status(selected, false),
         KeyCode::Tab if !shift => app.select_thread((selected + 1) % count),
         KeyCode::Tab | KeyCode::BackTab => app.select_thread((selected + count - 1) % count),
         KeyCode::Char('j') | KeyCode::Down if !ctrl => {
@@ -1692,5 +1728,106 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // --- resolving and reopening from the panel ---
+
+    /// Line 2 holds an open `c1` and a resolved `c2`; `c1` is selected.
+    fn open_and_resolved_panel() -> App {
+        let threads = [
+            chatty("c1", (2, 2), 1),
+            said_by(view("c2", (2, 2), resolved(), State::Current), &["claude"]),
+        ];
+        let mut a = panel_app(&threads, 20);
+        send(&mut a, [ch('j'), press(KeyCode::Enter)]);
+        a
+    }
+
+    #[test]
+    fn x_resolves_the_selected_open_thread_without_changing_mode() {
+        let mut a = open_and_resolved_panel();
+        let before = a.mode.clone();
+
+        assert_eq!(
+            update(&mut a, ch('x')),
+            Some(Effect::Resolve { id: "c1".into() })
+        );
+
+        assert_eq!(a.mode, before);
+    }
+
+    #[test]
+    fn x_on_a_resolved_thread_does_nothing_but_say_so() {
+        let mut a = open_and_resolved_panel();
+        send(&mut a, [press(KeyCode::Tab)]);
+
+        assert_eq!(update(&mut a, ch('x')), None);
+
+        assert_eq!(a.status.as_deref(), Some("c2 is already resolved"));
+        assert_eq!(panel(&a).0, 1);
+    }
+
+    #[test]
+    fn o_reopens_a_resolved_thread_and_refuses_an_open_one() {
+        let mut a = open_and_resolved_panel();
+
+        assert_eq!(update(&mut a, ch('o')), None);
+        assert_eq!(a.status.as_deref(), Some("c1 is already open"));
+
+        send(&mut a, [press(KeyCode::Tab)]);
+        assert_eq!(
+            update(&mut a, ch('o')),
+            Some(Effect::Reopen { id: "c2".into() })
+        );
+    }
+
+    #[test]
+    fn x_and_o_are_unbound_outside_the_panel_and_text_in_input() {
+        let mut normal = panel_app(&[chatty("c1", (2, 2), 1)], 12);
+        send(&mut normal, [ch('j')]);
+        assert_eq!(update(&mut normal, ch('x')), None);
+        assert_eq!(update(&mut normal, ch('o')), None);
+        assert_eq!(normal.mode, Mode::Normal);
+
+        let mut a = in_panel_input();
+        assert_eq!(update(&mut a, ch('x')), None);
+        assert_eq!(update(&mut a, ch('o')), None);
+        assert_eq!(draft(&a), ("xo", 2));
+    }
+
+    #[test]
+    fn saved_resolved_and_reopened_stay_on_that_thread_in_the_panel() {
+        for (done, text) in [
+            (Done::Resolved, "resolved c2"),
+            (Done::Reopened, "reopened c2"),
+        ] {
+            let mut a = open_and_resolved_panel();
+            send(&mut a, [press(KeyCode::Tab)]);
+            let threads = vec![chatty("c1", (2, 2), 1), chatty("c2", (2, 2), 1)];
+
+            update(
+                &mut a,
+                Event::Saved {
+                    id: "c2".into(),
+                    done,
+                    threads,
+                },
+            );
+
+            assert_eq!(panel(&a).0, 1);
+            assert_eq!(a.status.as_deref(), Some(text));
+        }
+    }
+
+    #[test]
+    fn a_failed_resolve_leaves_the_panel_untouched() {
+        let mut a = open_and_resolved_panel();
+        update(&mut a, ch('x'));
+        let before = a.mode.clone();
+
+        update(&mut a, Event::SaveFailed("locked".into()));
+
+        assert_eq!(a.mode, before);
+        assert_eq!(a.status.as_deref(), Some("locked"));
     }
 }

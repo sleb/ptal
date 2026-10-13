@@ -172,6 +172,14 @@ pub fn step<C: Clock>(
             let written = reviews.reply(file, &id, &body, author);
             answer(app, reviews, file, Done::Replied, written)
         }
+        Some(Effect::Resolve { id }) => {
+            let written = reviews.resolve(file, &id, author, None);
+            answer(app, reviews, file, Done::Resolved, written)
+        }
+        Some(Effect::Reopen { id }) => {
+            let written = reviews.reopen(file, &id, author, None);
+            answer(app, reviews, file, Done::Reopened, written)
+        }
     }
 }
 

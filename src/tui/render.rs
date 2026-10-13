@@ -123,7 +123,10 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
         parts.push(format!("{} outdated", app.outdated()));
     }
     let hints = match app.mode() {
-        Mode::Panel { .. } => "tab:next a:add r:reply j/k:scroll esc:close",
+        Mode::Panel { .. } if app.selected_is_resolved() => {
+            "tab:next a:add r:reply o:reopen j/k:scroll esc:close"
+        }
+        Mode::Panel { .. } => "tab:next a:add r:reply x:resolve j/k:scroll esc:close",
         _ => "enter:thread/comment ]/[:jump q:quit",
     };
     parts.push(hints.to_string());
@@ -204,7 +207,7 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::{Color, Modifier};
 
-    const W: u16 = 66;
+    const W: u16 = 70;
 
     fn lines(n: usize) -> Vec<String> {
         (1..=n).map(|i| format!("line {i}")).collect()
@@ -318,7 +321,8 @@ mod tests {
         app
     }
 
-    const PANEL_FOOTER: &str = "plan.md  L1/12  tab:next a:add r:reply j/k:scroll esc:close";
+    const PANEL_FOOTER: &str =
+        "plan.md  L1/12  tab:next a:add r:reply x:resolve j/k:scroll esc:close";
 
     #[test]
     fn the_panel_shows_the_thread_in_a_box_above_the_footer() {
@@ -476,6 +480,41 @@ mod tests {
         assert!(text.contains("│ok"));
         assert!(!text.contains("Threads on line"));
         assert!(text.starts_with("◆  1│line 1"));
+    }
+
+    #[test]
+    fn the_panel_footer_offers_resolve_on_open_threads_and_reopen_on_resolved() {
+        let open = [talk(
+            "c1",
+            (1, 1),
+            "a",
+            Status::Open,
+            State::Current,
+            &[("claude", "hi")],
+        )];
+        let done = [talk(
+            "c1",
+            (1, 1),
+            "a",
+            Status::Resolved {
+                resolved_by: "claude".into(),
+                resolved_at: "2026-10-12T10:00:00Z".into(),
+            },
+            State::Current,
+            &[("claude", "hi")],
+        )];
+
+        let open = screen(&draw(&panel_app(&open), W, 16));
+        let done = screen(&draw(&panel_app(&done), W, 16));
+
+        assert!(
+            open.ends_with("a:add r:reply x:resolve j/k:scroll esc:close"),
+            "{open}"
+        );
+        assert!(
+            done.ends_with("a:add r:reply o:reopen j/k:scroll esc:close"),
+            "{done}"
+        );
     }
 
     #[test]

@@ -350,3 +350,153 @@ fn a_failed_reply_keeps_the_draft_and_shows_the_error() {
         1
     );
 }
+
+#[test]
+fn x_resolves_the_selected_thread_and_it_leaves_the_default_listing() {
+    let sb = sandbox(PLAN);
+    sb.reviews
+        .add_thread(&sb.file, 3, 3, "rename?", "claude")
+        .unwrap();
+    let mut app = sb.open();
+
+    let flow = sb.press(&mut app, &["j", "j", "enter", "x"]);
+
+    assert_eq!(flow, ControlFlow::Continue(()));
+    assert_eq!(cli_comments(&sb)["threads"].as_array().unwrap().len(), 0);
+    let all = sb.reviews.view(&sb.file, true).unwrap();
+    assert!(
+        matches!(&all[0].thread.status, ptal::model::Status::Resolved { resolved_by, .. } if resolved_by == "scott"),
+        "{:?}",
+        all[0].thread.status
+    );
+    let panel = screen(&app);
+    assert!(panel.contains("c1 resolved by scott"), "{panel}");
+    assert!(panel.contains("resolved c1"), "{panel}");
+    assert!(panel.contains("o:reopen"), "{panel}");
+    let _ = sb.press(&mut app, &["esc"]);
+    assert!(screen(&app).contains("○ 3│three"), "{}", screen(&app));
+}
+
+#[test]
+fn o_reopens_a_thread_the_agent_resolved_and_a_reply_reopens_too() {
+    let sb = sandbox(PLAN);
+    for line in [2, 4] {
+        sb.reviews
+            .add_thread(&sb.file, line, line, "q", "scott")
+            .unwrap();
+    }
+    sb.reviews.resolve(&sb.file, "c1", "claude", None).unwrap();
+    sb.reviews.resolve(&sb.file, "c2", "claude", None).unwrap();
+    let mut app = sb.open();
+
+    // o on line 2
+    let _ = sb.press(&mut app, &["j", "enter", "o"]);
+    assert!(screen(&app).contains("c1 open"), "{}", screen(&app));
+    let _ = sb.press(&mut app, &["esc"]);
+    assert!(screen(&app).contains("● 2│"), "{}", screen(&app));
+    // r on line 4 (resolved) reopens
+    let _ = sb.press(&mut app, &["j", "j", "enter", "r", "y", "enter"]);
+
+    let json = cli_comments(&sb);
+    let threads = json["threads"].as_array().unwrap();
+    assert_eq!(threads.len(), 2);
+    for t in threads {
+        assert_eq!(t["status"], "open");
+        assert!(t.get("resolved_by").is_none() || t["resolved_by"].is_null());
+    }
+}
+
+/// `(comment count, status)` of every thread in the CLI's `--all` listing.
+fn shape(sb: &Sandbox) -> Vec<(usize, String)> {
+    sb.reviews
+        .view(&sb.file, true)
+        .unwrap()
+        .iter()
+        .map(|v| {
+            let status = match v.thread.status {
+                ptal::model::Status::Open => "open",
+                ptal::model::Status::Resolved { .. } => "resolved",
+            };
+            (v.thread.comments.len(), status.to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn with_two_threads_on_a_line_each_action_touches_only_the_selected_one() {
+    let sb = sandbox(PLAN);
+    for body in ["first", "second"] {
+        sb.reviews
+            .add_thread(&sb.file, 3, 3, body, "claude")
+            .unwrap();
+    }
+    let mut app = sb.open();
+    let _ = sb.press(&mut app, &["j", "j", "enter"]);
+    assert_eq!(shape(&sb), [(1, "open".into()), (1, "open".into())]);
+
+    let _ = sb.press(&mut app, &["tab", "r", "y", "enter"]);
+    assert_eq!(shape(&sb), [(1, "open".into()), (2, "open".into())]);
+
+    let _ = sb.press(&mut app, &["x"]);
+    assert_eq!(shape(&sb), [(1, "open".into()), (2, "resolved".into())]);
+
+    let _ = sb.press(&mut app, &["tab", "x"]);
+    assert_eq!(shape(&sb), [(1, "resolved".into()), (2, "resolved".into())]);
+
+    let _ = sb.press(&mut app, &["o"]);
+    assert_eq!(shape(&sb), [(1, "open".into()), (2, "resolved".into())]);
+}
+
+#[test]
+fn a_second_round_with_the_agent_runs_end_to_end() {
+    let sb = sandbox(PLAN);
+    let before = (
+        fs::read(&sb.file).unwrap(),
+        fs::metadata(&sb.file).unwrap().modified().unwrap(),
+    );
+    let file = sb.file.to_str().unwrap();
+    // The agent's side: the real binary, as `claude`.
+    let agent = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_ptal"))
+            .args(args)
+            .env("PTAL_DATA_DIR", &sb.data)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let last_comment = || {
+        let json = cli_comments(&sb);
+        let comments = json["threads"][0]["comments"].as_array().unwrap().clone();
+        comments.last().unwrap().clone()
+    };
+
+    // Round 1: the human comments in the TUI, the agent answers.
+    let mut app = sb.open();
+    let _ = sb.press(&mut app, &["j", "j", "enter", "w", "h", "y", "enter", "q"]);
+    agent(&["reply", file, "c1", "Because.", "--as", "claude"]);
+
+    // Round 2: the TUI shows the agent waiting; the human replies.
+    let mut app = sb.open();
+    assert!(screen(&app).contains("◆ 3│three"), "{}", screen(&app));
+    let _ = sb.press(&mut app, &["j", "j", "enter", "r", "o", "k", "enter"]);
+    assert_eq!(last_comment()["author"], "scott");
+    assert_eq!(last_comment()["body"], "ok");
+
+    // The agent resolves; reopening the TUI shows it hollow; `o` reopens.
+    agent(&["resolve", file, "c1", "--as", "claude"]);
+    assert_eq!(cli_comments(&sb)["threads"].as_array().unwrap().len(), 0);
+    let mut app = sb.open();
+    assert!(screen(&app).contains("○ 3│three"), "{}", screen(&app));
+    let _ = sb.press(&mut app, &["j", "j", "enter", "o"]);
+    assert_eq!(cli_comments(&sb)["threads"][0]["status"], "open");
+
+    let after = (
+        fs::read(&sb.file).unwrap(),
+        fs::metadata(&sb.file).unwrap().modified().unwrap(),
+    );
+    assert_eq!(before, after, "the reviewed file is untouched");
+}

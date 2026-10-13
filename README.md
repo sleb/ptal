@@ -11,8 +11,7 @@ state persist across rounds and revisions.
 
 > **Status:** core library, the agent CLI (`comments`, `add`, `resolve`, `reply`,
 > `reopen`), and a TUI (scroll a file, comment on a line, read threads and the
-> agent's replies, jump between threads, reply) implemented. Resolving
-> from the TUI, ranges, and live refresh are planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
+> agent's replies, jump between threads, reply, resolve, reopen) implemented. Ranges, and live refresh are planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why not a PR?
 
@@ -47,6 +46,7 @@ ptal plan.md            # open the TUI
 | `j` / `k` | In the panel: scroll |
 | `a` | In the panel: add a thread on this line |
 | `r` | In the panel: reply to the selected thread; `enter` saves, `esc` cancels |
+| `x` / `o` | In the panel: resolve / reopen the selected thread (no note) |
 | `esc` (or `q`, `ctrl+c`) | In the panel: close it |
 | `q` (or `ctrl+c`) | Quit |
 
@@ -63,7 +63,6 @@ exits `1` with a `not_a_terminal` JSON error.
 |---|---|
 | `v` | Visual select, then `enter` to comment on the range |
 | `e` | Edit your own comment |
-| `x` | Resolve / reopen the focused thread |
 | `s` | Toggle the comment sidebar |
 | `R` | Show / hide resolved threads |
 | `n` / `N` | Next / previous line changed since you last reviewed |
