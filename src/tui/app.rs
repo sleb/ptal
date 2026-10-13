@@ -31,6 +31,9 @@ pub enum Mode {
         draft: String,
         /// Insertion point as a `char` index into `draft`.
         cursor: usize,
+        /// The panel's `(selected, scroll)` this box was opened from, which
+        /// `esc` and a successful save return to.
+        from_panel: Option<(usize, usize)>,
     },
 }
 
@@ -369,7 +372,25 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
         }
         Event::Saved { id, threads } => {
             app.threads = threads;
+            let from_panel = matches!(
+                app.mode,
+                Mode::Input {
+                    from_panel: Some(_),
+                    ..
+                }
+            );
             app.mode = Mode::Normal;
+            if from_panel {
+                app.mode = Mode::Panel {
+                    selected: 0,
+                    scroll: 0,
+                };
+                let index = app
+                    .threads_on(app.cursor)
+                    .iter()
+                    .position(|t| t.thread.id == id);
+                app.select_thread(index.unwrap_or(0));
+            }
             app.status = Some(format!("added {id}"));
             None
         }
@@ -409,6 +430,7 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             app.mode = Mode::Input {
                 draft: String::new(),
                 cursor: 0,
+                from_panel: None,
             };
         }
         _ => {}
@@ -427,6 +449,13 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Char('c') if ctrl => app.mode = Mode::Normal,
         KeyCode::Esc => app.mode = Mode::Normal,
         KeyCode::Char('q') if !ctrl => app.mode = Mode::Normal,
+        KeyCode::Char('a') if !ctrl => {
+            app.mode = Mode::Input {
+                draft: String::new(),
+                cursor: 0,
+                from_panel: Some((selected, scroll)),
+            };
+        }
         KeyCode::Tab if !shift => app.select_thread((selected + 1) % count),
         KeyCode::Tab | KeyCode::BackTab => app.select_thread((selected + count - 1) % count),
         KeyCode::Char('j') | KeyCode::Down if !ctrl => {
@@ -447,14 +476,23 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
 }
 
 fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
-    let Mode::Input { draft, cursor } = &mut app.mode else {
+    let Mode::Input {
+        draft,
+        cursor,
+        from_panel,
+    } = &mut app.mode
+    else {
         return None;
     };
+    let back = from_panel.map_or(Mode::Normal, |(selected, scroll)| Mode::Panel {
+        selected,
+        scroll,
+    });
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let len = draft.chars().count();
     match key.code {
-        KeyCode::Char('c') if ctrl => app.mode = Mode::Normal,
-        KeyCode::Esc => app.mode = Mode::Normal,
+        KeyCode::Char('c') if ctrl => app.mode = back,
+        KeyCode::Esc => app.mode = back,
         KeyCode::Enter if draft.trim().is_empty() => {}
         KeyCode::Enter => {
             return Some(Effect::Save {
@@ -685,7 +723,7 @@ mod tests {
 
     fn draft(app: &App) -> (&str, usize) {
         match &app.mode {
-            Mode::Input { draft, cursor } => (draft, *cursor),
+            Mode::Input { draft, cursor, .. } => (draft, *cursor),
             _ => panic!("not in Input mode"),
         }
     }
@@ -1327,6 +1365,119 @@ mod tests {
         );
 
         assert_eq!(a.mode, Mode::Normal);
+    }
+
+    // --- adding a thread from the panel ---
+
+    fn in_panel_input() -> App {
+        let mut a = panel_app(&[chatty("c1", (2, 2), 5)], 12);
+        send(&mut a, [ch('j'), press(KeyCode::Enter), ch('j'), ch('a')]);
+        a
+    }
+
+    #[test]
+    fn a_enters_input_for_the_cursor_line_from_the_panel_only() {
+        let mut a = in_panel_input();
+        assert_eq!(draft(&a), ("", 0));
+        assert_eq!(a.cursor, 1);
+
+        let mut normal = panel_app(&[chatty("c1", (2, 2), 1)], 12);
+        send(&mut normal, [ch('a')]);
+        assert_eq!(normal.mode, Mode::Normal);
+
+        typed(&mut a, "more a");
+        assert_eq!(draft(&a), ("more a", 6), "a is text once typing");
+    }
+
+    #[test]
+    fn enter_in_a_panel_input_saves_on_the_cursor_line() {
+        let mut a = in_panel_input();
+        typed(&mut a, "new");
+
+        let effect = update(&mut a, press(KeyCode::Enter));
+
+        assert_eq!(
+            effect,
+            Some(Effect::Save {
+                line: 2,
+                body: "new".into()
+            })
+        );
+    }
+
+    #[test]
+    fn saved_returns_to_the_panel_with_the_new_thread_selected() {
+        let mut a = in_panel_input();
+        typed(&mut a, "new");
+        update(&mut a, press(KeyCode::Enter));
+        let threads = vec![
+            chatty("c1", (2, 2), 5),
+            said_by(view("c9", (2, 2), Status::Open, State::Current), &["scott"]),
+        ];
+
+        update(
+            &mut a,
+            Event::Saved {
+                id: "c9".into(),
+                threads,
+            },
+        );
+
+        assert_eq!(listed(&a), 2);
+        let start = a.panel_layout().unwrap().thread_starts[1];
+        let max = a.panel_layout().unwrap().lines.len() - a.panel_inner_rows();
+        assert_eq!(panel(&a), (1, start.min(max)));
+        assert_eq!(a.status.as_deref(), Some("added c9"));
+    }
+
+    #[test]
+    fn esc_and_ctrl_c_return_to_the_same_panel_view() {
+        for cancel in [press(KeyCode::Esc), ctrl('c')] {
+            let mut a = in_panel_input();
+            typed(&mut a, "draft");
+            let before = (panel_after_cancel(&a), a.cursor);
+
+            update(&mut a, cancel);
+
+            assert_eq!((panel(&a), a.cursor), (before.0, before.1));
+        }
+    }
+
+    fn panel_after_cancel(a: &App) -> (usize, usize) {
+        match &a.mode {
+            Mode::Input {
+                from_panel: Some(p),
+                ..
+            } => *p,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failed_save_keeps_the_panel_input_and_its_draft() {
+        let mut a = in_panel_input();
+        typed(&mut a, "x");
+        update(&mut a, press(KeyCode::Enter));
+
+        update(&mut a, Event::SaveFailed("locked".into()));
+
+        assert_eq!(draft(&a), ("x", 1));
+        assert!(matches!(
+            a.mode,
+            Mode::Input {
+                from_panel: Some(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_blank_draft_from_the_panel_stays_put() {
+        let mut a = in_panel_input();
+        typed(&mut a, "  ");
+
+        assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
+        assert_eq!(draft(&a), ("  ", 2));
     }
 
     #[test]

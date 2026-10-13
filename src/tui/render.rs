@@ -31,7 +31,7 @@ pub fn render(app: &App, frame: &mut Frame) {
     draw_file(app, buf, view);
     match app.mode() {
         Mode::Normal | Mode::Panel { .. } => draw_footer(app, buf, bottom),
-        Mode::Input { draft, cursor } => draw_input(app, draft, *cursor, buf, bottom),
+        Mode::Input { draft, cursor, .. } => draw_input(app, draft, *cursor, buf, bottom),
     }
 }
 

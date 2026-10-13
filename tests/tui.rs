@@ -155,7 +155,8 @@ fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
         app.mode(),
         &Mode::Input {
             draft: "ok".into(),
-            cursor: 2
+            cursor: 2,
+            from_panel: None,
         }
     );
     assert!(app.status().unwrap().contains("invalid line range"));
