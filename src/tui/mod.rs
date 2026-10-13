@@ -7,13 +7,24 @@
 pub mod app;
 pub mod render;
 
+use std::io;
 use std::ops::ControlFlow;
+use std::panic;
 use std::path::Path;
+
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+use ratatui::crossterm::event::{self, Event as TermEvent};
+use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 
 use crate::error::Result;
 use crate::review::{Clock, Reviews, file_lines};
 
 use app::{App, Effect, Event, update};
+use render::render;
 
 /// Load `file` and its open threads into a fresh [`App`] on a terminal
 /// `rows` tall.
@@ -24,6 +35,98 @@ pub fn open<C: Clock>(reviews: &Reviews<C>, file: &Path, author: &str, rows: u16
     let lines = file_lines(file)?;
     let threads = reviews.view(file, false)?;
     Ok(App::open(lines, &threads, rows).labeled(file.display().to_string(), author))
+}
+
+/// Terminal rows, for sizing [`open`] before the session starts.
+///
+/// # Errors
+/// The size could not be queried (there is no terminal).
+pub fn terminal_rows() -> io::Result<u16> {
+    ratatui::crossterm::terminal::size().map(|(_, rows)| rows)
+}
+
+/// Put the terminal into TUI mode: raw input on the alternate screen.
+fn enter_terminal() -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)
+}
+
+/// Undo [`enter_terminal`]. Idempotent and infallible: it runs from `Drop`
+/// and from the panic hook, where there is nobody to report to.
+fn restore_terminal() {
+    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    let _ = disable_raw_mode();
+}
+
+/// Holds the terminal in TUI mode and puts it back on drop, whether the
+/// scope ends normally, by `?`, or by unwinding.
+///
+/// `enter` and `restore` are injected so the guard is testable without a
+/// terminal.
+#[derive(Debug)]
+pub struct TerminalSession<R: Fn()> {
+    restore: R,
+}
+
+impl<R: Fn()> TerminalSession<R> {
+    /// Run `enter`, and arrange for `restore` to run when the session ends.
+    /// If `enter` fails part-way, `restore` runs before the error returns.
+    ///
+    /// # Errors
+    /// Whatever `enter` returns.
+    pub fn new(enter: impl FnOnce() -> io::Result<()>, restore: R) -> io::Result<Self> {
+        match enter() {
+            Ok(()) => Ok(Self { restore }),
+            Err(error) => {
+                restore();
+                Err(error)
+            }
+        }
+    }
+}
+
+impl<R: Fn()> Drop for TerminalSession<R> {
+    fn drop(&mut self) {
+        (self.restore)();
+    }
+}
+
+/// Make panics restore the terminal before the message is printed, so it
+/// lands on the normal screen. The previous hook still runs afterwards.
+pub fn install_restore_hook(restore: impl Fn() + Send + Sync + 'static) {
+    let previous = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        restore();
+        previous(info);
+    }));
+}
+
+/// Run the interactive session on the real terminal until the user quits.
+///
+/// `app` comes from [`open`]. All of ptal's writes go through `reviews`.
+///
+/// # Errors
+/// The terminal could not be set up, drawn to, or read from.
+pub fn run<C: Clock>(
+    mut app: App,
+    reviews: &Reviews<C>,
+    file: &Path,
+    author: &str,
+) -> io::Result<()> {
+    install_restore_hook(restore_terminal);
+    let _session = TerminalSession::new(enter_terminal, restore_terminal)?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    loop {
+        terminal.draw(|frame| render(&app, frame))?;
+        let event = match event::read()? {
+            TermEvent::Key(key) => Event::Key(key),
+            TermEvent::Resize(width, height) => Event::Resize(width, height),
+            _ => continue,
+        };
+        if step(&mut app, event, reviews, file, author).is_break() {
+            return Ok(());
+        }
+    }
 }
 
 /// Feed one event to `app` and perform whatever it asks for. This is the
@@ -55,5 +158,51 @@ pub fn step<C: Clock>(
             update(app, answer);
             ControlFlow::Continue(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::io;
+
+    #[test]
+    fn dropping_a_session_restores_exactly_once() {
+        let restored = Cell::new(0);
+
+        {
+            let _session =
+                TerminalSession::new(|| Ok(()), || restored.set(restored.get() + 1)).unwrap();
+            assert_eq!(restored.get(), 0);
+        }
+
+        assert_eq!(restored.get(), 1);
+    }
+
+    #[test]
+    fn an_early_return_still_restores() {
+        let restored = Cell::new(0);
+        let run = || -> io::Result<()> {
+            let _session = TerminalSession::new(|| Ok(()), || restored.set(restored.get() + 1))?;
+            Err(io::Error::other("draw failed"))
+        };
+
+        assert!(run().is_err());
+
+        assert_eq!(restored.get(), 1);
+    }
+
+    #[test]
+    fn a_failed_enter_restores_whatever_was_half_done() {
+        let restored = Cell::new(0);
+
+        let session = TerminalSession::new(
+            || Err(io::Error::other("no alternate screen")),
+            || restored.set(restored.get() + 1),
+        );
+
+        assert!(session.is_err());
+        assert_eq!(restored.get(), 1);
     }
 }

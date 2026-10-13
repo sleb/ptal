@@ -90,7 +90,7 @@ fn add_comments_resolve_round_trip_through_the_binary() {
 fn every_failure_kind_has_empty_stdout_one_json_line_and_its_exit_code() {
     let sb = sandbox("one\n");
 
-    assert_failure(&sb.run(&["frobnicate"]), 2, "usage");
+    assert_failure(&sb.run(&["--frobnicate"]), 2, "usage");
     assert_failure(&sb.run(&["comments"]), 2, "usage");
     assert_failure(
         &sb.run(&["add", "FILE", "--lines", "1", "Hi"]),
@@ -191,4 +191,25 @@ fn a_command_that_needs_the_store_reports_no_data_dir() {
     let file = sb.file.to_str().unwrap();
     let out = without_data_dir(&["comments", file]);
     assert_failure(&out, 1, "no_data_dir");
+}
+
+#[test]
+fn a_bare_file_with_piped_stdio_is_a_json_error_and_touches_nothing() {
+    let sb = sandbox("one\ntwo\n");
+    let before = fs::read(&sb.file).unwrap();
+
+    let out = sb
+        .command(&[sb.file.to_str().unwrap()])
+        .env("USER", "scott")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&stderr).unwrap();
+    assert_eq!(json["error"]["code"], "not_a_terminal");
+    assert_eq!(fs::read(&sb.file).unwrap(), before);
+    assert!(!sb.data.exists());
 }
