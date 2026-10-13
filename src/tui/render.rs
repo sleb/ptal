@@ -15,11 +15,9 @@ pub fn render(app: &App, frame: &mut Frame) {
         return;
     }
     let buf = frame.buffer_mut();
-    let chrome = match app.mode() {
-        Mode::Normal => 1,
-        Mode::Input { .. } => 3,
-    };
-    let chrome = chrome.min(area.height);
+    let chrome = u16::try_from(app.chrome_rows())
+        .unwrap_or(u16::MAX)
+        .min(area.height);
     let view = Rect {
         height: area.height - chrome,
         ..area
@@ -32,7 +30,7 @@ pub fn render(app: &App, frame: &mut Frame) {
 
     draw_file(app, buf, view);
     match app.mode() {
-        Mode::Normal => draw_footer(app, buf, bottom),
+        Mode::Normal | Mode::Panel { .. } => draw_footer(app, buf, bottom),
         Mode::Input { draft, cursor } => draw_input(app, draft, *cursor, buf, bottom),
     }
 }

@@ -8,11 +8,23 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::model::{State, Status};
 use crate::review::ThreadView;
 
+use super::panel::{self, Layout};
+
 /// What the user is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     /// Scrolling the file.
     Normal,
+    /// Reading the threads on the cursor line.
+    ///
+    /// Which threads those are is recomputed from the app's threads and the
+    /// cursor, never cached, so a re-read cannot leave stale ids behind.
+    Panel {
+        /// Index into the cursor line's threads.
+        selected: usize,
+        /// First visible row of the panel's content.
+        scroll: usize,
+    },
     /// Typing a comment on the cursor line.
     Input {
         /// The comment so far.
@@ -87,6 +99,11 @@ pub enum Marker {
 const FOOTER_ROWS: usize = 1;
 /// Terminal rows taken by the bordered input box (it replaces the footer).
 const INPUT_BOX_ROWS: usize = 3;
+/// The thread panel is half the terminal, but never fewer rows than this
+/// (border included).
+const PANEL_MIN_ROWS: usize = 4;
+/// Rows the panel's border takes from its content.
+const PANEL_BORDER_ROWS: usize = 2;
 
 impl App {
     /// A view over `lines` on a terminal `cols` x `rows` cells, with gutter
@@ -205,14 +222,39 @@ impl App {
         }
     }
 
+    /// Terminal rows below the file view in the current mode.
+    pub(super) fn chrome_rows(&self) -> usize {
+        match self.mode {
+            Mode::Normal => FOOTER_ROWS,
+            Mode::Input { .. } => INPUT_BOX_ROWS,
+            Mode::Panel { .. } => self.panel_rows() + FOOTER_ROWS,
+        }
+    }
+
+    /// Rows of the bordered panel, border included.
+    fn panel_rows(&self) -> usize {
+        (self.rows / 2).max(PANEL_MIN_ROWS)
+    }
+
+    /// Rows of panel content, inside the border.
+    pub(super) fn panel_inner_rows(&self) -> usize {
+        self.panel_rows().saturating_sub(PANEL_BORDER_ROWS)
+    }
+
+    /// The panel's wrapped rows, when it is open.
+    pub fn panel_layout(&self) -> Option<Layout> {
+        let Mode::Panel { selected, .. } = self.mode else {
+            return None;
+        };
+        let threads = self.threads_on(self.cursor);
+        let width = self.cols.saturating_sub(PANEL_BORDER_ROWS);
+        Some(panel::layout(&threads, selected, width))
+    }
+
     /// Rows available to the file view; never zero, so the arithmetic in
     /// `clamp_view` and the half-page step stay total on tiny terminals.
     pub(super) fn height(&self) -> usize {
-        let chrome = match self.mode {
-            Mode::Normal => FOOTER_ROWS,
-            Mode::Input { .. } => INPUT_BOX_ROWS,
-        };
-        self.rows.saturating_sub(chrome).max(1)
+        self.rows.saturating_sub(self.chrome_rows()).max(1)
     }
 
     fn last_line(&self) -> usize {
@@ -222,6 +264,9 @@ impl App {
     /// Restore `top <= cursor < top + height` and never leave blank rows
     /// below the last line while earlier lines could fill them.
     fn clamp_view(&mut self) {
+        if matches!(self.mode, Mode::Panel { .. }) && self.threads_on(self.cursor).is_empty() {
+            self.mode = Mode::Normal;
+        }
         let height = self.height();
         self.cursor = self.cursor.min(self.last_line());
         self.top = self.top.min(self.lines.len().saturating_sub(height));
@@ -229,6 +274,49 @@ impl App {
             self.top = self.cursor;
         } else if self.cursor >= self.top + height {
             self.top = self.cursor + 1 - height;
+        }
+        self.clamp_panel();
+    }
+
+    /// Keep the panel's selection and scroll inside its content.
+    fn clamp_panel(&mut self) {
+        let Some(layout) = self.panel_layout() else {
+            return;
+        };
+        let last = layout.thread_starts.len().saturating_sub(1);
+        let max_scroll = layout.lines.len().saturating_sub(self.panel_inner_rows());
+        if let Mode::Panel { selected, scroll } = &mut self.mode {
+            *selected = (*selected).min(last);
+            *scroll = (*scroll).min(max_scroll);
+        }
+    }
+
+    /// Open the panel on the cursor line's threads, selecting the first one
+    /// waiting on the author, else the first.
+    fn open_panel(&mut self) {
+        let selected = self
+            .threads_on(self.cursor)
+            .iter()
+            .position(|view| self.marker_of(view) == Marker::Waiting)
+            .unwrap_or(0);
+        self.mode = Mode::Panel {
+            selected,
+            scroll: 0,
+        };
+    }
+
+    /// Select thread `index` and scroll its header into view.
+    fn select_thread(&mut self, index: usize) {
+        let Some(layout) = self.panel_layout() else {
+            return;
+        };
+        let start = layout.thread_starts.get(index).copied().unwrap_or(0);
+        let rows = self.panel_inner_rows();
+        if let Mode::Panel { selected, scroll } = &mut self.mode {
+            *selected = index;
+            if start < *scroll || start >= *scroll + rows {
+                *scroll = start;
+            }
         }
     }
 
@@ -293,6 +381,7 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.status = None;
             match app.mode {
                 Mode::Normal => normal_key(app, key),
+                Mode::Panel { .. } => panel_key(app, key),
                 Mode::Input { .. } => input_key(app, key),
             }
         }
@@ -315,10 +404,41 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Char('[') => app.jump_to_covered(false),
         KeyCode::PageDown => app.scroll_half_page(true),
         KeyCode::PageUp => app.scroll_half_page(false),
+        KeyCode::Enter if !app.threads_on(app.cursor).is_empty() => app.open_panel(),
         KeyCode::Enter if !app.lines.is_empty() => {
             app.mode = Mode::Input {
                 draft: String::new(),
                 cursor: 0,
+            };
+        }
+        _ => {}
+    }
+    None
+}
+
+fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    let Mode::Panel { selected, scroll } = app.mode else {
+        return None;
+    };
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let count = app.threads_on(app.cursor).len().max(1);
+    match key.code {
+        KeyCode::Char('c') if ctrl => app.mode = Mode::Normal,
+        KeyCode::Esc => app.mode = Mode::Normal,
+        KeyCode::Char('q') if !ctrl => app.mode = Mode::Normal,
+        KeyCode::Tab if !shift => app.select_thread((selected + 1) % count),
+        KeyCode::Tab | KeyCode::BackTab => app.select_thread((selected + count - 1) % count),
+        KeyCode::Char('j') | KeyCode::Down if !ctrl => {
+            app.mode = Mode::Panel {
+                selected,
+                scroll: scroll + 1,
+            };
+        }
+        KeyCode::Char('k') | KeyCode::Up if !ctrl => {
+            app.mode = Mode::Panel {
+                selected,
+                scroll: scroll.saturating_sub(1),
             };
         }
         _ => {}
@@ -566,7 +686,7 @@ mod tests {
     fn draft(app: &App) -> (&str, usize) {
         match &app.mode {
             Mode::Input { draft, cursor } => (draft, *cursor),
-            Mode::Normal => panic!("not in Input mode"),
+            _ => panic!("not in Input mode"),
         }
     }
 
@@ -996,6 +1116,217 @@ mod tests {
         typed(&mut a, "][");
         assert_eq!(draft(&a), ("][", 2));
         assert_eq!(a.cursor, 2);
+    }
+
+    // --- thread panel ---
+
+    /// A thread with `n` single-line comments by `claude`.
+    fn chatty(id: &str, range: (u32, u32), n: usize) -> ThreadView {
+        let authors = vec!["claude"; n];
+        said_by(view(id, range, Status::Open, State::Current), &authors)
+    }
+
+    fn panel_app(threads: &[ThreadView], rows: u16) -> App {
+        let lines = (1..=10).map(|i| format!("line {i}")).collect();
+        App::open(lines, threads, "scott", (40, rows))
+    }
+
+    fn panel(a: &App) -> (usize, usize) {
+        match a.mode {
+            Mode::Panel { selected, scroll } => (selected, scroll),
+            _ => panic!("not in Panel mode: {:?}", a.mode),
+        }
+    }
+
+    fn shift_tab() -> Event {
+        Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
+    }
+
+    fn listed(a: &App) -> usize {
+        a.panel_layout().unwrap().thread_starts.len()
+    }
+
+    #[test]
+    fn enter_on_a_threaded_line_opens_the_panel_and_elsewhere_the_input_box() {
+        let mut a = panel_app(&[chatty("c1", (2, 2), 1)], 20);
+
+        send(&mut a, [ch('j'), press(KeyCode::Enter)]);
+        assert_eq!(panel(&a), (0, 0));
+
+        send(
+            &mut a,
+            [press(KeyCode::Esc), ch('j'), press(KeyCode::Enter)],
+        );
+        assert!(matches!(a.mode, Mode::Input { .. }));
+    }
+
+    #[test]
+    fn the_panel_lists_every_thread_on_the_line_and_only_those() {
+        let threads = [
+            chatty("c1", (2, 4), 1),
+            chatty("c2", (3, 3), 1),
+            chatty("c3", (5, 5), 1),
+        ];
+        let mut a = panel_app(&threads, 20);
+
+        send(&mut a, [ch('j'), ch('j'), press(KeyCode::Enter)]);
+        assert_eq!(listed(&a), 2, "c1 and c2 overlap line 3");
+
+        send(
+            &mut a,
+            [press(KeyCode::Esc), ch('j'), press(KeyCode::Enter)],
+        );
+        assert_eq!(listed(&a), 1, "only c1 reaches line 4");
+    }
+
+    #[test]
+    fn the_first_waiting_thread_is_selected_else_the_first() {
+        let mine = said_by(view("c1", (1, 1), Status::Open, State::Current), &["scott"]);
+        let theirs = chatty("c2", (1, 1), 1);
+        let mut a = panel_app(&[mine.clone(), theirs], 20);
+        send(&mut a, [press(KeyCode::Enter)]);
+        assert_eq!(panel(&a).0, 1);
+
+        let mut b = panel_app(&[mine], 20);
+        send(&mut b, [press(KeyCode::Enter)]);
+        assert_eq!(panel(&b).0, 0);
+
+        let done = said_by(view("c3", (1, 1), resolved(), State::Current), &["claude"]);
+        let mut c = panel_app(&[done], 20);
+        send(&mut c, [press(KeyCode::Enter)]);
+        assert_eq!(panel(&c).0, 0, "a resolved-only line opens too");
+    }
+
+    #[test]
+    fn tab_and_shift_tab_cycle_the_selection_and_wrap() {
+        let threads = [
+            chatty("c1", (1, 1), 1),
+            chatty("c2", (1, 1), 1),
+            chatty("c3", (1, 1), 1),
+        ];
+        let mut a = panel_app(&threads, 20);
+        send(&mut a, [press(KeyCode::Enter)]);
+
+        send(&mut a, [press(KeyCode::Tab), press(KeyCode::Tab)]);
+        assert_eq!(panel(&a).0, 2);
+        send(&mut a, [press(KeyCode::Tab)]);
+        assert_eq!(panel(&a).0, 0, "wraps forward");
+        send(&mut a, [shift_tab()]);
+        assert_eq!(panel(&a).0, 2, "wraps backward");
+        let shifted_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
+        send(&mut a, [Event::Key(shifted_tab)]);
+        assert_eq!(panel(&a).0, 1, "SHIFT+Tab counts as BackTab");
+    }
+
+    #[test]
+    fn selecting_a_thread_scrolls_its_header_into_view() {
+        // 12 rows: panel 6 (4 inside), each thread is 3 + 2n rows.
+        let threads = [chatty("c1", (1, 1), 5), chatty("c2", (1, 1), 5)];
+        let mut a = panel_app(&threads, 12);
+        send(&mut a, [press(KeyCode::Enter)]);
+        assert_eq!(panel(&a), (0, 0));
+
+        send(&mut a, [press(KeyCode::Tab)]);
+        let start = a.panel_layout().unwrap().thread_starts[1];
+        assert_eq!(panel(&a), (1, start));
+
+        send(&mut a, [press(KeyCode::Tab)]);
+        assert_eq!(panel(&a), (0, 0));
+    }
+
+    #[test]
+    fn j_and_k_scroll_the_panel_clamped_without_moving_the_cursor() {
+        let mut a = panel_app(&[chatty("c1", (1, 1), 5)], 12);
+        send(&mut a, [press(KeyCode::Enter)]);
+        let rows = a.panel_layout().unwrap().lines.len();
+        let max = rows - a.panel_inner_rows();
+
+        send(&mut a, [ch('k'), press(KeyCode::Up)]);
+        assert_eq!(panel(&a).1, 0);
+        for _ in 0..rows + 3 {
+            send(&mut a, [ch('j')]);
+        }
+        assert_eq!(panel(&a).1, max);
+        send(&mut a, [press(KeyCode::Up)]);
+        assert_eq!(panel(&a).1, max - 1);
+        assert_eq!(a.cursor, 0);
+    }
+
+    #[test]
+    fn esc_q_and_ctrl_c_close_the_panel_without_quitting() {
+        for close in [press(KeyCode::Esc), ch('q'), ctrl('c')] {
+            let mut a = panel_app(&[chatty("c1", (2, 2), 1)], 20);
+            send(&mut a, [ch('j'), press(KeyCode::Enter)]);
+
+            assert_eq!(update(&mut a, close), None);
+
+            assert_eq!(a.mode, Mode::Normal);
+            assert_eq!(a.cursor, 1);
+        }
+    }
+
+    #[test]
+    fn the_cursor_cannot_drift_from_the_listed_line_inside_the_panel() {
+        let mut a = panel_app(&[chatty("c1", (2, 2), 1), chatty("c2", (6, 6), 1)], 20);
+        send(&mut a, [ch('j'), press(KeyCode::Enter)]);
+
+        for event in [
+            press(KeyCode::Enter),
+            ch(']'),
+            ch('['),
+            ch('g'),
+            ch('G'),
+            ctrl('d'),
+            ch('z'),
+        ] {
+            assert_eq!(update(&mut a, event), None);
+        }
+
+        assert_eq!(a.cursor, 1);
+        assert_eq!(panel(&a), (0, 0));
+    }
+
+    #[test]
+    fn the_panel_shrinks_the_view_keeps_the_cursor_visible_and_closing_restores() {
+        let mut a = panel_app(&[chatty("c1", (6, 6), 1)], 12); // height 11
+        send(&mut a, [ch('G'), ch('g')]);
+        send(&mut a, [ch('j'), ch('j'), ch('j'), ch('j'), ch('j')]);
+        assert_eq!(a.cursor, 5);
+
+        send(&mut a, [press(KeyCode::Enter)]);
+
+        assert_eq!(a.height(), 5, "12 rows minus a 6-row panel and the footer");
+        assert!(a.top <= a.cursor && a.cursor < a.top + 5);
+        send(&mut a, [press(KeyCode::Esc)]);
+        assert_eq!(a.height(), 11);
+    }
+
+    #[test]
+    fn a_panel_on_a_tiny_terminal_does_not_panic() {
+        for rows in 0..=6 {
+            let mut a = panel_app(&[chatty("c1", (1, 1), 3)], rows);
+            send(
+                &mut a,
+                [press(KeyCode::Enter), ch('j'), press(KeyCode::Tab)],
+            );
+            assert!(a.height() >= 1);
+        }
+    }
+
+    #[test]
+    fn a_reread_that_drops_the_thread_closes_the_panel() {
+        let mut a = panel_app(&[chatty("c1", (1, 1), 1)], 20);
+        send(&mut a, [press(KeyCode::Enter)]);
+
+        send(
+            &mut a,
+            [Event::Saved {
+                id: "c9".into(),
+                threads: vec![],
+            }],
+        );
+
+        assert_eq!(a.mode, Mode::Normal);
     }
 
     #[test]
