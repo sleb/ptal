@@ -5,6 +5,7 @@
 //! module is the driver that performs the effects `update` asks for.
 
 pub mod app;
+pub mod panel;
 pub mod render;
 
 use std::io;
