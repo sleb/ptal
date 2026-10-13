@@ -116,6 +116,11 @@ const REPLY_EXAMPLE: &str = "\
 Examples:
   ptal reply plan.md c3 \"Which of the two do you mean?\" --as claude";
 
+const REOPEN_EXAMPLE: &str = "\
+Examples:
+  ptal reopen plan.md c3 --as scott
+  ptal reopen plan.md c3 --as scott --note \"Not fixed: still fails on empty input.\"";
+
 const WORKFLOW: &str = "\
 Review a throwaway text file. A human comments on lines in the TUI, opened
 with `ptal <file>` (interactive terminals only; without one it fails with
@@ -241,6 +246,19 @@ enum Command {
         #[arg(long = "as", value_name = "NAME")]
         author: Option<String>,
     },
+    /// Reopen a resolved thread.
+    #[command(after_long_help = REOPEN_EXAMPLE)]
+    Reopen {
+        file: PathBuf,
+        /// Thread id, e.g. `c3`.
+        id: String,
+        /// Who is reopening; falls back to `PTAL_AUTHOR`.
+        #[arg(long = "as", value_name = "NAME")]
+        author: Option<String>,
+        /// Leave a comment saying why.
+        #[arg(long)]
+        note: Option<String>,
+    },
 }
 
 /// Parse `A-B` or a bare `N` (sugar for `N-N`). Range validity against the
@@ -276,17 +294,24 @@ pub fn resolve_author(flag: Option<&str>, env: Option<&str>) -> Result<String, F
 /// What a successful command has to say.
 enum Output {
     Threads(Vec<ThreadView>),
-    Added(Thread),
-    Resolved(Thread),
-    /// The thread, and the id of the comment just added to it.
-    Replied(Thread),
+    /// A write's result: the updated thread and what was done to it.
+    Thread(Thread, Verb),
+}
+
+/// What a write command did, for the readable rendering.
+#[derive(Debug, Clone, Copy)]
+enum Verb {
+    Added,
+    Resolved,
+    Replied,
+    Reopened,
 }
 
 impl Output {
     fn to_json(&self, file: &Path) -> String {
         let value = match self {
             Output::Threads(threads) => json!({ "file": file, "threads": threads }),
-            Output::Added(thread) | Output::Resolved(thread) | Output::Replied(thread) => {
+            Output::Thread(thread, _) => {
                 json!({ "file": file, "thread": thread })
             }
         };
@@ -297,7 +322,7 @@ impl Output {
     fn to_text(&self) -> String {
         match self {
             Output::Threads(threads) => render_text(threads),
-            Output::Added(thread) => {
+            Output::Thread(thread, Verb::Added) => {
                 let Anchor {
                     start_line,
                     end_line,
@@ -305,11 +330,12 @@ impl Output {
                 } = thread.anchor;
                 format!("{} added (lines {start_line}-{end_line})\n", thread.id)
             }
-            Output::Resolved(thread) => format!("{} resolved\n", thread.id),
-            Output::Replied(thread) => {
+            Output::Thread(thread, Verb::Resolved) => format!("{} resolved\n", thread.id),
+            Output::Thread(thread, Verb::Replied) => {
                 let reply = thread.comments.last().map_or("", |c| c.id.as_str());
                 format!("{} replied ({reply})\n", thread.id)
             }
+            Output::Thread(thread, Verb::Reopened) => format!("{} reopened\n", thread.id),
         }
     }
 }
@@ -409,7 +435,8 @@ fn run_command<C: Clock>(
         Command::Comments { file, .. }
         | Command::Add { file, .. }
         | Command::Resolve { file, .. }
-        | Command::Reply { file, .. } => file,
+        | Command::Reply { file, .. }
+        | Command::Reopen { file, .. } => file,
     };
     let output = dispatch(command, env)?;
     let canonical = std::fs::canonicalize(file).map_err(|source| {
@@ -467,9 +494,8 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
             author: flag,
         } => {
             let author = author(flag)?;
-            Ok(Output::Added(
-                reviews.add_thread(file, *start, *end, body, &author)?,
-            ))
+            let thread = reviews.add_thread(file, *start, *end, body, &author)?;
+            Ok(Output::Thread(thread, Verb::Added))
         }
         Command::Resolve {
             file,
@@ -478,12 +504,8 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
             note,
         } => {
             let author = author(flag)?;
-            Ok(Output::Resolved(reviews.resolve(
-                file,
-                id,
-                &author,
-                note.as_deref(),
-            )?))
+            let thread = reviews.resolve(file, id, &author, note.as_deref())?;
+            Ok(Output::Thread(thread, Verb::Resolved))
         }
         Command::Reply {
             file,
@@ -492,7 +514,18 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
             author: flag,
         } => {
             let author = author(flag)?;
-            Ok(Output::Replied(reviews.reply(file, id, body, &author)?))
+            let thread = reviews.reply(file, id, body, &author)?;
+            Ok(Output::Thread(thread, Verb::Replied))
+        }
+        Command::Reopen {
+            file,
+            id,
+            author: flag,
+            note,
+        } => {
+            let author = author(flag)?;
+            let thread = reviews.reopen(file, id, &author, note.as_deref())?;
+            Ok(Output::Thread(thread, Verb::Reopened))
         }
     }
 }
@@ -1120,6 +1153,87 @@ mod tests {
         );
 
         assert_eq!(out.stdout, "c1 replied (c3)\n");
+    }
+
+    #[test]
+    fn reopen_brings_a_resolved_thread_back_to_the_default_view() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["resolve", "FILE", "c1", "--as", "claude"]);
+
+        let out = fx.run(&["reopen", "FILE", "c1", "--as", "scott"]);
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        let thread = &out.json()["thread"];
+        assert_eq!(thread["status"], "open");
+        assert!(thread.get("resolved_by").is_none());
+        assert!(thread.get("state").is_none());
+        let listed = fx.run(&["comments", "FILE"]).json();
+        assert_eq!(listed["threads"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn reopen_note_is_appended_as_a_comment_by_the_reopener() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["resolve", "FILE", "c1", "--as", "claude"]);
+
+        let out = fx.run(&[
+            "reopen",
+            "FILE",
+            "c1",
+            "--as",
+            "scott",
+            "--note",
+            "Wrong guess",
+        ]);
+
+        let comments = out.json()["thread"]["comments"].as_array().unwrap().clone();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[1]["author"], "scott");
+        assert_eq!(comments[1]["body"], "Wrong guess");
+    }
+
+    #[test]
+    fn reopening_an_open_thread_is_already_open_and_changes_nothing() {
+        let fx = fixture_with_two_threads();
+        let before = fx.review_bytes();
+
+        let out = fx.run(&["reopen", "FILE", "c1", "--as", "scott", "--note", "Hmm"]);
+
+        assert_eq!(out.code, 2);
+        assert_eq!(out.stdout, "");
+        assert_eq!(out.error_code(), "already_open");
+        assert_eq!(fx.review_bytes(), before);
+    }
+
+    #[test]
+    fn reopen_unknown_id_and_missing_author_are_caller_errors() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["resolve", "FILE", "c1", "--as", "claude"]);
+        let before = fx.review_bytes();
+
+        for (args, code) in [
+            (&["reopen", "FILE", "c99", "--as", "scott"][..], "not_found"),
+            (&["reopen", "FILE", "c1"], "missing_author"),
+        ] {
+            let out = fx.run(args);
+            assert_eq!(out.code, 2, "{args:?}");
+            assert_eq!(out.stdout, "", "{args:?}");
+            assert_eq!(out.error_code(), code, "{args:?}");
+        }
+        assert_eq!(fx.review_bytes(), before);
+    }
+
+    #[test]
+    fn reopen_on_a_terminal_says_reopened() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["resolve", "FILE", "c1", "--as", "claude"]);
+
+        let out = fx.run_with(
+            &["reopen", "FILE", "c1", "--as", "scott"],
+            &fx.env(None, true),
+        );
+
+        assert_eq!(out.stdout, "c1 reopened\n");
     }
 
     #[test]
