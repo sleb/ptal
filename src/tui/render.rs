@@ -46,7 +46,12 @@ pub fn render(app: &App, frame: &mut Frame) {
             draw_panel(app, *scroll, buf, panel);
             draw_footer(app, buf, footer);
         }
-        Mode::Input { draft, cursor, .. } => draw_input(app, draft, *cursor, buf, bottom),
+        Mode::Input {
+            draft,
+            cursor,
+            reply_to,
+            ..
+        } => draw_input(app, draft, *cursor, reply_to.as_deref(), buf, bottom),
     }
 }
 
@@ -118,7 +123,10 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
         parts.push(format!("{} outdated", app.outdated()));
     }
     let hints = match app.mode() {
-        Mode::Panel { .. } => "tab:next a:add j/k:scroll esc:close",
+        Mode::Panel { .. } if app.selected_is_resolved() => {
+            "tab:next a:add r:reply o:reopen j/k:scroll esc:close"
+        }
+        Mode::Panel { .. } => "tab:next a:add r:reply x:resolve j/k:scroll esc:close",
         _ => "enter:thread/comment ]/[:jump q:quit",
     };
     parts.push(hints.to_string());
@@ -152,11 +160,21 @@ fn draw_panel(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
     }
 }
 
-fn draw_input(app: &App, draft: &str, cursor: usize, buf: &mut Buffer, area: Rect) {
+fn draw_input(
+    app: &App,
+    draft: &str,
+    cursor: usize,
+    reply_to: Option<&str>,
+    buf: &mut Buffer,
+    area: Rect,
+) {
     if area.is_empty() {
         return;
     }
-    let title = format!("Comment on line {} as {}", app.cursor() + 1, app.author());
+    let title = match reply_to {
+        Some(id) => format!("Reply to {id} as {}", app.author()),
+        None => format!("Comment on line {} as {}", app.cursor() + 1, app.author()),
+    };
     let block = Block::bordered().title(title);
     let inner = block.inner(area);
     block.render(area, buf);
@@ -189,7 +207,7 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::{Color, Modifier};
 
-    const W: u16 = 66;
+    const W: u16 = 70;
 
     fn lines(n: usize) -> Vec<String> {
         (1..=n).map(|i| format!("line {i}")).collect()
@@ -303,7 +321,8 @@ mod tests {
         app
     }
 
-    const PANEL_FOOTER: &str = "plan.md  L1/12  tab:next a:add j/k:scroll esc:close";
+    const PANEL_FOOTER: &str =
+        "plan.md  L1/12  tab:next a:add r:reply x:resolve j/k:scroll esc:close";
 
     #[test]
     fn the_panel_shows_the_thread_in_a_box_above_the_footer() {
@@ -461,6 +480,62 @@ mod tests {
         assert!(text.contains("│ok"));
         assert!(!text.contains("Threads on line"));
         assert!(text.starts_with("◆  1│line 1"));
+    }
+
+    #[test]
+    fn the_panel_footer_offers_resolve_on_open_threads_and_reopen_on_resolved() {
+        let open = [talk(
+            "c1",
+            (1, 1),
+            "a",
+            Status::Open,
+            State::Current,
+            &[("claude", "hi")],
+        )];
+        let done = [talk(
+            "c1",
+            (1, 1),
+            "a",
+            Status::Resolved {
+                resolved_by: "claude".into(),
+                resolved_at: "2026-10-12T10:00:00Z".into(),
+            },
+            State::Current,
+            &[("claude", "hi")],
+        )];
+
+        let open = screen(&draw(&panel_app(&open), W, 16));
+        let done = screen(&draw(&panel_app(&done), W, 16));
+
+        assert!(
+            open.ends_with("a:add r:reply x:resolve j/k:scroll esc:close"),
+            "{open}"
+        );
+        assert!(
+            done.ends_with("a:add r:reply o:reopen j/k:scroll esc:close"),
+            "{done}"
+        );
+    }
+
+    #[test]
+    fn replying_titles_the_box_with_the_thread_and_author() {
+        let threads = [talk(
+            "c1",
+            (1, 1),
+            "a",
+            Status::Open,
+            State::Current,
+            &[("claude", "hi")],
+        )];
+        let mut app = panel_app(&threads);
+        key(&mut app, KeyCode::Char('r'));
+        type_text(&mut app, "ok");
+
+        let text = screen(&draw(&app, W, 16));
+
+        assert!(text.contains("┌Reply to c1 as scott"), "{text}");
+        assert!(!text.contains("Comment on line"));
+        assert!(text.contains("│ok"));
     }
 
     #[test]
