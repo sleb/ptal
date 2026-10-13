@@ -10,7 +10,7 @@ use jiff::Timestamp;
 use serde::Serialize;
 
 use crate::error::{Error, Result};
-use crate::model::{Anchor, Comment, State, Status, Thread};
+use crate::model::{Anchor, Comment, Review, State, Status, Thread};
 use crate::store::Store;
 
 /// Source of timestamps, injected so tests are deterministic.
@@ -203,20 +203,11 @@ impl<C: Clock> Reviews<C> {
         let now = self.clock.now();
 
         self.store.with_review(file, |review| {
-            let index = review
-                .threads
-                .iter()
-                .position(|t| t.id == id)
-                .ok_or_else(|| Error::NotFound(id.to_string()))?;
+            let index = find_thread(review, id)?;
             if review.threads[index].status != Status::Open {
                 return Ok(review.threads[index].clone());
             }
-            let note_comment = note.map(|body| Comment {
-                id: review.next_comment_id(),
-                author: author.to_string(),
-                body: body.to_string(),
-                created_at: now.clone(),
-            });
+            let note_comment = note.map(|body| new_comment(review, author, body, &now));
             let thread = &mut review.threads[index];
             thread.status = Status::Resolved {
                 resolved_by: author.to_string(),
@@ -226,6 +217,118 @@ impl<C: Clock> Reviews<C> {
             Ok(thread.clone())
         })
     }
+
+    /// Reopen resolved thread `id`, optionally appending `note` as a comment
+    /// by `author`.
+    ///
+    /// The resolution record is dropped. A blank note adds no comment.
+    ///
+    /// # Errors
+    /// [`Error::EmptyAuthor`], [`Error::NotFound`] if no thread has this id,
+    /// [`Error::AlreadyOpen`] if the thread is not resolved, plus any store
+    /// error, checked in that order. Nothing is written on error, so a note
+    /// on an open thread is dropped, not appended.
+    ///
+    /// # Examples
+    /// ```
+    /// # use ptal::{model::Status, review::Reviews, store::Store};
+    /// # let dir = tempfile::tempdir()?;
+    /// # let file = dir.path().join("plan.md");
+    /// # std::fs::write(&file, "one\n")?;
+    /// let reviews = Reviews::new(Store::new(dir.path().join("data")));
+    /// reviews.add_thread(&file, 1, 1, "Typo?", "scott")?;
+    /// reviews.resolve(&file, "c1", "claude", None)?;
+    ///
+    /// let thread = reviews.reopen(&file, "c1", "scott", Some("Not fixed"))?;
+    /// assert_eq!(thread.status, Status::Open);
+    /// assert_eq!(thread.comments.len(), 2);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn reopen(
+        &self,
+        file: &Path,
+        id: &str,
+        author: &str,
+        note: Option<&str>,
+    ) -> Result<Thread> {
+        require_author(author)?;
+        let note = note.filter(|n| !n.trim().is_empty());
+        let now = self.clock.now();
+
+        self.store.with_review(file, |review| {
+            let index = find_thread(review, id)?;
+            if review.threads[index].status == Status::Open {
+                return Err(Error::AlreadyOpen(id.to_string()));
+            }
+            let note_comment = note.map(|body| new_comment(review, author, body, &now));
+            let thread = &mut review.threads[index];
+            thread.status = Status::Open;
+            thread.comments.extend(note_comment);
+            Ok(thread.clone())
+        })
+    }
+
+    /// Append a comment by `author` to thread `id`.
+    ///
+    /// Replying to a resolved thread reopens it in the same write; no
+    /// separate "reopened" comment is added. The body is stored verbatim.
+    ///
+    /// # Errors
+    /// [`Error::EmptyAuthor`], [`Error::EmptyBody`], [`Error::NotFound`] if
+    /// no thread has this id, plus any store error, checked in that order.
+    /// Nothing is written on error.
+    ///
+    /// # Examples
+    /// ```
+    /// # use ptal::{model::Status, review::Reviews, store::Store};
+    /// # let dir = tempfile::tempdir()?;
+    /// # let file = dir.path().join("plan.md");
+    /// # std::fs::write(&file, "one\n")?;
+    /// let reviews = Reviews::new(Store::new(dir.path().join("data")));
+    /// reviews.add_thread(&file, 1, 1, "Typo?", "scott")?;
+    /// reviews.resolve(&file, "c1", "claude", None)?;
+    ///
+    /// let thread = reviews.reply(&file, "c1", "Still wrong", "scott")?;
+    /// assert_eq!(thread.status, Status::Open);
+    /// assert_eq!(thread.comments[1].id, "c2");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn reply(&self, file: &Path, id: &str, body: &str, author: &str) -> Result<Thread> {
+        require_author(author)?;
+        if body.trim().is_empty() {
+            return Err(Error::EmptyBody);
+        }
+        let created_at = self.clock.now();
+
+        self.store.with_review(file, |review| {
+            let index = find_thread(review, id)?;
+            let comment = new_comment(review, author, body, &created_at);
+            let thread = &mut review.threads[index];
+            thread.comments.push(comment);
+            thread.status = Status::Open;
+            Ok(thread.clone())
+        })
+    }
+}
+
+/// A comment with the next free id. The id counter advances, so call this
+/// only once the operation can no longer fail.
+fn new_comment(review: &mut Review, author: &str, body: &str, created_at: &str) -> Comment {
+    Comment {
+        id: review.next_comment_id(),
+        author: author.to_string(),
+        body: body.to_string(),
+        created_at: created_at.to_string(),
+    }
+}
+
+/// Index of thread `id` in `review`.
+fn find_thread(review: &Review, id: &str) -> Result<usize> {
+    review
+        .threads
+        .iter()
+        .position(|t| t.id == id)
+        .ok_or_else(|| Error::NotFound(id.to_string()))
 }
 
 fn require_author(author: &str) -> Result<()> {
@@ -646,5 +749,194 @@ mod tests {
         let result = fx.reviews.resolve(&fx.file, "c1", "", None);
 
         assert!(matches!(result, Err(Error::EmptyAuthor)));
+    }
+
+    // --- reply ---
+
+    const LATER: &str = "2026-10-12T11:00:00Z";
+
+    fn later_now() -> String {
+        LATER.to_string()
+    }
+
+    #[test]
+    fn reply_appends_a_comment_with_a_fresh_id_and_keeps_the_thread_open() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "scott").unwrap();
+        let replier = Reviews::with_clock(fx.store.clone(), later_now as fn() -> String);
+
+        let thread = replier.reply(&fx.file, "c1", "Because.", "claude").unwrap();
+
+        assert_eq!(thread.id, "c1");
+        assert_eq!(thread.status, Status::Open);
+        assert_eq!(
+            thread.comments[1],
+            Comment {
+                id: "c2".into(),
+                author: "claude".into(),
+                body: "Because.".into(),
+                created_at: LATER.into(),
+            }
+        );
+        assert_eq!(thread.comments.len(), 2);
+        assert_eq!(fx.store.load(&fx.file).unwrap().threads, vec![thread]);
+    }
+
+    #[test]
+    fn replies_keep_order_and_share_the_id_counter_with_threads() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "scott").unwrap();
+        fx.reviews.add_thread(&fx.file, 2, 2, "y", "scott").unwrap();
+        fx.reviews.reply(&fx.file, "c1", "first", "claude").unwrap();
+        let thread = fx.reviews.reply(&fx.file, "c1", "second", "scott").unwrap();
+        let next = fx.reviews.add_thread(&fx.file, 3, 3, "z", "scott").unwrap();
+
+        let ids: Vec<&str> = thread.comments.iter().map(|c| c.id.as_str()).collect();
+        let bodies: Vec<&str> = thread.comments.iter().map(|c| c.body.as_str()).collect();
+        assert_eq!(ids, ["c1", "c3", "c4"]);
+        assert_eq!(bodies, ["x", "first", "second"]);
+        assert_eq!(next.id, "c5");
+    }
+
+    #[test]
+    fn reply_to_a_resolved_thread_reopens_it_on_disk() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "scott").unwrap();
+        fx.reviews.resolve(&fx.file, "c1", "claude", None).unwrap();
+
+        let thread = fx
+            .reviews
+            .reply(&fx.file, "c1", "Not yet", "scott")
+            .unwrap();
+
+        assert_eq!(thread.status, Status::Open);
+        let json = String::from_utf8(fx.review_json().unwrap()).unwrap();
+        assert!(!json.contains("resolved_by"), "{json}");
+        assert!(!json.contains("resolved_at"), "{json}");
+    }
+
+    #[test]
+    fn reply_errors_change_nothing_and_do_not_burn_an_id() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "scott").unwrap();
+        let bytes = fx.review_json();
+
+        assert!(matches!(
+            fx.reviews.reply(&fx.file, "c99", "hi", "claude"),
+            Err(Error::NotFound(id)) if id == "c99"
+        ));
+        assert!(matches!(
+            fx.reviews.reply(&fx.file, "c1", "  ", "claude"),
+            Err(Error::EmptyBody)
+        ));
+        assert!(matches!(
+            fx.reviews.reply(&fx.file, "c1", "hi", " "),
+            Err(Error::EmptyAuthor)
+        ));
+        assert!(matches!(
+            fx.reviews.reply(&fx.file, "c1", "", ""),
+            Err(Error::EmptyAuthor)
+        ));
+        assert_eq!(fx.review_json(), bytes);
+        let thread = fx.reviews.reply(&fx.file, "c1", "hi", "claude").unwrap();
+        assert_eq!(thread.comments[1].id, "c2");
+    }
+
+    // --- reopen ---
+
+    fn resolved_thread(fx: &Fixture) {
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "scott").unwrap();
+        fx.reviews.resolve(&fx.file, "c1", "claude", None).unwrap();
+    }
+
+    #[test]
+    fn reopen_makes_a_resolved_thread_open_and_drops_resolution_fields() {
+        let fx = fixture();
+        resolved_thread(&fx);
+
+        let thread = fx.reviews.reopen(&fx.file, "c1", "scott", None).unwrap();
+
+        assert_eq!(thread.status, Status::Open);
+        assert_eq!(thread.comments.len(), 1);
+        let json = String::from_utf8(fx.review_json().unwrap()).unwrap();
+        assert!(!json.contains("resolved_by"), "{json}");
+        assert!(!json.contains("resolved_at"), "{json}");
+        assert_eq!(fx.store.load(&fx.file).unwrap().threads, vec![thread]);
+    }
+
+    #[test]
+    fn reopen_note_becomes_a_comment_by_the_reopener_and_blank_adds_none() {
+        let fx = fixture();
+        resolved_thread(&fx);
+
+        let thread = fx
+            .reviews
+            .reopen(&fx.file, "c1", "scott", Some("Wrong guess"))
+            .unwrap();
+
+        assert_eq!(
+            thread.comments[1],
+            Comment {
+                id: "c2".into(),
+                author: "scott".into(),
+                body: "Wrong guess".into(),
+                created_at: NOW.into(),
+            }
+        );
+
+        fx.reviews.resolve(&fx.file, "c1", "claude", None).unwrap();
+        let thread = fx
+            .reviews
+            .reopen(&fx.file, "c1", "scott", Some("  "))
+            .unwrap();
+        assert_eq!(thread.comments.len(), 2);
+    }
+
+    #[test]
+    fn reopening_an_open_thread_is_already_open_and_changes_nothing() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "scott").unwrap();
+        let bytes = fx.review_json();
+
+        let result = fx.reviews.reopen(&fx.file, "c1", "scott", Some("note"));
+
+        assert!(matches!(result, Err(Error::AlreadyOpen(id)) if id == "c1"));
+        assert_eq!(fx.review_json(), bytes);
+        let next = fx.reviews.reply(&fx.file, "c1", "hi", "scott").unwrap();
+        assert_eq!(next.comments[1].id, "c2");
+    }
+
+    #[test]
+    fn reopen_error_precedence_is_author_then_not_found_then_already_open() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "scott").unwrap();
+        let bytes = fx.review_json();
+
+        assert!(matches!(
+            fx.reviews.reopen(&fx.file, "c1", " ", None),
+            Err(Error::EmptyAuthor)
+        ));
+        assert!(matches!(
+            fx.reviews.reopen(&fx.file, "c99", "scott", None),
+            Err(Error::NotFound(id)) if id == "c99"
+        ));
+        assert_eq!(fx.review_json(), bytes);
+    }
+
+    #[test]
+    fn resolve_reopen_resolve_records_the_new_resolver() {
+        let fx = fixture();
+        resolved_thread(&fx);
+        fx.reviews.reopen(&fx.file, "c1", "scott", None).unwrap();
+
+        let thread = fx.reviews.resolve(&fx.file, "c1", "codex", None).unwrap();
+
+        assert_eq!(
+            thread.status,
+            Status::Resolved {
+                resolved_by: "codex".into(),
+                resolved_at: NOW.into()
+            }
+        );
     }
 }

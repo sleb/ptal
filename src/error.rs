@@ -13,6 +13,10 @@ pub enum Error {
     #[error("thread {0} not found")]
     NotFound(String),
 
+    /// The thread is already open, so there is nothing to reopen.
+    #[error("thread {0} is already open")]
+    AlreadyOpen(String),
+
     /// The requested line range is not valid for the file.
     #[error("invalid line range {start}-{end}: {reason}")]
     InvalidRange {

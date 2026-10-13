@@ -48,6 +48,7 @@ impl Failure {
             Failure::Core(error) => match error {
                 Error::EmptyAuthor => ("missing_author", EXIT_CALLER),
                 Error::NotFound(_) => ("not_found", EXIT_CALLER),
+                Error::AlreadyOpen(_) => ("already_open", EXIT_CALLER),
                 Error::InvalidRange { .. } => ("invalid_range", EXIT_CALLER),
                 Error::EmptyBody => ("empty_body", EXIT_CALLER),
                 Error::FileUnreadable { .. } => ("file_unreadable", EXIT_RUNTIME),
@@ -111,6 +112,15 @@ Examples:
   ptal resolve plan.md c3 --as claude
   ptal resolve plan.md c3 --as claude --note \"Done, see step 2.\"";
 
+const REPLY_EXAMPLE: &str = "\
+Examples:
+  ptal reply plan.md c3 \"Which of the two do you mean?\" --as claude";
+
+const REOPEN_EXAMPLE: &str = "\
+Examples:
+  ptal reopen plan.md c3 --as scott
+  ptal reopen plan.md c3 --as scott --note \"Not fixed: still fails on empty input.\"";
+
 const WORKFLOW: &str = "\
 Review a throwaway text file. A human comments on lines in the TUI, opened
 with `ptal <file>` (interactive terminals only; without one it fails with
@@ -121,14 +131,27 @@ Workflow:
   1. ptal comments <file>             list open threads (--all adds resolved)
   2. edit the file to address them    ptal never modifies the reviewed file
   3. ptal comments <file>             re-check: your edit moves or changes lines
-  4. ptal resolve <file> <id> --as <name> [--note \"what changed\"]
+  4. ptal reply <file> <id> \"<body>\" --as <name>
+     ptal resolve <file> <id> --as <name> [--note \"what changed\"]
+     ptal reopen <file> <id> --as <name> [--note \"why\"]
+
+Threads are conversations. `ptal reply` asks, answers or discusses;
+`ptal resolve` closes a thread you addressed; `ptal reopen` takes a resolved
+thread back. A reply to a resolved thread reopens it, so use `reopen` only
+when you have nothing to say; reopening an open thread is already_open.
+
+A thread is waiting on you when its last comment is not yours: its author
+differs from your --as name (exact match), so use the same --as name every
+time. Only open threads are listed by default.
 
 Use `ptal add <file> --lines <N|A-B> \"<body>\" --as <name>` to raise a
-question of your own on a line or range.
+question of your own on a line or range. That starts a new thread; it is not
+for answering one, use `ptal reply`.
 
 Resolve a thread only when you addressed it. If a comment is unclear or you
-disagree, do not guess: leave the thread open, ask with `ptal add`, and tell
-the human.
+disagree, do not guess: leave the thread open, ask with `ptal reply`, and tell
+the human. When you resolve on a reading of an ambiguous comment, state your
+interpretation in --note so the human can correct it.
 
 Output is JSON when stdout is not a terminal, or with --json. `comments`
 prints one document:
@@ -148,7 +171,7 @@ threads you just addressed turn outdated, which is expected, so resolve them.
 For one you did not address, re-read the file and, if the comment still
 applies, re-anchor it with `ptal add` rather than trusting the stale range.
 
-`add` and `resolve` print {\"file\", \"thread\"} (no `state`).
+`add`, `reply`, `resolve` and `reopen` print {\"file\", \"thread\"} (no `state`).
 
 Author: write commands need --as <name> or the PTAL_AUTHOR environment
 variable. ptal never guesses one.
@@ -159,7 +182,7 @@ Errors: nothing on stdout; stderr gets one line,
 Exit codes:
   0  success
   2  fix the invocation: usage, missing_author, not_found, invalid_range,
-     empty_body
+     empty_body, already_open
   1  runtime failure: file_unreadable, locked, unsupported_schema, io,
      corrupt, no_data_dir, not_a_terminal, terminal
 
@@ -224,6 +247,31 @@ enum Command {
         #[arg(long)]
         note: Option<String>,
     },
+    /// Add a comment to a thread.
+    #[command(after_long_help = REPLY_EXAMPLE)]
+    Reply {
+        file: PathBuf,
+        /// Thread id, e.g. `c3`.
+        id: String,
+        /// The comment text.
+        body: String,
+        /// Who is replying; falls back to `PTAL_AUTHOR`.
+        #[arg(long = "as", value_name = "NAME")]
+        author: Option<String>,
+    },
+    /// Reopen a resolved thread.
+    #[command(after_long_help = REOPEN_EXAMPLE)]
+    Reopen {
+        file: PathBuf,
+        /// Thread id, e.g. `c3`.
+        id: String,
+        /// Who is reopening; falls back to `PTAL_AUTHOR`.
+        #[arg(long = "as", value_name = "NAME")]
+        author: Option<String>,
+        /// Leave a comment saying why.
+        #[arg(long)]
+        note: Option<String>,
+    },
 }
 
 /// Parse `A-B` or a bare `N` (sugar for `N-N`). Range validity against the
@@ -259,15 +307,24 @@ pub fn resolve_author(flag: Option<&str>, env: Option<&str>) -> Result<String, F
 /// What a successful command has to say.
 enum Output {
     Threads(Vec<ThreadView>),
-    Added(Thread),
-    Resolved(Thread),
+    /// A write's result: the updated thread and what was done to it.
+    Thread(Thread, Verb),
+}
+
+/// What a write command did, for the readable rendering.
+#[derive(Debug, Clone, Copy)]
+enum Verb {
+    Added,
+    Resolved,
+    Replied,
+    Reopened,
 }
 
 impl Output {
     fn to_json(&self, file: &Path) -> String {
         let value = match self {
             Output::Threads(threads) => json!({ "file": file, "threads": threads }),
-            Output::Added(thread) | Output::Resolved(thread) => {
+            Output::Thread(thread, _) => {
                 json!({ "file": file, "thread": thread })
             }
         };
@@ -278,7 +335,7 @@ impl Output {
     fn to_text(&self) -> String {
         match self {
             Output::Threads(threads) => render_text(threads),
-            Output::Added(thread) => {
+            Output::Thread(thread, Verb::Added) => {
                 let Anchor {
                     start_line,
                     end_line,
@@ -286,7 +343,12 @@ impl Output {
                 } = thread.anchor;
                 format!("{} added (lines {start_line}-{end_line})\n", thread.id)
             }
-            Output::Resolved(thread) => format!("{} resolved\n", thread.id),
+            Output::Thread(thread, Verb::Resolved) => format!("{} resolved\n", thread.id),
+            Output::Thread(thread, Verb::Replied) => {
+                let reply = thread.comments.last().map_or("", |c| c.id.as_str());
+                format!("{} replied ({reply})\n", thread.id)
+            }
+            Output::Thread(thread, Verb::Reopened) => format!("{} reopened\n", thread.id),
         }
     }
 }
@@ -385,7 +447,9 @@ fn run_command<C: Clock>(
     let file = match command {
         Command::Comments { file, .. }
         | Command::Add { file, .. }
-        | Command::Resolve { file, .. } => file,
+        | Command::Resolve { file, .. }
+        | Command::Reply { file, .. }
+        | Command::Reopen { file, .. } => file,
     };
     let output = dispatch(command, env)?;
     let canonical = std::fs::canonicalize(file).map_err(|source| {
@@ -443,9 +507,8 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
             author: flag,
         } => {
             let author = author(flag)?;
-            Ok(Output::Added(
-                reviews.add_thread(file, *start, *end, body, &author)?,
-            ))
+            let thread = reviews.add_thread(file, *start, *end, body, &author)?;
+            Ok(Output::Thread(thread, Verb::Added))
         }
         Command::Resolve {
             file,
@@ -454,12 +517,28 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
             note,
         } => {
             let author = author(flag)?;
-            Ok(Output::Resolved(reviews.resolve(
-                file,
-                id,
-                &author,
-                note.as_deref(),
-            )?))
+            let thread = reviews.resolve(file, id, &author, note.as_deref())?;
+            Ok(Output::Thread(thread, Verb::Resolved))
+        }
+        Command::Reply {
+            file,
+            id,
+            body,
+            author: flag,
+        } => {
+            let author = author(flag)?;
+            let thread = reviews.reply(file, id, body, &author)?;
+            Ok(Output::Thread(thread, Verb::Replied))
+        }
+        Command::Reopen {
+            file,
+            id,
+            author: flag,
+            note,
+        } => {
+            let author = author(flag)?;
+            let thread = reviews.reopen(file, id, &author, note.as_deref())?;
+            Ok(Output::Thread(thread, Verb::Reopened))
         }
     }
 }
@@ -546,6 +625,11 @@ mod tests {
                 2,
             ),
             (Failure::Core(Error::EmptyBody), "empty_body", 2),
+            (
+                Failure::Core(Error::AlreadyOpen("c1".into())),
+                "already_open",
+                2,
+            ),
             (
                 Failure::Core(Error::FileUnreadable {
                     path: path.clone(),
@@ -966,6 +1050,206 @@ mod tests {
     }
 
     #[test]
+    fn reply_appends_a_comment_and_prints_the_thread() {
+        let fx = fixture_with_two_threads();
+
+        let out = fx.run(&[
+            "reply",
+            "FILE",
+            "c1",
+            "Typo fixed",
+            "--as",
+            "claude",
+            "--json",
+        ]);
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_eq!(out.stderr, "");
+        let json = out.json();
+        assert_eq!(json["file"], fx.canonical());
+        let thread = &json["thread"];
+        assert_eq!(thread["id"], "c1");
+        assert!(thread.get("state").is_none());
+        let comments = thread["comments"].as_array().unwrap();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[1]["id"], "c3");
+        assert_eq!(comments[1]["author"], "claude");
+        assert_eq!(comments[1]["body"], "Typo fixed");
+    }
+
+    #[test]
+    fn comments_after_a_reply_shows_it_last_under_the_same_thread_id() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["reply", "FILE", "c1", "one", "--as", "claude"]);
+        fx.run(&["reply", "FILE", "c1", "two", "--as", "scott"]);
+
+        let listed = fx.run(&["comments", "FILE"]).json();
+
+        let thread = &listed["threads"][0];
+        assert_eq!(thread["id"], "c1");
+        let bodies: Vec<&str> = thread["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(bodies, ["Typo?", "one", "two"]);
+    }
+
+    #[test]
+    fn replying_to_a_resolved_thread_brings_it_back_to_the_default_view() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["resolve", "FILE", "c1", "--as", "claude"]);
+        assert_eq!(
+            fx.run(&["comments", "FILE"]).json()["threads"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        fx.run(&["reply", "FILE", "c1", "Still wrong", "--as", "scott"]);
+
+        let listed = fx.run(&["comments", "FILE"]).json();
+        let threads = listed["threads"].as_array().unwrap();
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0]["id"], "c1");
+        assert_eq!(threads[0]["status"], "open");
+        assert!(threads[0].get("resolved_by").is_none());
+        assert!(threads[0].get("resolved_at").is_none());
+    }
+
+    #[test]
+    fn reply_failures_exit_2_with_their_codes_and_leave_the_review_untouched() {
+        let fx = fixture_with_two_threads();
+        let before = fx.review_bytes();
+
+        for (args, code) in [
+            (
+                &["reply", "FILE", "c99", "hi", "--as", "claude"][..],
+                "not_found",
+            ),
+            (
+                &["reply", "FILE", "c1", "  ", "--as", "claude"],
+                "empty_body",
+            ),
+            (&["reply", "FILE", "c1", "hi"], "missing_author"),
+        ] {
+            let out = fx.run(args);
+            assert_eq!(out.code, 2, "{args:?}");
+            assert_eq!(out.stdout, "", "{args:?}");
+            assert_eq!(out.error_code(), code, "{args:?}");
+        }
+        assert_eq!(fx.review_bytes(), before);
+    }
+
+    #[test]
+    fn reply_falls_back_to_ptal_author() {
+        let fx = fixture_with_two_threads();
+
+        let out = fx.run_with(
+            &["reply", "FILE", "c1", "hi"],
+            &fx.env(Some("codex"), false),
+        );
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_eq!(out.json()["thread"]["comments"][1]["author"], "codex");
+    }
+
+    #[test]
+    fn reply_on_a_terminal_prints_the_thread_and_the_new_comment_id() {
+        let fx = fixture_with_two_threads();
+
+        let out = fx.run_with(
+            &["reply", "FILE", "c1", "hi", "--as", "claude"],
+            &fx.env(None, true),
+        );
+
+        assert_eq!(out.stdout, "c1 replied (c3)\n");
+    }
+
+    #[test]
+    fn reopen_brings_a_resolved_thread_back_to_the_default_view() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["resolve", "FILE", "c1", "--as", "claude"]);
+
+        let out = fx.run(&["reopen", "FILE", "c1", "--as", "scott"]);
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        let thread = &out.json()["thread"];
+        assert_eq!(thread["status"], "open");
+        assert!(thread.get("resolved_by").is_none());
+        assert!(thread.get("state").is_none());
+        let listed = fx.run(&["comments", "FILE"]).json();
+        assert_eq!(listed["threads"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn reopen_note_is_appended_as_a_comment_by_the_reopener() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["resolve", "FILE", "c1", "--as", "claude"]);
+
+        let out = fx.run(&[
+            "reopen",
+            "FILE",
+            "c1",
+            "--as",
+            "scott",
+            "--note",
+            "Wrong guess",
+        ]);
+
+        let comments = out.json()["thread"]["comments"].as_array().unwrap().clone();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[1]["author"], "scott");
+        assert_eq!(comments[1]["body"], "Wrong guess");
+    }
+
+    #[test]
+    fn reopening_an_open_thread_is_already_open_and_changes_nothing() {
+        let fx = fixture_with_two_threads();
+        let before = fx.review_bytes();
+
+        let out = fx.run(&["reopen", "FILE", "c1", "--as", "scott", "--note", "Hmm"]);
+
+        assert_eq!(out.code, 2);
+        assert_eq!(out.stdout, "");
+        assert_eq!(out.error_code(), "already_open");
+        assert_eq!(fx.review_bytes(), before);
+    }
+
+    #[test]
+    fn reopen_unknown_id_and_missing_author_are_caller_errors() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["resolve", "FILE", "c1", "--as", "claude"]);
+        let before = fx.review_bytes();
+
+        for (args, code) in [
+            (&["reopen", "FILE", "c99", "--as", "scott"][..], "not_found"),
+            (&["reopen", "FILE", "c1"], "missing_author"),
+        ] {
+            let out = fx.run(args);
+            assert_eq!(out.code, 2, "{args:?}");
+            assert_eq!(out.stdout, "", "{args:?}");
+            assert_eq!(out.error_code(), code, "{args:?}");
+        }
+        assert_eq!(fx.review_bytes(), before);
+    }
+
+    #[test]
+    fn reopen_on_a_terminal_says_reopened() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["resolve", "FILE", "c1", "--as", "claude"]);
+
+        let out = fx.run_with(
+            &["reopen", "FILE", "c1", "--as", "scott"],
+            &fx.env(None, true),
+        );
+
+        assert_eq!(out.stdout, "c1 reopened\n");
+    }
+
+    #[test]
     fn resolving_twice_succeeds_without_a_duplicate_note() {
         let fx = fixture_with_two_threads();
         fx.run(&["resolve", "FILE", "c1", "--as", "claude", "--note", "Fixed"]);
@@ -1161,13 +1445,111 @@ c2  open  outdated  lines 2-3
         let paragraph = paragraph.to_lowercase();
         assert!(paragraph.contains("resolve"), "{paragraph}");
         assert!(paragraph.contains("open"), "{paragraph}");
+        assert!(paragraph.contains("ptal reply"), "{paragraph}");
+    }
+
+    fn paragraph_with(help: &str, needles: &[&str]) -> String {
+        help.split("\n\n")
+            .find(|p| needles.iter().all(|n| p.contains(n)))
+            .unwrap_or_else(|| panic!("no paragraph contains {needles:?}:\n{help}"))
+            .to_string()
+    }
+
+    #[test]
+    fn top_level_help_lists_already_open_as_a_caller_error() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let exit_2 = help.find("  2  ").expect("exit 2 line");
+        let exit_1 = help.find("  1  ").expect("exit 1 line");
+        assert!(help[exit_2..exit_1].contains("already_open"), "{help}");
+    }
+
+    #[test]
+    fn top_level_help_shows_how_to_call_reply_and_reopen() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        for command in ["ptal reply", "ptal reopen"] {
+            let line = help
+                .lines()
+                .find(|line| line.contains(command))
+                .unwrap_or_else(|| panic!("no line introduces `{command}`"));
+            assert!(line.contains("--as"), "{line}");
+        }
+    }
+
+    #[test]
+    fn top_level_help_says_when_to_reply_resolve_and_reopen() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        paragraph_with(
+            &help,
+            &[
+                "ptal reply",
+                "ptal resolve",
+                "ptal reopen",
+                "ask",
+                "addressed",
+                "back",
+            ],
+        );
+    }
+
+    #[test]
+    fn top_level_help_defines_waiting_on_you_as_the_last_comment_not_yours() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let paragraph = paragraph_with(&help, &["last comment", "not yours"]);
+        assert!(paragraph.contains("--as"), "{paragraph}");
+    }
+
+    #[test]
+    fn top_level_help_says_to_state_the_interpretation_on_resolve() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        paragraph_with(&help, &["interpretation", "--note"]);
+    }
+
+    #[test]
+    fn top_level_help_says_add_is_for_new_threads_not_answers() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let paragraph = paragraph_with(&help, &["new thread", "not"]);
+        assert!(paragraph.contains("answer"), "{paragraph}");
+        assert!(paragraph.contains("ptal add"), "{paragraph}");
+    }
+
+    #[test]
+    fn top_level_help_says_which_commands_print_the_thread() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let line = help
+            .lines()
+            .find(|l| l.contains(r#"{"file", "thread"}"#))
+            .unwrap_or_else(|| panic!("no line describes the thread output:\n{help}"));
+        for command in ["add", "reply", "resolve", "reopen"] {
+            assert!(line.contains(command), "{command}: {line}");
+        }
     }
 
     #[test]
     fn every_subcommand_help_has_an_example() {
         let fx = fixture("one\n");
 
-        for command in ["comments", "add", "resolve"] {
+        for command in ["comments", "add", "resolve", "reply", "reopen"] {
             let help = fx.run(&[command, "--help"]).stdout;
             assert!(help.contains("Example"), "{command}:\n{help}");
             assert!(
