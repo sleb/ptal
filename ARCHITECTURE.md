@@ -33,14 +33,14 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `model` | Built: `Review`, `Thread`, `Status`, `Comment`, `Anchor`, `State` |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built (MVP subset): `add_thread`, `view`, `resolve` |
-| `cli` | Next story |
+| `cli` | Built (MVP subset): `comments`, `add`, `resolve` |
 | `tui` | Next story |
 | `anchor`, `highlight`, `diffview` | Deferred |
 
 Deferred within built components: revisions and snapshots, anchor mapping
 between file versions, nested replies, edit, delete, reopen, `acknowledge`,
-`ptal schema`. In the MVP, `state` compares the quote against the file at the
-stored lines, with no mapping. Sections below describe deferred design where
+`ptal schema` and `ptal reply` in the CLI. In the MVP, `state` compares the
+quote against the file at the stored lines, with no mapping. Sections below describe deferred design where
 they say so.
 
 ## Key idea: revisions and anchoring
@@ -185,28 +185,42 @@ API both front ends share. Mapping errors to exit codes belongs to `cli`.
 `acknowledge`, `as_of` views.
 
 ### `cli`
-*Not built yet.* Next story.
 
-**Role:** the agent-facing front end. Parses args (clap), calls `review`,
-prints.
+**Role:** the agent-facing front end (`src/cli.rs`, clap derive). Parses args,
+calls `review`, prints. The whole flow is `run(args, &Env, out, err) -> u8`,
+with the process facts (store, clock, `PTAL_AUTHOR`, TTY flags) injected via
+`Env`, so every path is testable in-process; `main` only fills `Env` from the
+real process.
 
-Commands: `comments`, `add`, `reply`, `resolve`, `reopen`, `schema`; bare
-`ptal <file>` launches `tui`.
+Commands: `comments`, `add`, `resolve`. Bare `ptal <file>` (the TUI) is not
+built; how it coexists with subcommand names is decided with the TUI.
 
 **Contract**
 - **stdout** is data only: JSON when not a TTY (or `--json`), a readable
-  rendering when a TTY. **stderr** is diagnostics. Never mixed.
-- `comments` output is self-contained: each thread carries id, range, `state`,
-  quoted text, status, and the full nested reply tree, so an agent never has to
-  re-derive context. Default is open threads; `--all` includes resolved.
-- Exit codes: `0` success, `1` runtime error (file unreadable, locked), `2`
-  usage or not-found. Errors are JSON on stderr when not a TTY.
-- Writes require `--as <name>` or `PTAL_AUTHOR`; the CLI never invents an
-  author.
-- `--help` is part of the product: every command shows an example and the
-  top-level help includes a short "using ptal as an agent" workflow.
-- Output shapes are the `model` types; `ptal schema` is the source of truth.
-  Changing them is a `schema_version` bump.
+  rendering when a TTY. **stderr** is diagnostics. Never mixed; on failure
+  stdout is empty. `--help` and `--version` go to stdout with exit `0`.
+- `comments` prints `{"file", "threads": [...]}`. Each thread is self-contained:
+  id, `status`, `state`, `anchor` with the quote, and its flat list of
+  `comments` (resolved threads add `resolved_by`/`resolved_at`). Default is
+  open threads; `--all` includes resolved. Threads are in id order. There is no
+  reply tree yet.
+- `add` and `resolve` print `{"file", "thread"}` (no `state`: it is a read-time
+  concept). Resolving a resolved thread succeeds and prints it unchanged.
+- Errors are one line on stderr, `{"error": {"code", "message"}}` (readable
+  text on a TTY stderr unless `--json`). The code-to-exit mapping is the
+  `Failure::classify` table, pinned by a unit test and documented in
+  [docs/interfaces.md](docs/interfaces.md#exit-codes): `2` means the caller
+  can fix the invocation, `1` is a runtime failure.
+- Writes require `--as <name>` or `PTAL_AUTHOR` (blank counts as unset); the
+  CLI never invents an author and never reads `$USER`.
+- `--lines` is `N` or `A-B`; syntax errors are `usage`, range validity
+  against the file is the core's `InvalidRange`.
+- `--help` is part of the product: the top-level help carries the agent
+  workflow, the JSON shape, exit codes, and env vars; every command has an
+  example.
+
+*Deferred:* `reply`, `reopen`, `ptal schema`; output shapes are the `model`
+types, so changing them is a `schema_version` bump.
 
 ### `tui`
 *Not built yet.* Next story.
@@ -279,7 +293,9 @@ state or `review`.
 - `tests/core.rs`: concurrent writers, cross-handle reads, a full review round.
 - `anchor` (deferred): property tests (identity, in-bounds, `Current` ⇒
   identical text).
-- `cli`: golden JSON output tests plus a schema-conformance check.
+- `cli`: in-process tests (golden JSON, TTY rendering, error table, help) in
+  `src/cli.rs`; process tests in `tests/cli.rs` for streams, exit status, and
+  env. Schema conformance is deferred with `ptal schema`.
 - `tui`: drive `update` with scripted key events and assert on state and on
   `TestBackend` snapshots.
 
