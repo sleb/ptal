@@ -21,16 +21,18 @@ acceptance criteria and link here instead of restating commands.
 | Open a review | `ptal comments <file>` (no session) | `ptal <file>` (interactive terminal only; see below) | `view` |
 | Move around the file | n/a (the agent reads the file itself) | `j`/`k`, `ctrl+d`/`ctrl+u`, `g`/`G`; aliases `↓`/`↑`, `PgDn`/`PgUp`, `End`/`Home` | none |
 | Quit | n/a (process exits) | `q`, or `ctrl+c` in Normal mode | none |
-| List open threads | `ptal comments <file>` | Gutter marker on commented lines | `view(include_resolved=false)` |
-| Read thread text | `comments` output: id, status, `state`, range, quote, comments | n/a | `view` |
-| List resolved threads | `ptal comments <file> --all` | n/a | `view(include_resolved=true)` |
-| Comment on one line | `ptal add <file> --lines N "text" --as <name>` | `enter` on the line, type, `enter` saves, `esc` (or `ctrl+c`) cancels | `add_thread` |
+| List open threads | `ptal comments <file>` | Gutter glyph on covered lines: `●` open, `◆` waiting on you (last comment not by `$USER`), `○` resolved only | `view(include_resolved=false)` |
+| Read thread text | `comments` output: id, status, `state`, range, quote, comments | `enter` on a threaded line opens the thread panel: status, `outdated`, quote, every comment with author, time and body | `view` |
+| Open a thread's conversation | n/a | In the panel: `tab`/`shift+tab` select among the line's threads (wraps), `j`/`k` (`↓`/`↑`) scroll, `esc` (or `q`, `ctrl+c`) closes | none |
+| Jump between threads | n/a | `]` / `[`: next / previous threaded line, no wrap | none |
+| List resolved threads | `ptal comments <file> --all` | Shown in the panel (`resolved by <name>`, dimmed) and as `○` in the gutter | `view(include_resolved=true)` |
+| Comment on one line | `ptal add <file> --lines N "text" --as <name>` | `enter` on an unthreaded line (or `a` in the thread panel, which adds a thread beside the existing ones), type, `enter` saves, `esc` (or `ctrl+c`) cancels | `add_thread` |
 | Edit the draft | n/a | `←`/`→`, `Home`/`End` move; `backspace`/`delete` remove; single line | none |
 | Comment on a range | `ptal add <file> --lines A-B "text" --as <name>` | n/a | `add_thread` |
 | Resolve a thread | `ptal resolve <file> <id> --as <name> [--note "..."]` | n/a | `resolve` |
 | Reply to a thread | `ptal reply <file> <id> "text" --as <name>` (reopens a resolved thread) | n/a | `reply` |
 | Reopen a thread | `ptal reopen <file> <id> --as <name> [--note "..."]` (`already_open` if open) | n/a | `reopen` |
-| See whether a thread is stale | `state: "current" \| "outdated"` in `comments` | n/a | `view` |
+| See whether a thread is stale | `state: "current" \| "outdated"` in `comments` | `outdated` in the thread panel; the footer counts open outdated threads (`N outdated`) | `view` |
 | Learn the tool | `ptal --help` (workflow, conversation model, JSON shape, exit codes); `ptal <command> --help` has an example | n/a | none |
 
 ## Cross-cutting
@@ -77,9 +79,9 @@ the terminal is taken over.
 ## Deliberate asymmetries
 
 - **Navigation and quitting** are TUI-only; the agent has no cursor.
-- **The MVP TUI only adds single-line comments and shows where threads are.**
-  Reading thread text, ranges, resolving, replying, reopening, and seeing
-  resolved or outdated state are CLI-only for now. Threads whose quoted text no longer matches are not
-  marked in the gutter; the footer counts them (`N outdated`).
+- **The TUI reads threads and adds single-line threads.** Ranges, replying,
+  resolving and reopening are CLI-only for now. A thread covers its stored
+  range whatever its state, so outdated threads carry the same gutter glyph
+  and open from it; the panel labels them `outdated`.
 - **Ranges and long lines.** The TUI comments on one line at a time, and long
   file lines are truncated at the screen edge (no wrapping yet).

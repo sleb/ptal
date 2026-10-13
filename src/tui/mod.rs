@@ -1,7 +1,9 @@
-//! The human-facing terminal UI: a read-only file view with line comments.
+//! The human-facing terminal UI: a read-only file view with line comments and
+//! a panel for reading the threads on a line.
 //!
 //! Depends on [`crate::review`] and [`crate::model`] only, never on `store`.
-//! [`app`] is the pure state machine, [`mod@render`] the pure drawing; this
+//! [`app`] is the pure state machine, [`panel`] the pure thread layout,
+//! [`mod@render`] the pure drawing; this
 //! module is the driver that performs the effects `update` asks for.
 
 pub mod app;

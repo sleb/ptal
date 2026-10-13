@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built (MVP subset): `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built (MVP subset): `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built (MVP subset): `Normal`/`Input` modes, gutter markers, add a one-line comment |
+| `tui` | Built (MVP subset): `Normal`/`Panel`/`Input` modes, gutter markers, thread panel, thread navigation, add a one-line comment |
 | `anchor`, `highlight`, `diffview` | Deferred |
 
 Deferred within built components: revisions and snapshots, anchor mapping
@@ -254,22 +254,35 @@ Depends on `review` and `model` only.
 
 Three parts:
 
-- `tui::app`: `App` state (`lines`, `cursor`, `top`, terminal `rows`, `mode`,
-  gutter `markers`, `outdated` count, footer `status`), `Mode = Normal |
-  Input { draft, cursor }`, and `update(&mut App, Event) -> Option<Effect>`.
+- `tui::app`: `App` state (`lines`, `cursor`, `top`, terminal `cols` and
+  `rows`, `mode`, `author`, every thread of the file including resolved and
+  outdated ones, footer `status`), `Mode = Normal | Panel { selected, scroll }
+  | Input { draft, cursor, from_panel }`, and
+  `update(&mut App, Event) -> Option<Effect>`. A thread covers its stored
+  range whatever its `state`; `Marker = Waiting | Open | Resolved` is derived
+  per line (waiting > open > resolved). Waiting means open and last comment
+  not by `author`. The panel's thread set is recomputed from the threads and
+  the cursor, never cached.
   `Event` is `Key | Resize | Saved { id, threads } | SaveFailed`; `Effect` is
   `Save { line, body } | Quit`. `update` does no I/O and reads no clock.
+- `tui::panel`: `layout(threads, selected, width) -> Layout { lines,
+  thread_starts }`, pure. Per thread: header (`c3 open`, `c3 open · outdated`,
+  `c3 resolved by claude`), `> ` quote lines, then each comment's
+  `author · YYYY-MM-DD HH:MMZ` and body, word-wrapped by `char` count.
+  `update` clamps scroll from `lines.len()`; `render` draws a slice.
 - `tui::render`: `render(&App, &mut Frame)`, pure over state. One file line
   is one screen row (long lines are truncated, tabs shown as four spaces).
-  Gutter: `●` on lines inside an open, current thread, then the line number,
-  then `│`. Footer: path (or the last save message), `L<line>/<total>`,
-  `N outdated`, key hints. In `Input` the bordered 3-row box replaces the
-  footer and the view shrinks to stay above it; the draft scrolls sideways
-  instead of wrapping, and the cursor is a reversed cell.
+  Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim), then the
+  line number, then `│`. Footer: path (or the last save message),
+  `L<line>/<total>`, `N outdated` (open threads only), key hints. In `Panel`
+  a bordered box of half the terminal (at least 4 rows) sits above the
+  footer and the view shrinks to stay above it. In `Input` the bordered 3-row
+  box replaces the footer (and hides the panel it came from); the draft
+  scrolls sideways instead of wrapping, and the cursor is a reversed cell.
 - `tui` (module root): the driver. `open` loads lines (`review::file_lines`)
-  and open threads; `step(app, event, reviews, file, author)` is the only
+  and all threads; `step(app, event, reviews, file, author)` is the only
   place effects are performed (`Save` → `Reviews::add_thread`, then
-  `Reviews::view` → `Event::Saved`); `run` is the blocking loop (read event →
+  `Reviews::view(file, true)` → `Event::Saved`); `run` is the blocking loop (read event →
   `step` → draw) on a `TerminalSession`.
 
 **Invariants**
@@ -278,7 +291,8 @@ Three parts:
 - The TUI owns no persistent state. Every write goes through `review`; after
   a write it re-reads `view` rather than patching local state.
 - `top <= cursor < top + height` after every event, where height is the rows
-  left after the footer (or input box).
+  left after the footer, panel or input box. The panel never moves the
+  cursor, so the listed threads are always those of the line shown selected.
 - A failed save keeps the draft and mode and shows the error; nothing is lost
   silently.
 - The terminal is restored on every exit path: `TerminalSession` restores on
@@ -290,7 +304,7 @@ Three parts:
 *Deferred within `tui`:* `Visual` and `Help` modes; wrapping long lines in the
 file view; polling the file and `review.json` mtimes and re-syncing; draft
 survival across a re-sync; mapping the cursor through `anchor`; viewing,
-editing, and resolving threads; thread navigation. Until live refresh exists,
+editing, replying to, resolving and reopening threads. Until live refresh exists,
 the screen shows the file as read at open, while `add_thread` quotes the file
 as it is at save time.
 
@@ -348,7 +362,8 @@ state or `review`.
   `src/cli.rs`; process tests in `tests/cli.rs` for streams, exit status, and
   env. Schema conformance is deferred with `ptal schema`.
 - `tui`: scripted key events through `update` assert on state; `TestBackend`
-  snapshots (inline expected strings) cover Normal and Input rendering;
+  snapshots (inline expected strings) cover Normal, Panel and Input rendering,
+  gutter glyphs and styles;
   `tests/tui.rs` runs scripted rounds through `step` against a real
   `Reviews`; the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the
