@@ -36,9 +36,21 @@ acceptance criteria and link here instead of restating commands.
 |---|---|---|
 | Author | `--as <name>` or `PTAL_AUTHOR`; never invented | `$USER` |
 | Output | JSON when stdout is not a TTY or with `--json`; readable on a TTY | Rendered screen |
-| Errors | JSON on stderr when not a TTY; exit `0` success, `1` runtime, `2` usage or not found | Shown in the UI |
+| Errors | `{"error": {"code", "message"}}` on stderr when not a TTY or with `--json`; exit codes below | Shown in the UI |
 | Seeing the other side's writes | Every call reads from disk | Re-reads after its own writes; reopen to see the agent's |
 | Reviewed file | Read-only | Read-only |
+
+## Exit codes
+
+Success prints data on stdout and exits `0`. On failure stdout is empty and
+stderr carries one error. The table below is pinned by a unit test in
+`src/cli.rs`.
+
+| Exit | Meaning | Error codes |
+|---|---|---|
+| `0` | Success (also `--help`, `--version`) | none |
+| `2` | The caller can fix the invocation | `usage`, `missing_author`, `not_found`, `invalid_range`, `empty_body` |
+| `1` | Runtime failure | `file_unreadable`, `locked`, `unsupported_schema`, `io`, `corrupt`, `no_data_dir` |
 
 ## Deliberate asymmetries
 
