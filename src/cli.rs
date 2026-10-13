@@ -131,14 +131,27 @@ Workflow:
   1. ptal comments <file>             list open threads (--all adds resolved)
   2. edit the file to address them    ptal never modifies the reviewed file
   3. ptal comments <file>             re-check: your edit moves or changes lines
-  4. ptal resolve <file> <id> --as <name> [--note \"what changed\"]
+  4. ptal reply <file> <id> \"<body>\" --as <name>
+     ptal resolve <file> <id> --as <name> [--note \"what changed\"]
+     ptal reopen <file> <id> --as <name> [--note \"why\"]
+
+Threads are conversations. `ptal reply` asks, answers or discusses;
+`ptal resolve` closes a thread you addressed; `ptal reopen` takes a resolved
+thread back. A reply to a resolved thread reopens it, so use `reopen` only
+when you have nothing to say; reopening an open thread is already_open.
+
+A thread is waiting on you when its last comment is not yours: its author
+differs from your --as name (exact match), so use the same --as name every
+time. Only open threads are listed by default.
 
 Use `ptal add <file> --lines <N|A-B> \"<body>\" --as <name>` to raise a
-question of your own on a line or range.
+question of your own on a line or range. That starts a new thread; it is not
+for answering one, use `ptal reply`.
 
 Resolve a thread only when you addressed it. If a comment is unclear or you
-disagree, do not guess: leave the thread open, ask with `ptal add`, and tell
-the human.
+disagree, do not guess: leave the thread open, ask with `ptal reply`, and tell
+the human. When you resolve on a reading of an ambiguous comment, state your
+interpretation in --note so the human can correct it.
 
 Output is JSON when stdout is not a terminal, or with --json. `comments`
 prints one document:
@@ -158,7 +171,7 @@ threads you just addressed turn outdated, which is expected, so resolve them.
 For one you did not address, re-read the file and, if the comment still
 applies, re-anchor it with `ptal add` rather than trusting the stale range.
 
-`add` and `resolve` print {\"file\", \"thread\"} (no `state`).
+`add`, `reply`, `resolve` and `reopen` print {\"file\", \"thread\"} (no `state`).
 
 Author: write commands need --as <name> or the PTAL_AUTHOR environment
 variable. ptal never guesses one.
@@ -169,7 +182,7 @@ Errors: nothing on stdout; stderr gets one line,
 Exit codes:
   0  success
   2  fix the invocation: usage, missing_author, not_found, invalid_range,
-     empty_body
+     empty_body, already_open
   1  runtime failure: file_unreadable, locked, unsupported_schema, io,
      corrupt, no_data_dir, not_a_terminal, terminal
 
@@ -1432,13 +1445,111 @@ c2  open  outdated  lines 2-3
         let paragraph = paragraph.to_lowercase();
         assert!(paragraph.contains("resolve"), "{paragraph}");
         assert!(paragraph.contains("open"), "{paragraph}");
+        assert!(paragraph.contains("ptal reply"), "{paragraph}");
+    }
+
+    fn paragraph_with(help: &str, needles: &[&str]) -> String {
+        help.split("\n\n")
+            .find(|p| needles.iter().all(|n| p.contains(n)))
+            .unwrap_or_else(|| panic!("no paragraph contains {needles:?}:\n{help}"))
+            .to_string()
+    }
+
+    #[test]
+    fn top_level_help_lists_already_open_as_a_caller_error() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let exit_2 = help.find("  2  ").expect("exit 2 line");
+        let exit_1 = help.find("  1  ").expect("exit 1 line");
+        assert!(help[exit_2..exit_1].contains("already_open"), "{help}");
+    }
+
+    #[test]
+    fn top_level_help_shows_how_to_call_reply_and_reopen() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        for command in ["ptal reply", "ptal reopen"] {
+            let line = help
+                .lines()
+                .find(|line| line.contains(command))
+                .unwrap_or_else(|| panic!("no line introduces `{command}`"));
+            assert!(line.contains("--as"), "{line}");
+        }
+    }
+
+    #[test]
+    fn top_level_help_says_when_to_reply_resolve_and_reopen() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        paragraph_with(
+            &help,
+            &[
+                "ptal reply",
+                "ptal resolve",
+                "ptal reopen",
+                "ask",
+                "addressed",
+                "back",
+            ],
+        );
+    }
+
+    #[test]
+    fn top_level_help_defines_waiting_on_you_as_the_last_comment_not_yours() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let paragraph = paragraph_with(&help, &["last comment", "not yours"]);
+        assert!(paragraph.contains("--as"), "{paragraph}");
+    }
+
+    #[test]
+    fn top_level_help_says_to_state_the_interpretation_on_resolve() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        paragraph_with(&help, &["interpretation", "--note"]);
+    }
+
+    #[test]
+    fn top_level_help_says_add_is_for_new_threads_not_answers() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let paragraph = paragraph_with(&help, &["new thread", "not"]);
+        assert!(paragraph.contains("answer"), "{paragraph}");
+        assert!(paragraph.contains("ptal add"), "{paragraph}");
+    }
+
+    #[test]
+    fn top_level_help_says_which_commands_print_the_thread() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let line = help
+            .lines()
+            .find(|l| l.contains(r#"{"file", "thread"}"#))
+            .unwrap_or_else(|| panic!("no line describes the thread output:\n{help}"));
+        for command in ["add", "reply", "resolve", "reopen"] {
+            assert!(line.contains(command), "{command}: {line}");
+        }
     }
 
     #[test]
     fn every_subcommand_help_has_an_example() {
         let fx = fixture("one\n");
 
-        for command in ["comments", "add", "resolve"] {
+        for command in ["comments", "add", "resolve", "reply", "reopen"] {
             let help = fx.run(&[command, "--help"]).stdout;
             assert!(help.contains("Example"), "{command}:\n{help}");
             assert!(
