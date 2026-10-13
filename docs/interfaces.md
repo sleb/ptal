@@ -18,13 +18,14 @@ acceptance criteria and link here instead of restating commands.
 
 | Operation | Agent (CLI) | Human (TUI) | Core call |
 |---|---|---|---|
-| Open a review | `ptal comments <file>` (no session) | `ptal <file>` | `view` |
-| Move around the file | n/a (the agent reads the file itself) | `j`/`k`, `ctrl+d`/`ctrl+u`, `g`/`G` | none |
-| Quit | n/a (process exits) | `q` | none |
+| Open a review | `ptal comments <file>` (no session) | `ptal <file>` (interactive terminal only; see below) | `view` |
+| Move around the file | n/a (the agent reads the file itself) | `j`/`k`, `ctrl+d`/`ctrl+u`, `g`/`G`; aliases `↓`/`↑`, `PgDn`/`PgUp`, `End`/`Home` | none |
+| Quit | n/a (process exits) | `q`, or `ctrl+c` in Normal mode | none |
 | List open threads | `ptal comments <file>` | Gutter marker on commented lines | `view(include_resolved=false)` |
 | Read thread text | `comments` output: id, status, `state`, range, quote, comments | n/a | `view` |
 | List resolved threads | `ptal comments <file> --all` | n/a | `view(include_resolved=true)` |
-| Comment on one line | `ptal add <file> --lines N "text" --as <name>` | `enter` on the line, type, `enter` saves, `esc` cancels | `add_thread` |
+| Comment on one line | `ptal add <file> --lines N "text" --as <name>` | `enter` on the line, type, `enter` saves, `esc` (or `ctrl+c`) cancels | `add_thread` |
+| Edit the draft | n/a | `←`/`→`, `Home`/`End` move; `backspace`/`delete` remove; single line | none |
 | Comment on a range | `ptal add <file> --lines A-B "text" --as <name>` | n/a | `add_thread` |
 | Resolve a thread | `ptal resolve <file> <id> --as <name> [--note "..."]` | n/a | `resolve` |
 | See whether a thread is stale | `state: "current" \| "outdated"` in `comments` | n/a | `view` |
@@ -36,7 +37,7 @@ acceptance criteria and link here instead of restating commands.
 |---|---|---|
 | Author | `--as <name>` or `PTAL_AUTHOR`; never invented | `$USER` |
 | Output | JSON when stdout is not a TTY or with `--json`; readable on a TTY | Rendered screen |
-| Errors | `{"error": {"code", "message"}}` on stderr when not a TTY or with `--json`; exit codes below | Shown in the UI |
+| Errors | `{"error": {"code", "message"}}` on stderr when not a TTY or with `--json`; exit codes below | A failed save shows its message in the footer and keeps the draft; startup failures print as the CLI does, before the screen is taken over |
 | Seeing the other side's writes | Every call reads from disk | Re-reads after its own writes; reopen to see the agent's |
 | Reviewed file | Read-only | Read-only |
 
@@ -50,15 +51,33 @@ stderr carries one error. The table below is pinned by a unit test in
 |---|---|---|
 | `0` | Success (also `--help`, `--version`) | none |
 | `2` | The caller can fix the invocation | `usage`, `missing_author`, `not_found`, `invalid_range`, `empty_body` |
-| `1` | Runtime failure | `file_unreadable`, `locked`, `unsupported_schema`, `io`, `corrupt`, `no_data_dir` |
+| `1` | Runtime failure | `file_unreadable`, `locked`, `unsupported_schema`, `io`, `corrupt`, `no_data_dir`, `not_a_terminal`, `terminal` |
 
 `no_data_dir` is reported only by commands that read or write review data.
 `--help`, `--version` and usage errors never touch the data directory, so they
 behave the same with `PTAL_DATA_DIR`, `XDG_DATA_HOME` and `HOME` all unset.
+
+`not_a_terminal` is `ptal <file>` run without a terminal on stdin and
+stdout (an agent running it by mistake gets this JSON error instead of a hung
+raw-mode process). `terminal` is an I/O failure of the terminal itself while
+the TUI runs.
+
+## Bare `ptal <file>` and subcommand names
+
+`ptal <file>` opens the TUI. A first argument that is exactly `comments`,
+`add`, or `resolve` is the subcommand; to open a file with one of those names,
+write `./comments`. With no arguments, `ptal` prints help and exits `2`. The
+`--json` flag is accepted with a file and has no effect on the TUI. Unlike
+the agent commands, the TUI takes its author from `$USER` only (never
+`PTAL_AUTHOR`); an unset or blank `$USER` is `missing_author`, reported before
+the terminal is taken over.
 
 ## Deliberate asymmetries
 
 - **Navigation and quitting** are TUI-only; the agent has no cursor.
 - **The MVP TUI only adds single-line comments and shows where threads are.**
   Reading thread text, ranges, resolving, and seeing resolved or outdated state
-  are CLI-only for now.
+  are CLI-only for now. Threads whose quoted text no longer matches are not
+  marked in the gutter; the footer counts them (`N outdated`).
+- **Ranges and long lines.** The TUI comments on one line at a time, and long
+  file lines are truncated at the screen edge (no wrapping yet).
