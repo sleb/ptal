@@ -5,14 +5,14 @@
 
 use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use serde_json::json;
 
 use crate::error::Error;
-use crate::model::Thread;
+use crate::model::{Anchor, State, Status, Thread};
 use crate::review::{Clock, Reviews, SystemClock, ThreadView};
 use crate::store::Store;
 
@@ -155,7 +155,74 @@ pub fn resolve_author(flag: Option<&str>, env: Option<&str>) -> Result<String, F
 /// What a successful command has to say.
 enum Output {
     Threads(Vec<ThreadView>),
-    Thread(Thread),
+    Added(Thread),
+    Resolved(Thread),
+}
+
+impl Output {
+    fn to_json(&self, file: &Path) -> String {
+        let value = match self {
+            Output::Threads(threads) => json!({ "file": file, "threads": threads }),
+            Output::Added(thread) | Output::Resolved(thread) => {
+                json!({ "file": file, "thread": thread })
+            }
+        };
+        format!("{value}\n")
+    }
+
+    /// Presentation only, not a contract.
+    fn to_text(&self) -> String {
+        match self {
+            Output::Threads(threads) => render_text(threads),
+            Output::Added(thread) => {
+                let Anchor {
+                    start_line,
+                    end_line,
+                    ..
+                } = thread.anchor;
+                format!("{} added (lines {start_line}-{end_line})\n", thread.id)
+            }
+            Output::Resolved(thread) => format!("{} resolved\n", thread.id),
+        }
+    }
+}
+
+/// Readable listing: a header per thread, the quote, then the comments.
+fn render_text(threads: &[ThreadView]) -> String {
+    if threads.is_empty() {
+        return "no threads\n".to_string();
+    }
+    let blocks: Vec<String> = threads
+        .iter()
+        .map(|view| {
+            let Thread {
+                id,
+                anchor,
+                status,
+                comments,
+            } = &view.thread;
+            let status = match status {
+                Status::Open => "open".to_string(),
+                Status::Resolved { resolved_by, .. } => format!("resolved by {resolved_by}"),
+            };
+            let state = match view.state {
+                State::Current => "current",
+                State::Outdated => "outdated",
+            };
+            let mut block = format!(
+                "{id}  {status}  {state}  lines {}-{}\n",
+                anchor.start_line, anchor.end_line
+            );
+            for line in anchor.quote.lines() {
+                block.push_str(&format!("  > {line}\n"));
+            }
+            for comment in comments {
+                block.push_str(&format!("  {}: {}\n", comment.author, comment.body));
+            }
+            block
+        })
+        .collect();
+    blocks.join("\n")
 }
 
 /// Parse `args` (including the program name), execute, and return the exit
@@ -198,11 +265,12 @@ where
     });
     match result {
         Ok((canonical, output)) => {
-            let value = match output {
-                Output::Threads(threads) => json!({ "file": canonical, "threads": threads }),
-                Output::Thread(thread) => json!({ "file": canonical, "thread": thread }),
+            let text = if cli.json || !env.stdout_is_tty {
+                output.to_json(&canonical)
+            } else {
+                output.to_text()
             };
-            finish(out, &format!("{value}\n"), 0)
+            finish(out, &text, 0)
         }
         Err(failure) => {
             let (_, code) = failure.classify();
@@ -228,7 +296,7 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
             author: flag,
         } => {
             let author = author(flag)?;
-            Ok(Output::Thread(
+            Ok(Output::Added(
                 reviews.add_thread(file, *start, *end, body, &author)?,
             ))
         }
@@ -239,7 +307,7 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
             note,
         } => {
             let author = author(flag)?;
-            Ok(Output::Thread(reviews.resolve(
+            Ok(Output::Resolved(reviews.resolve(
                 file,
                 id,
                 &author,
@@ -767,5 +835,75 @@ mod tests {
             assert_eq!(out.stderr, "", "{flag}");
             assert!(!out.stdout.is_empty(), "{flag}");
         }
+    }
+
+    #[test]
+    fn comments_on_a_tty_is_a_readable_listing() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["resolve", "FILE", "c1", "--as", "claude", "--note", "Fixed"]);
+        fs::write(&fx.file, "one\nTWO\nthree\n").unwrap();
+
+        let out = fx.run_with(&["comments", "FILE", "--all"], &fx.env(None, true));
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_eq!(
+            out.stdout,
+            "\
+c1  resolved by claude  current  lines 1-1
+  > one
+  scott: Typo?
+  claude: Fixed
+
+c2  open  outdated  lines 2-3
+  > two
+  > three
+  scott: Why?
+"
+        );
+    }
+
+    #[test]
+    fn comments_on_a_tty_with_no_threads_says_so() {
+        let fx = fixture("one\n");
+
+        let out = fx.run_with(&["comments", "FILE"], &fx.env(None, true));
+
+        assert_eq!(out.stdout, "no threads\n");
+    }
+
+    #[test]
+    fn json_flag_forces_json_on_a_tty() {
+        let fx = fixture_with_two_threads();
+
+        let out = fx.run_with(&["comments", "FILE", "--json"], &fx.env(None, true));
+
+        assert_eq!(out.json()["threads"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn writes_on_a_tty_print_a_one_line_confirmation() {
+        let fx = fixture("one\ntwo\nthree\n");
+        let tty = fx.env(None, true);
+
+        let added = fx.run_with(
+            &["add", "FILE", "--lines", "2-3", "Why?", "--as", "scott"],
+            &tty,
+        );
+        let resolved = fx.run_with(&["resolve", "FILE", "c1", "--as", "claude"], &tty);
+
+        assert_eq!(added.stdout, "c1 added (lines 2-3)\n");
+        assert_eq!(resolved.stdout, "c1 resolved\n");
+    }
+
+    #[test]
+    fn json_errors_are_forced_on_a_tty_by_the_json_flag() {
+        let fx = fixture("one\n");
+
+        let out = fx.run_with(
+            &["resolve", "FILE", "c9", "--as", "x", "--json"],
+            &fx.env(None, true),
+        );
+
+        assert_eq!(out.error_code(), "not_found");
     }
 }
