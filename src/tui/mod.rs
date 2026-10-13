@@ -21,23 +21,38 @@ use ratatui::crossterm::terminal::{
 };
 
 use crate::error::Result;
-use crate::review::{Clock, Reviews, file_lines};
+use crate::review::{Clock, Reviews, ThreadView, file_lines};
 
 use app::{App, Effect, Event, update};
 use render::render;
 
-/// Load `file` and its open threads into a fresh [`App`] on a terminal
-/// `rows` tall.
+/// A file and its open threads, read but not yet sized for a terminal.
+///
+/// Loading is split from [`Loaded::into_app`] so that a missing file is
+/// reported before the terminal is queried or touched.
+pub struct Loaded {
+    lines: Vec<String>,
+    threads: Vec<ThreadView>,
+}
+
+/// Read `file` and its open threads.
 ///
 /// # Errors
 /// [`crate::Error::FileUnreadable`] plus any store error.
-pub fn open<C: Clock>(reviews: &Reviews<C>, file: &Path, author: &str, rows: u16) -> Result<App> {
+pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<Loaded> {
     let lines = file_lines(file)?;
     let threads = reviews.view(file, false)?;
-    Ok(App::open(lines, &threads, rows).labeled(file.display().to_string(), author))
+    Ok(Loaded { lines, threads })
 }
 
-/// Terminal rows, for sizing [`open`] before the session starts.
+impl Loaded {
+    /// A fresh [`App`] over this file on a terminal `rows` tall.
+    pub fn into_app(self, file: &Path, author: &str, rows: u16) -> App {
+        App::open(self.lines, &self.threads, rows).labeled(file.display().to_string(), author)
+    }
+}
+
+/// Terminal rows, for sizing [`Loaded::into_app`] before the session starts.
 ///
 /// # Errors
 /// The size could not be queried (there is no terminal).

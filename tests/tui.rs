@@ -10,7 +10,7 @@ use ptal::review::{Reviews, SystemClock};
 use ptal::store::Store;
 use ptal::tui::app::{App, Event, Mode};
 use ptal::tui::render::render;
-use ptal::tui::{open, step};
+use ptal::tui::{load, step};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -38,7 +38,9 @@ fn sandbox(content: &str) -> Sandbox {
 
 impl Sandbox {
     fn open(&self) -> App {
-        open(&self.reviews, &self.file, "scott", 24).unwrap()
+        load(&self.reviews, &self.file)
+            .unwrap()
+            .into_app(&self.file, "scott", 24)
     }
 
     /// Feed `keys` through `step`; `Break` stops the script early.
