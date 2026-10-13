@@ -76,8 +76,76 @@ pub struct Env<C: Clock> {
     pub stderr_is_tty: bool,
 }
 
+// Help text. Examples live here once; `--help` and the docs quote these.
+
+const COMMENTS_EXAMPLE: &str = "\
+Examples:
+  ptal comments plan.md           # open threads
+  ptal comments plan.md --all     # include resolved threads";
+
+const ADD_EXAMPLE: &str = "\
+Examples:
+  ptal add plan.md --lines 12 \"Why not X?\" --as claude
+  ptal add plan.md --lines 12-14 \"Why not X?\" --as claude";
+
+const RESOLVE_EXAMPLE: &str = "\
+Examples:
+  ptal resolve plan.md c3 --as claude
+  ptal resolve plan.md c3 --as claude --note \"Done, see step 2.\"";
+
+const WORKFLOW: &str = "\
+Review a throwaway text file. A human comments on lines in the TUI; you read
+and answer those comments here. Every command reads from disk, so each call
+sees the other side's latest writes.
+
+Workflow:
+  1. ptal comments <file>             list open threads (--all adds resolved)
+  2. edit the file to address them    ptal never modifies the reviewed file
+  3. ptal resolve <file> <id> --as <name> [--note \"what changed\"]
+
+Use `ptal add` to raise a question of your own on a line or range.
+
+Output is JSON when stdout is not a terminal, or with --json. `comments`
+prints one document:
+
+  {\"file\": \"/abs/path/plan.md\",
+   \"threads\": [{
+     \"id\": \"c3\", \"status\": \"open\" | \"resolved\",
+     \"state\": \"current\" | \"outdated\",
+     \"anchor\": {\"start_line\": 12, \"end_line\": 14, \"quote\": \"...\"},
+     \"comments\": [{\"id\", \"author\", \"body\", \"created_at\"}],
+     \"resolved_by\", \"resolved_at\"   (resolved threads only)
+   }]}
+
+`state` is \"outdated\" when the quoted lines are no longer at the stored range,
+including after lines were inserted above them. Re-read the file and, if the
+comment still applies, re-anchor it with `ptal add` rather than trusting the
+stale range.
+
+`add` and `resolve` print {\"file\", \"thread\"} (no `state`).
+
+Author: write commands need --as <name> or the PTAL_AUTHOR environment
+variable. ptal never guesses one.
+
+Errors: nothing on stdout; stderr gets one line,
+  {\"error\": {\"code\": \"not_found\", \"message\": \"...\"}}
+
+Exit codes:
+  0  success
+  2  fix the invocation: usage, missing_author, not_found, invalid_range,
+     empty_body
+  1  runtime failure: file_unreadable, locked, unsupported_schema, io,
+     corrupt, no_data_dir
+
+Data lives under PTAL_DATA_DIR (default ~/.local/share/ptal).";
+
 #[derive(Debug, Parser)]
-#[command(name = "ptal", version, about = "Review a throwaway text file")]
+#[command(
+    name = "ptal",
+    version,
+    about = "Review a throwaway text file",
+    long_about = WORKFLOW,
+)]
 struct Cli {
     /// Always print JSON, even on a terminal.
     #[arg(long, global = true)]
@@ -90,6 +158,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// List the comment threads on a file.
+    #[command(after_long_help = COMMENTS_EXAMPLE)]
     Comments {
         file: PathBuf,
         /// Include resolved threads.
@@ -97,6 +166,7 @@ enum Command {
         all: bool,
     },
     /// Start a thread on a line or a range of lines.
+    #[command(after_long_help = ADD_EXAMPLE)]
     Add {
         file: PathBuf,
         /// Line `N` or inclusive range `A-B` (1-based).
@@ -109,6 +179,7 @@ enum Command {
         author: Option<String>,
     },
     /// Mark a thread resolved.
+    #[command(after_long_help = RESOLVE_EXAMPLE)]
     Resolve {
         file: PathBuf,
         /// Thread id, e.g. `c3`.
@@ -905,5 +976,50 @@ c2  open  outdated  lines 2-3
         );
 
         assert_eq!(out.error_code(), "not_found");
+    }
+
+    #[test]
+    fn top_level_help_teaches_the_whole_agent_workflow() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let at = |needle: &str| {
+            help.find(needle)
+                .unwrap_or_else(|| panic!("help is missing {needle:?}:\n{help}"))
+        };
+        assert!(at("ptal comments") < at("edit the file"));
+        assert!(at("edit the file") < at("ptal resolve"));
+        for needle in [
+            "add",
+            "--as",
+            "PTAL_AUTHOR",
+            "--all",
+            "--json",
+            "Exit codes",
+            "outdated",
+            "threads",
+            "state",
+            "anchor",
+            "start_line",
+            "quote",
+            "comments",
+        ] {
+            at(needle);
+        }
+    }
+
+    #[test]
+    fn every_subcommand_help_has_an_example() {
+        let fx = fixture("one\n");
+
+        for command in ["comments", "add", "resolve"] {
+            let help = fx.run(&[command, "--help"]).stdout;
+            assert!(help.contains("Example"), "{command}:\n{help}");
+            assert!(
+                help.contains(&format!("ptal {command}")),
+                "{command}:\n{help}"
+            );
+        }
     }
 }

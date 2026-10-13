@@ -9,9 +9,9 @@ your comments through a small JSON CLI, edits the file, replies, and resolves
 threads. You re-open ptal and see what changed. Comments, replies, and resolved
 state persist across rounds and revisions.
 
-> **Status:** core library implemented (model, store, review); CLI and TUI
-> pending. See [ARCHITECTURE.md](ARCHITECTURE.md). Nothing below is runnable
-> yet; keybindings and commands are the intended shape.
+> **Status:** core library and the agent CLI (`comments`, `add`, `resolve`)
+> implemented; the TUI is pending. See [ARCHITECTURE.md](ARCHITECTURE.md).
+> The TUI keybindings below are the intended shape, not yet runnable.
 
 ## Why not a PR?
 
@@ -57,18 +57,22 @@ Everything an agent needs is on the CLI. Output is JSON when stdout is not a
 terminal.
 
 ```sh
-ptal comments plan.md                 # open threads, with line ranges, quoted text, replies
-ptal comments plan.md --all           # include resolved
-ptal reply   plan.md c3 "Done, see step 2." --as claude
-ptal resolve plan.md c3 --as claude
-ptal add     plan.md --lines 12-14 "Why not X?" --as claude
-ptal schema                           # JSON Schema for all output
-ptal --help                           # includes a short "using ptal as an agent" guide
+ptal comments plan.md          # open threads: id, status, state, line range, quote, comments
+ptal comments plan.md --all    # include resolved
+ptal add plan.md --lines 12-14 "Why not X?" --as claude
+ptal resolve plan.md c3 --as claude --note "Done, see step 2."
+ptal --help                    # the full agent guide: workflow, JSON shape, exit codes
 ```
 
 Writes require `--as <name>` (or `PTAL_AUTHOR`) so every message is attributed.
-A skill or prompt for your agent of choice is just: *"run `ptal comments
-<file>`, address each thread, reply and resolve."*
+Failures print nothing on stdout and one JSON error line on stderr; exit `2`
+means the invocation can be fixed, `1` is a runtime failure (see
+[docs/interfaces.md](docs/interfaces.md#exit-codes)). A skill or prompt for
+your agent of choice is just: *"run `ptal comments <file>`, edit the file to
+address each thread, then `ptal resolve` it."*
+
+**Planned, not built:** `ptal reply` (threaded replies) and `ptal schema`
+(JSON Schema for all output).
 
 The full command and key map, agent and human side by side, is in
 [docs/interfaces.md](docs/interfaces.md).
