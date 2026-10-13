@@ -17,6 +17,8 @@ Work is tracked in GitHub: an **MVP/milestone issue** holds the scope and design
 3. **Docs stay true.** Each change lands with the docs that describe it (rustdoc, `ARCHITECTURE.md`, `README.md`). Docs describe what exists; unbuilt design is labeled deferred.
 4. **One interface map.** `docs/interfaces.md` lists every CLI command and TUI key side by side. Any change to the user-facing surface (command, flag, key, mode) updates that table in the same change.
 
+5. **Rust skills.** Any step that writes, reviews, or refactors Rust code uses `/rust-skills`.
+
 Green gate for every step: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
 
 Plan stories with `/ptal-plan <issue#>`; the approved plan is posted as a comment on the issue and is the execution script.
