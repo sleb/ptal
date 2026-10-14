@@ -127,6 +127,8 @@ cargo install --path .   # install the checkout's binary
 
 Requires Rust 1.89 or newer.
 
+Maintainers: see [docs/releasing.md](docs/releasing.md) for cutting a release.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

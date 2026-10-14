@@ -378,15 +378,24 @@ state or `review`.
 
 ## Distribution
 
-The crate is publishable but not yet published; publishing is manual. The
-`include` allowlist in `Cargo.toml` is the source of truth for what ships
+The crate is publishable; the procedure is [docs/releasing.md](docs/releasing.md).
+The `include` allowlist in `Cargo.toml` is the source of truth for what ships
 (`src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `README.md`, `LICENSE`); `docs/`,
-`ARCHITECTURE.md`, `scripts/` and agent/editor directories are deliberately
-excluded; README links to them are relative, which GitHub and crates.io
-(via `repository`) resolve against the repo. `rust-version`
-is the floor declared by the dependency tree, checked by hand and not
-enforced in CI. CI runs `cargo package --locked`, fails if a forbidden path
+`ARCHITECTURE.md`, `CHANGELOG.md`, `scripts/` and agent/editor directories are
+deliberately excluded; README links to them are relative, which GitHub and
+crates.io (via `repository`) resolve against the repo. The allowlist is
+reviewed against the previous tag's package list before every publish.
+`rust-version` is the floor declared by the dependency tree, checked by hand and
+not enforced in CI. CI runs `cargo package --locked`, fails if a forbidden path
 enters the tarball, and builds the docs from the unpacked tarball.
+
+A release is: bump `Cargo.toml` and `CHANGELOG.md`, `cargo publish` by hand
+(crates.io first, as it is irreversible), then push tag `vX.Y.Z`.
+`.github/workflows/release.yml` verifies the tag against `Cargo.toml` and
+`CHANGELOG.md`, builds `.tar.gz` archives for `aarch64`/`x86_64` Apple Darwin
+and `aarch64`/`x86_64` Linux (glibc), writes `SHA256SUMS`, and creates the
+GitHub Release with the CHANGELOG section as notes. Windows binaries, musl
+builds, signing, and installers are deferred.
 
 ## Deferred
 
