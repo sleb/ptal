@@ -25,8 +25,13 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo package --locked
-cargo info ptal                             # first release only: the name must be free
 ```
+
+The crates.io token needs the `publish-update` scope and no crate-name
+restriction that excludes `ptal`. A token without them fails at upload with
+`403 Forbidden`, after the dry run passed. Save a replacement with
+`cargo login` in a normal terminal tab: it needs an interactive prompt, so
+`! cargo login` from an agent session saves nothing.
 
 ## 2. Bump the version
 
@@ -45,7 +50,6 @@ workflow publishes that same section as the Release body, so the two cannot
 diverge.
 
 ```sh
-# vPREV is the previous tag. For v0.1.0 there is none: use `git log --oneline`.
 gh api repos/sleb/ptal/releases/generate-notes \
   -f tag_name=vX.Y.Z -f previous_tag_name=vPREV --jq .body
 ```
@@ -66,9 +70,7 @@ git switch - && cargo package --list --locked > /tmp/new.txt
 diff /tmp/prev.txt /tmp/new.txt             # accept every added/removed path, or edit `include`
 ```
 
-For the first release there is no previous tag: review the whole of
-`cargo package --list --locked` once against the `include` policy in
-[ARCHITECTURE.md](../ARCHITECTURE.md) "Distribution".
+The `include` policy is in [ARCHITECTURE.md](../ARCHITECTURE.md) "Distribution".
 
 ## 5. Publish to crates.io
 
@@ -129,7 +131,9 @@ shasum -a 256 -c SHA256SUMS --ignore-missing   # expect: OK for each downloaded 
 ```
 
 Also open https://crates.io/crates/ptal and https://docs.rs/ptal and confirm
-the version and a successful docs build.
+the version and a successful docs build. `https://docs.rs/ptal/X.Y.Z/ptal/`
+returning `200` means the build succeeded. `crate/ptal/X.Y.Z/builds.json`
+returned HTML, not JSON, when tried, so don't script against it.
 
 ## 9. Failure handling
 
