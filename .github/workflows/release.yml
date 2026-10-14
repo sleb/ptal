@@ -1,0 +1,120 @@
+name: Release
+
+# Builds per-target binaries and creates the GitHub Release. `cargo publish`
+# is manual and happens before the tag is pushed; see docs/releasing.md.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build, e.g. v0.1.0 (must equal v<Cargo.toml version>)
+        required: true
+      dry_run:
+        description: Build and upload archives as workflow artifacts; skip the Release
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+
+jobs:
+  verify:
+    name: verify tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: check
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [ "$TAG" != "v$version" ]; then
+            echo "tag $TAG does not match Cargo.toml version v$version" >&2
+            exit 1
+          fi
+          if ! grep -q "^## $version - " CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## $version - YYYY-MM-DD' section" >&2
+            exit 1
+          fi
+          if [ "$DRY_RUN" != "true" ] && ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "$GITHUB_SHA is not on main" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Archive
+        env:
+          NAME: ptal-${{ needs.verify.outputs.version }}-${{ matrix.target }}
+        run: |
+          mkdir "$NAME"
+          cp "target/${{ matrix.target }}/release/ptal" LICENSE README.md "$NAME/"
+          tar czf "$NAME.tar.gz" "$NAME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ptal-${{ matrix.target }}
+          path: ptal-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: checksums and release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: ptal-*
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum ptal-*.tar.gz > SHA256SUMS
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="${{ needs.verify.outputs.version }}" '
+            /^## / { on = index($0, "## " v " - ") == 1; next }
+            on
+          ' CHANGELOG.md > notes.md
+          test -s notes.md
+      - name: Upload dry-run artifacts
+        if: env.DRY_RUN == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dry-run-release
+          path: |
+            dist/*
+            notes.md
+      - name: Create GitHub Release
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$TAG" --verify-tag --title "ptal ${TAG#v}" --notes-file notes.md dist/*
