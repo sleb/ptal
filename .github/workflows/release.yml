@@ -5,7 +5,6 @@ name: Release
 
 on:
   push:
-    branches: [release-sop-27]
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -22,8 +21,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  TAG: v0.1.0
-  DRY_RUN: 'true'
+  TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
 
 jobs:
   verify:
