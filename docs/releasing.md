@@ -25,24 +25,15 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo package --locked
-cargo info ptal                             # first release only: the name must be free
 ```
 
-`cargo info ptal` inside the checkout reports the local package, not the
-registry. For the first release, check the registry instead:
-`curl -s -o /dev/null -w '%{http_code}\n' https://crates.io/api/v1/crates/ptal -H 'User-Agent: ptal-release'`
-(expect `404`).
-
-The crates.io token needs the `publish-update` scope, plus `publish-new` for a
-first release, and no crate-name restriction that excludes `ptal`. A token
-without them fails at upload with `403 Forbidden`, after the dry run passed.
-Save a replacement with `cargo login` in a normal terminal tab: it needs an
-interactive prompt, so `! cargo login` from an agent session saves nothing.
+The crates.io token needs the `publish-update` scope and no crate-name
+restriction that excludes `ptal`. A token without them fails at upload with
+`403 Forbidden`, after the dry run passed. Save a replacement with
+`cargo login` in a normal terminal tab: it needs an interactive prompt, so
+`! cargo login` from an agent session saves nothing.
 
 ## 2. Bump the version
-
-For the first release (0.1.0 is already in `Cargo.toml`) there is nothing to
-bump: confirm the version and skip to step 3.
 
 Edit `version` in `Cargo.toml`, then refresh the lockfile and re-check:
 
@@ -59,7 +50,6 @@ workflow publishes that same section as the Release body, so the two cannot
 diverge.
 
 ```sh
-# vPREV is the previous tag. For v0.1.0 there is none: use `git log --oneline`.
 gh api repos/sleb/ptal/releases/generate-notes \
   -f tag_name=vX.Y.Z -f previous_tag_name=vPREV --jq .body
 ```
@@ -80,9 +70,7 @@ git switch - && cargo package --list --locked > /tmp/new.txt
 diff /tmp/prev.txt /tmp/new.txt             # accept every added/removed path, or edit `include`
 ```
 
-For the first release there is no previous tag: review the whole of
-`cargo package --list --locked` once against the `include` policy in
-[ARCHITECTURE.md](../ARCHITECTURE.md) "Distribution".
+The `include` policy is in [ARCHITECTURE.md](../ARCHITECTURE.md) "Distribution".
 
 ## 5. Publish to crates.io
 
