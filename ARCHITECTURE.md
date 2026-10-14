@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built (MVP subset): `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built (MVP subset): `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built (MVP subset): `Normal`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
+| `tui` | Built (MVP subset): `Normal`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables, thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
 | `anchor`, `highlight`, `diffview` | Deferred |
 
 Deferred within built components: revisions and snapshots, anchor mapping
@@ -343,7 +343,10 @@ Its parts:
 
 *Deferred within `tui`:* `Visual` and `Help` modes; sub-line scrolling of a
 line taller than the view; a hanging indent for wrapped list items; real tab
-stops; polling the file and `review.json` mtimes and re-syncing; draft
+stops; bold table headers and inline markup in cells;
+GFM padding of ragged table rows; pipes inside inline code in a cell; tables
+inside lists or blockquotes; wrapping inside cells for a table wider than the
+view (it shows raw instead); polling the file and `review.json` mtimes and re-syncing; draft
 survival across a re-sync; mapping the cursor through `anchor`; viewing,
 editing threads; notes on resolve/reopen from the TUI. Until live refresh exists,
 the screen shows the file as read at open, while `add_thread` quotes the file
@@ -407,6 +410,9 @@ state or `review`.
   gutter glyphs and styles; `tui::wrap` has examples plus a property test
   over a fixed corpus (ASCII, CJK, emoji, tabs, long words) and widths
   1..=12: rows join back to the line and each fits the width;
+  `tui::table` has examples (GFM subset, fences, indentation, ragged blocks,
+  alignment, wide characters) plus a property over a fixed corpus: one entry
+  per line and every row of a table equally wide;
   `tests/tui.rs` runs scripted rounds through `step` against a real
   `Reviews`; the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the
