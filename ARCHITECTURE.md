@@ -254,7 +254,7 @@ types, so changing them is a `schema_version` bump.
 **Role:** the human front end (ratatui; crossterm via `ratatui::crossterm`).
 Depends on `review` and `model` only.
 
-Three parts:
+Its parts:
 
 - `tui::app`: `App` state (`lines`, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
@@ -276,6 +276,13 @@ Three parts:
   `c3 resolved by claude`), `> ` quote lines, then each comment's
   `author · YYYY-MM-DD HH:MMZ` and body, word-wrapped by `char` count.
   `update` clamps scroll from `lines.len()`; `render` draws a slice.
+- `tui::wrap`: `rows(line, width) -> Vec<String>`, pure, the only place file
+  lines are wrapped. Breaks after the last whitespace that fits, hard-breaks a
+  word wider than a row, and leaves whitespace at a break hanging on the end
+  of its row, so the rows join back to the displayed line. Tabs are four
+  spaces and control characters are dropped. Widths are measured as ratatui
+  draws (`Span::styled_graphemes`, `CellWidth`); a grapheme cluster is never
+  split.
 - `tui::render`: `render(&App, &mut Frame)`, pure over state. One file line
   is one screen row (long lines are truncated, tabs shown as four spaces).
   Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim), then the
@@ -370,7 +377,9 @@ state or `review`.
   env. Schema conformance is deferred with `ptal schema`.
 - `tui`: scripted key events through `update` assert on state; `TestBackend`
   snapshots (inline expected strings) cover Normal, Panel and Input rendering,
-  gutter glyphs and styles;
+  gutter glyphs and styles; `tui::wrap` has examples plus a property test
+  over a fixed corpus (ASCII, CJK, emoji, tabs, long words) and widths
+  1..=12: rows join back to the line and each fits the width;
   `tests/tui.rs` runs scripted rounds through `step` against a real
   `Reviews`; the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the
