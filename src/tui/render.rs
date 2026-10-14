@@ -746,6 +746,54 @@ plan.md  L1/2  enter"
         assert_eq!(buffer[(0, 2)].symbol(), " ");
     }
 
+    const TABLE: [&str; 5] = [
+        "before",
+        "| Q | Decision |",
+        "|---|---|",
+        "| a | b |",
+        "after",
+    ];
+
+    #[test]
+    fn a_table_shows_aligned_in_place_with_a_number_on_every_row() {
+        let app = narrow(&TABLE, &[], (40, 6));
+
+        let screen = screen(&draw(&app, 40, 6));
+
+        let file: Vec<&str> = screen.lines().take(5).collect();
+        assert_eq!(
+            file,
+            [
+                "  1│before",
+                "  2│ Q │ Decision",
+                "  3│───┼──────────",
+                "  4│ a │ b",
+                "  5│after",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_table_rows_glyph_and_the_cursor_highlight_cover_that_row_alone() {
+        let threads = [open_thread("c1", (4, 4), State::Current)];
+        let mut app = narrow(&TABLE, &threads, (40, 6));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+
+        let terminal = draw(&app, 40, 6);
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 3)].symbol(), "●");
+        for y in [0, 1, 2, 4] {
+            assert_eq!(buffer[(0, y)].symbol(), " ", "row {y}");
+        }
+        let bg = |y: u16| buffer[(5, y)].bg;
+        assert_eq!(bg(2), Color::DarkGray);
+        for y in [0, 1, 3, 4] {
+            assert_eq!(bg(y), Color::Reset, "row {y}");
+        }
+    }
+
     #[test]
     fn tiny_terminals_do_not_panic() {
         for width in 0..=3 {

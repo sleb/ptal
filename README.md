@@ -60,7 +60,9 @@ ptal plan.md            # open the TUI
 
 Long lines wrap at word boundaries onto continuation rows; the line number and
 thread marker show on a line's first row, and `j` / `k` move by file line,
-not by screen row.
+not by screen row. Markdown tables show with aligned columns, still one row
+per file line; a malformed table, or one too wide for the window, shows as
+written.
 
 Comments are written as `$USER`. The gutter marks lines inside a thread: `●`
 open, `◆` open and waiting on you (its last comment is not yours), `○`

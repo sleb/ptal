@@ -86,4 +86,7 @@ the terminal is taken over.
 - **Ranges and long lines.** The TUI comments on one line at a time. Long
   file lines wrap at word boundaries onto continuation rows (the number and
   thread glyph show on the first row only); `j`/`k` move by file line, and
-  anchors stay file lines.
+  anchors stay file lines. The TUI shows well-formed markdown tables with
+  aligned columns, one row per file line, while the agent reads the raw
+  file; a comment on a table row anchors to that file line and quotes its
+  raw text.

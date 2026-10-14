@@ -212,6 +212,45 @@ fn cli_comments(sb: &Sandbox) -> serde_json::Value {
 }
 
 #[test]
+fn a_table_shows_aligned_and_a_comment_on_a_row_anchors_to_its_raw_line() {
+    let sb = sandbox("intro\n| Step | Owner |\n|---|---|\n| build | ci |\noutro\n");
+    let mut app = sb.open();
+
+    let text = screen(&app);
+    for row in [
+        "  2│ Step  │ Owner",
+        "  3│───────┼───────",
+        "  4│ build │ ci",
+    ] {
+        assert!(text.contains(row), "{row:?} missing from\n{text}");
+    }
+
+    let flow = sb.press(&mut app, &["j", "j", "j", "enter", "h", "i", "enter"]);
+
+    assert_eq!(flow, ControlFlow::Continue(()));
+    let json = cli_comments(&sb);
+    let anchor = &json["threads"][0]["anchor"];
+    assert_eq!(anchor["start_line"], 4);
+    assert_eq!(anchor["end_line"], 4);
+    assert_eq!(anchor["quote"], "| build | ci |");
+}
+
+#[test]
+fn a_ragged_table_shows_its_raw_text() {
+    let sb = sandbox("| a | b |\n|---|---|\n| 1 | 2 | 3 |\n");
+
+    let text = screen(&sb.open());
+
+    for (n, line) in ["| a | b |", "|---|---|", "| 1 | 2 | 3 |"]
+        .iter()
+        .enumerate()
+    {
+        let row = format!("  {}│{line}", n + 1);
+        assert!(text.contains(&row), "{row:?} missing from\n{text}");
+    }
+}
+
+#[test]
 fn an_agent_reply_shows_as_waiting_and_is_readable_in_the_panel() {
     let sb = sandbox(PLAN);
     sb.reviews
