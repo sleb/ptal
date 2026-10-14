@@ -9,6 +9,7 @@ use crate::model::{State, Status};
 use crate::review::ThreadView;
 
 use super::panel::{self, Layout};
+use super::wrap;
 
 /// What the user is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +136,17 @@ pub enum Marker {
     Resolved,
 }
 
+/// One screen row of the file view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenRow {
+    /// The 0-based file line this row shows part of.
+    pub line: usize,
+    /// Whether this is the line's first row (which carries its gutter).
+    pub first: bool,
+    /// The part of the line this row shows, as displayed.
+    pub text: String,
+}
+
 /// Terminal rows taken by the footer in Normal mode.
 const FOOTER_ROWS: usize = 1;
 /// Terminal rows taken by the bordered input box (it replaces the footer).
@@ -144,6 +156,8 @@ const INPUT_BOX_ROWS: usize = 3;
 const PANEL_MIN_ROWS: usize = 4;
 /// Rows the panel's border takes from its content.
 const PANEL_BORDER_ROWS: usize = 2;
+/// Gutter columns besides the line number: the glyph, a space, and `│`.
+const GUTTER_EXTRA: usize = 3;
 
 impl App {
     /// A view over `lines` on a terminal `cols` x `rows` cells, with gutter
@@ -305,6 +319,42 @@ impl App {
     /// `clamp_view` and the half-page step stay total on tiny terminals.
     pub(super) fn height(&self) -> usize {
         self.rows.saturating_sub(self.chrome_rows()).max(1)
+    }
+
+    /// Digits in the largest line number; the gutter right-aligns numbers to
+    /// this width.
+    pub(super) fn digits(&self) -> usize {
+        self.lines.len().to_string().len()
+    }
+
+    /// Columns left for file text after the gutter (glyph, space, number,
+    /// `│`); at least 1.
+    pub fn text_width(&self) -> usize {
+        self.cols
+            .saturating_sub(self.digits() + GUTTER_EXTRA)
+            .max(1)
+    }
+
+    /// The rows the file view shows, from `top`, at most `height` of them.
+    /// Each file line is one or more rows, wrapped by [`wrap::rows`].
+    pub fn screen_rows(&self) -> Vec<ScreenRow> {
+        let width = self.text_width();
+        self.lines
+            .iter()
+            .enumerate()
+            .skip(self.top)
+            .flat_map(|(line, text)| {
+                wrap::rows(text, width)
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(i, text)| ScreenRow {
+                        line,
+                        first: i == 0,
+                        text,
+                    })
+            })
+            .take(self.height())
+            .collect()
     }
 
     fn last_line(&self) -> usize {
@@ -744,6 +794,47 @@ mod tests {
         send(&mut a, [Event::Resize(33, 7)]);
 
         assert_eq!((a.cols, a.rows), (33, 7));
+    }
+
+    // --- wrapped rows ---
+
+    fn wrapped(lines: &[&str], (cols, rows): (u16, u16)) -> App {
+        let lines = lines.iter().map(ToString::to_string).collect();
+        App::open(lines, &[], "scott", (cols, rows))
+    }
+
+    #[test]
+    fn text_width_is_the_columns_after_the_gutter_and_at_least_one() {
+        assert_eq!(app(12, 10).text_width(), 80 - 5, "2 digits + 3");
+        assert_eq!(wrapped(&["a"; 12], (20, 10)).text_width(), 15);
+        assert_eq!(wrapped(&["a"; 3], (20, 10)).text_width(), 16);
+        assert_eq!(wrapped(&["a"; 3], (3, 10)).text_width(), 1);
+        assert_eq!(wrapped(&[], (20, 10)).text_width(), 16);
+    }
+
+    #[test]
+    fn screen_rows_map_each_row_to_its_file_line_and_fill_the_view() {
+        // Gutter 4, text width 10; the second line wraps into 3 rows.
+        let a = wrapped(
+            &["short", "aaaa bbbb cccc dddd eeee", "x", "y"],
+            (14, 6), // view height 5
+        );
+
+        let row = |line, first, text: &str| ScreenRow {
+            line,
+            first,
+            text: text.into(),
+        };
+        assert_eq!(
+            a.screen_rows(),
+            [
+                row(0, true, "short"),
+                row(1, true, "aaaa bbbb "),
+                row(1, false, "cccc dddd "),
+                row(1, false, "eeee"),
+                row(2, true, "x"),
+            ]
+        );
     }
 
     #[test]

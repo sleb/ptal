@@ -264,7 +264,10 @@ Its parts:
   range whatever its `state`; `Marker = Waiting | Open | Resolved` is derived
   per line (waiting > open > resolved). Waiting means open and last comment
   not by `author`. The panel's thread set is recomputed from the threads and
-  the cursor, never cached.
+  the cursor, never cached. `screen_rows()` maps the view to
+  `ScreenRow { line, first, text }`, filling the view height from `top` with
+  each line's `tui::wrap` rows at `text_width()` (terminal columns minus the
+  gutter, at least 1); `render` draws from it.
   `Event` is `Key | Resize | Saved { id, done, threads } | SaveFailed`, where
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
   always the thread id; `Effect` is `Add { line, body } | Reply { id, body }
@@ -284,9 +287,11 @@ Its parts:
   draws (`Span::styled_graphemes`, `CellWidth`); a grapheme cluster is never
   split.
 - `tui::render`: `render(&App, &mut Frame)`, pure over state. One file line
-  is one screen row (long lines are truncated, tabs shown as four spaces).
-  Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim), then the
-  line number, then `│`. Footer: path (or the last save message),
+  is one or more screen rows (word-wrapped by `tui::wrap`, tabs shown as four
+  spaces). Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim),
+  then the line number, then `│`; the glyph and number show on a line's first
+  row only, continuation rows keep just the `│`. The cursor highlight covers
+  every row of the cursor line. Footer: path (or the last save message),
   `L<line>/<total>`, `N outdated` (open threads only), key hints. In `Panel`
   a bordered box of half the terminal (at least 4 rows) sits above the
   footer and the view shrinks to stay above it. In `Input` the bordered 3-row
