@@ -1,7 +1,7 @@
 # Releasing ptal
 
-The procedure for cutting a release. Scott runs it by hand from a local
-checkout (Claude can drive the commands when asked). `cargo publish` is manual
+The procedure for cutting a release. The maintainer runs it by hand from a local
+checkout (an agent can drive the commands when asked). `cargo publish` is manual
 and local; the GitHub Release and its binaries are built by
 `.github/workflows/release.yml` when the tag is pushed.
 
@@ -37,9 +37,6 @@ cargo update --workspace --offline          # expect: Updating ptal vPREV -> vX.
 git diff --stat                             # expect: Cargo.toml, Cargo.lock only
 cargo package --locked
 ```
-
-Prereleases (`0.2.0-rc.1`) need their own version bump: the workflow accepts
-only a tag equal to `v` plus the `Cargo.toml` version.
 
 ## 3. Release notes
 
