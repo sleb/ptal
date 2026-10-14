@@ -123,7 +123,7 @@ pub fn install_restore_hook(restore: impl Fn() + Send + Sync + 'static) {
 
 /// Run the interactive session on the real terminal until the user quits.
 ///
-/// `app` comes from [`open`]. All of ptal's writes go through `reviews`.
+/// `app` comes from [`load`] and [`Loaded::into_app`]. All of ptal's writes go through `reviews`.
 ///
 /// # Errors
 /// The terminal could not be set up, drawn to, or read from.
