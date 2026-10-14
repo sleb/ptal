@@ -24,7 +24,7 @@ use ratatui::text::Span;
 /// holds at least one cluster, so a cluster wider than `width` gets a row to
 /// itself and a `width` of 0 still makes progress.
 pub fn rows(line: &str, width: usize) -> Vec<String> {
-    let text = line.replace('\t', "    ");
+    let text = expand_tabs(line);
     let mut rows = Vec::new();
     let mut row = String::new();
     let mut used = 0;
@@ -56,6 +56,19 @@ pub fn rows(line: &str, width: usize) -> Vec<String> {
     }
     rows.push(row);
     rows
+}
+
+/// Cells `text` takes on one unbounded row, by the same measure as [`rows`]:
+/// a tab is four cells, control characters take none.
+pub(super) fn width(text: &str) -> usize {
+    Span::raw(expand_tabs(text).as_str())
+        .styled_graphemes(Style::new())
+        .map(|g| usize::from(g.symbol.cell_width()))
+        .sum()
+}
+
+fn expand_tabs(text: &str) -> String {
+    text.replace('\t', "    ")
 }
 
 #[cfg(test)]
@@ -117,6 +130,13 @@ mod tests {
     }
 
     #[test]
+    fn width_measures_as_drawn_with_tabs_as_four_and_controls_dropped() {
+        assert_eq!(width("a\t漢"), 7);
+        assert_eq!(width("e\u{301}"), 1);
+        assert_eq!(width("a\u{7}b"), 2);
+    }
+
+    #[test]
     fn widths_zero_and_one_make_progress_and_a_wide_cluster_gets_its_own_row() {
         assert_eq!(rows("ab c", 0), ["a", "b ", "c"]);
         assert_eq!(rows("ab c", 1), ["a", "b ", "c"]);
@@ -144,13 +164,6 @@ mod tests {
             .collect()
     }
 
-    fn cells(text: &str) -> usize {
-        Span::raw(text)
-            .styled_graphemes(Style::new())
-            .map(|g| usize::from(g.symbol.cell_width()))
-            .sum()
-    }
-
     #[test]
     fn rows_join_back_to_the_line_and_each_fits_the_width() {
         for line in CORPUS {
@@ -162,7 +175,7 @@ mod tests {
                     let shown = row.trim_end();
                     let one_cluster = Span::raw(shown).styled_graphemes(Style::new()).count() == 1;
                     assert!(
-                        cells(shown) <= width || one_cluster,
+                        super::width(shown) <= width || one_cluster,
                         "{row:?} overflows {width} in {line:?}"
                     );
                     assert!(

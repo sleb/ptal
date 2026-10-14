@@ -9,6 +9,7 @@
 pub mod app;
 pub mod panel;
 pub mod render;
+pub mod table;
 pub mod wrap;
 
 use std::io;
