@@ -376,6 +376,17 @@ state or `review`.
   `restore` functions (`tests/panic_hook.rs` is its own process because the
   panic hook is global). A real-terminal check (pty) is manual.
 
+## Distribution
+
+The crate is publishable but not yet published; publishing is manual. The
+`include` allowlist in `Cargo.toml` is the source of truth for what ships
+(`src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `README.md`, `LICENSE`); `docs/`,
+`ARCHITECTURE.md`, `scripts/` and agent/editor directories are deliberately
+excluded, so README links to them are absolute GitHub URLs. `rust-version`
+is the floor declared by the dependency tree, checked by hand and not
+enforced in CI. CI runs `cargo package --locked`, fails if a forbidden path
+enters the tarball, and builds the docs from the unpacked tarball.
+
 ## Deferred
 
 Moving or renaming a reviewed file; MCP server (a thin wrapper over `review`,

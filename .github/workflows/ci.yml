@@ -32,3 +32,14 @@ jobs:
       - run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+      - run: cargo package --locked
+      - name: Tarball holds no dev-only files
+        run: |
+          if cargo package --list --locked | grep -E '^(\.agents|\.claude|\.crit|scripts|skills-lock\.json)'; then
+            echo "forbidden paths in the package" >&2
+            exit 1
+          fi
+      - name: Docs build from the unpacked tarball
+        run: cargo doc --no-deps --manifest-path target/package/ptal-0.1.0/Cargo.toml
+        env:
+          RUSTDOCFLAGS: -D warnings
