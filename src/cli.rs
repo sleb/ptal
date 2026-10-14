@@ -49,6 +49,7 @@ impl Failure {
                 Error::EmptyAuthor => ("missing_author", EXIT_CALLER),
                 Error::NotFound(_) => ("not_found", EXIT_CALLER),
                 Error::AlreadyOpen(_) => ("already_open", EXIT_CALLER),
+                Error::AlreadyResolved(_) => ("already_resolved", EXIT_CALLER),
                 Error::InvalidRange { .. } => ("invalid_range", EXIT_CALLER),
                 Error::EmptyBody => ("empty_body", EXIT_CALLER),
                 Error::FileUnreadable { .. } => ("file_unreadable", EXIT_RUNTIME),
@@ -139,7 +140,8 @@ Workflow:
 Threads are conversations. `ptal reply` adds a comment to a thread;
 `ptal resolve` closes it, and its --note is recorded as a comment;
 `ptal reopen` takes a resolved thread back. A reply to a resolved thread
-reopens it.
+reopens it. Resolving a resolved thread fails with already_resolved (and
+reopening an open one with already_open); nothing is written.
 
 A thread is waiting on you when its last comment is not yours: its author
 differs from your --as name (exact match), so use the same --as name every
@@ -175,7 +177,7 @@ Errors: nothing on stdout; stderr gets one line,
 Exit codes:
   0  success
   2  fix the invocation: usage, missing_author, not_found, invalid_range,
-     empty_body, already_open
+     empty_body, already_open, already_resolved
   1  runtime failure: file_unreadable, locked, unsupported_schema, io,
      corrupt, no_data_dir, not_a_terminal, terminal
 
@@ -622,6 +624,11 @@ mod tests {
             (
                 Failure::Core(Error::AlreadyOpen("c1".into())),
                 "already_open",
+                2,
+            ),
+            (
+                Failure::Core(Error::AlreadyResolved("c1".into())),
+                "already_resolved",
                 2,
             ),
             (
@@ -1244,17 +1251,17 @@ mod tests {
     }
 
     #[test]
-    fn resolving_twice_succeeds_without_a_duplicate_note() {
+    fn resolving_a_resolved_thread_is_already_resolved_and_changes_nothing() {
         let fx = fixture_with_two_threads();
         fx.run(&["resolve", "FILE", "c1", "--as", "claude", "--note", "Fixed"]);
+        let before = fx.review_bytes();
 
-        let again = fx.run(&["resolve", "FILE", "c1", "--as", "claude", "--note", "Again"]);
+        let out = fx.run(&["resolve", "FILE", "c1", "--as", "claude", "--note", "Again"]);
 
-        assert_eq!(again.code, 0, "{}", again.stderr);
-        assert_eq!(
-            again.json()["thread"]["comments"].as_array().unwrap().len(),
-            2
-        );
+        assert_eq!(out.code, 2);
+        assert_eq!(out.stdout, "");
+        assert_eq!(out.error_code(), "already_resolved");
+        assert_eq!(fx.review_bytes(), before);
     }
 
     #[test]
@@ -1460,14 +1467,16 @@ c2  open  outdated  lines 2-3
     }
 
     #[test]
-    fn top_level_help_lists_already_open_as_a_caller_error() {
+    fn top_level_help_lists_already_open_and_already_resolved_as_caller_errors() {
         let fx = fixture("one\n");
 
         let help = fx.run(&["--help"]).stdout;
 
         let exit_2 = help.find("  2  ").expect("exit 2 line");
         let exit_1 = help.find("  1  ").expect("exit 1 line");
-        assert!(help[exit_2..exit_1].contains("already_open"), "{help}");
+        for code in ["already_open", "already_resolved"] {
+            assert!(help[exit_2..exit_1].contains(code), "{code}: {help}");
+        }
     }
 
     #[test]
