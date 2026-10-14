@@ -1,5 +1,7 @@
 # ptal
 
+[![crates.io](https://img.shields.io/crates/v/ptal.svg)](https://crates.io/crates/ptal)
+
 *Please take a look.* A keyboard-driven terminal UI for reviewing a single text
 file, usually a throwaway plan or design doc (`.md`) that you and a coding
 agent are iterating on together and that will never be committed.
