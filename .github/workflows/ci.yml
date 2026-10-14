@@ -40,6 +40,8 @@ jobs:
             exit 1
           fi
       - name: Docs build from the unpacked tarball
-        run: cargo doc --no-deps --manifest-path target/package/ptal-0.1.0/Cargo.toml
+        run: |
+          ver=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          cargo doc --no-deps --manifest-path "target/package/ptal-$ver/Cargo.toml"
         env:
           RUSTDOCFLAGS: -D warnings
