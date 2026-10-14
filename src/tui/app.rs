@@ -9,7 +9,7 @@ use crate::model::{State, Status};
 use crate::review::ThreadView;
 
 use super::panel::{self, Layout};
-use super::wrap;
+use super::{table, wrap};
 
 /// What the user is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +106,9 @@ pub enum Effect {
 #[derive(Debug, Clone)]
 pub struct App {
     pub(super) lines: Vec<String>,
+    /// Each line's aligned table row, from [`table::align`]; computed once,
+    /// since the file never changes under the TUI.
+    tables: Vec<Option<String>>,
     pub(super) cursor: usize,
     pub(super) top: usize,
     /// Terminal width; the thread panel wraps to it.
@@ -170,6 +173,7 @@ impl App {
         (cols, rows): (u16, u16),
     ) -> Self {
         let mut app = App {
+            tables: table::align(&lines),
             lines,
             cursor: 0,
             top: 0,
@@ -202,7 +206,7 @@ impl App {
         &self.author
     }
 
-    /// The file's lines as displayed.
+    /// The file's lines as read. What the view shows is [`App::screen_rows`].
     pub fn lines(&self) -> &[String] {
         &self.lines
     }
@@ -336,15 +340,12 @@ impl App {
     }
 
     /// The rows the file view shows, from `top`, at most `height` of them.
-    /// Each file line is one or more rows, wrapped by [`wrap::rows`].
+    /// Each file line is one or more rows: its shown text wrapped by
+    /// [`wrap::rows`].
     pub fn screen_rows(&self) -> Vec<ScreenRow> {
-        let width = self.text_width();
-        self.lines
-            .iter()
-            .enumerate()
-            .skip(self.top)
-            .flat_map(|(line, text)| {
-                wrap::rows(text, width)
+        (self.top..self.lines.len())
+            .flat_map(|line| {
+                self.wrapped(line)
                     .into_iter()
                     .enumerate()
                     .map(move |(i, text)| ScreenRow {
@@ -361,11 +362,28 @@ impl App {
         self.lines.len().saturating_sub(1)
     }
 
+    /// What 0-based `line` shows: its aligned table row if it has one that
+    /// fits the text width, else the raw line. A table's rows are equally
+    /// wide, so a table is aligned or raw as a whole.
+    fn shown(&self, line: usize) -> &str {
+        match &self.tables[line] {
+            Some(row) if wrap::width(row) <= self.text_width() => row,
+            _ => &self.lines[line],
+        }
+    }
+
+    /// The screen rows of 0-based `line`'s shown text at the current width.
+    fn wrapped(&self, line: usize) -> Vec<String> {
+        wrap::rows(self.shown(line), self.text_width())
+    }
+
     /// Screen rows 0-based `line` takes at the current width.
     fn rows_of(&self, line: usize) -> usize {
-        self.lines
-            .get(line)
-            .map_or(0, |text| wrap::rows(text, self.text_width()).len())
+        if line < self.lines.len() {
+            self.wrapped(line).len()
+        } else {
+            0
+        }
     }
 
     /// The first line of the longest run ending at `end` that fits in
@@ -888,10 +906,7 @@ mod tests {
 
     /// Screen rows of lines `from..=to` at the app's current width.
     fn rows_between(a: &App, from: usize, to: usize) -> usize {
-        a.lines[from..=to]
-            .iter()
-            .map(|line| wrap::rows(line, a.text_width()).len())
-            .sum()
+        (from..=to).map(|line| a.rows_of(line)).sum()
     }
 
     /// Whether every row of the cursor line is on screen.
@@ -901,7 +916,7 @@ mod tests {
             .iter()
             .filter(|r| r.line == a.cursor)
             .count();
-        shown == wrap::rows(&a.lines[a.cursor], a.text_width()).len()
+        shown == a.rows_of(a.cursor)
     }
 
     #[test]
@@ -987,6 +1002,78 @@ mod tests {
         assert_eq!(at(&a), (3, 3));
         send(&mut a, [ctrl('u')]);
         assert_eq!(at(&a), (2, 2));
+    }
+
+    // --- tables ---
+
+    /// Prose around a table that aligns 21 cells wide; its raw lines are at
+    /// most 16.
+    const TABLE: [&str; 5] = ["intro", "|a|bbbbbbbb|", "|-|-|", "|cccccccc|d|", "outro"];
+
+    #[test]
+    fn a_table_line_is_one_screen_row_showing_its_aligned_row() {
+        let a = wrapped(&TABLE, (40, 10));
+
+        let row = |line, text: &str| ScreenRow {
+            line,
+            first: true,
+            text: text.into(),
+        };
+        assert_eq!(
+            a.screen_rows(),
+            [
+                row(0, "intro"),
+                row(1, " a        │ bbbbbbbb "),
+                row(2, "──────────┼──────────"),
+                row(3, " cccccccc │ d        "),
+                row(4, "outro"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_table_too_wide_for_the_view_shows_raw_and_resizing_switches_it() {
+        let texts =
+            |a: &App| -> Vec<String> { a.screen_rows().into_iter().map(|row| row.text).collect() };
+        let mut a = wrapped(&TABLE, (19, 10)); // text width 15
+        assert_eq!(texts(&a), TABLE);
+
+        send(&mut a, [Event::Resize(40, 10)]);
+        assert_eq!(texts(&a)[1], " a        │ bbbbbbbb ");
+        send(&mut a, [Event::Resize(19, 10)]);
+        assert_eq!(texts(&a), TABLE);
+    }
+
+    #[test]
+    fn j_moves_through_a_table_by_file_line_and_enter_comments_on_one() {
+        let mut a = wrapped(&TABLE, (40, 10));
+
+        send(&mut a, [ch('j'), ch('j')]);
+        assert_eq!(a.cursor, 2);
+        send(&mut a, [ch('j'), press(KeyCode::Enter)]);
+        typed(&mut a, "why?");
+
+        assert_eq!(
+            update(&mut a, press(KeyCode::Enter)),
+            Some(Effect::Add {
+                line: 4,
+                body: "why?".into()
+            })
+        );
+    }
+
+    #[test]
+    fn the_view_is_clamped_by_the_shown_rows_not_the_raw_ones() {
+        // Text width 20: the raw header wraps into 2 rows, aligned it is 1.
+        let mut a = wrapped(
+            &["| a                        | b |", "|---|---|", "| c | d |"],
+            (24, 4), // height 3
+        );
+
+        send(&mut a, [ch('G')]);
+
+        assert_eq!(at(&a), (2, 0), "the aligned table fits in 3 rows");
+        assert!(cursor_line_shown(&a));
     }
 
     #[test]
