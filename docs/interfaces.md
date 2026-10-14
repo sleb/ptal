@@ -83,5 +83,7 @@ the terminal is taken over.
   reopens.** Ranges and notes on resolve/reopen are CLI-only for now. A thread covers its stored
   range whatever its state, so outdated threads carry the same gutter glyph
   and open from it; the panel labels them `outdated`.
-- **Ranges and long lines.** The TUI comments on one line at a time, and long
-  file lines are truncated at the screen edge (no wrapping yet).
+- **Ranges and long lines.** The TUI comments on one line at a time. Long
+  file lines wrap at word boundaries onto continuation rows (the number and
+  thread glyph show on the first row only); `j`/`k` move by file line, and
+  anchors stay file lines.

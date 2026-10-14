@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built (MVP subset): `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built (MVP subset): `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built (MVP subset): `Normal`/`Panel`/`Input` modes, gutter markers, thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
+| `tui` | Built (MVP subset): `Normal`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
 | `anchor`, `highlight`, `diffview` | Deferred |
 
 Deferred within built components: revisions and snapshots, anchor mapping
@@ -327,8 +327,9 @@ Its parts:
   handled.
 - Display only; never mutates the reviewed file (it is read once on open).
 
-*Deferred within `tui`:* `Visual` and `Help` modes; wrapping long lines in the
-file view; polling the file and `review.json` mtimes and re-syncing; draft
+*Deferred within `tui`:* `Visual` and `Help` modes; sub-line scrolling of a
+line taller than the view; a hanging indent for wrapped list items; real tab
+stops; polling the file and `review.json` mtimes and re-syncing; draft
 survival across a re-sync; mapping the cursor through `anchor`; viewing,
 editing threads; notes on resolve/reopen from the TUI. Until live refresh exists,
 the screen shows the file as read at open, while `add_thread` quotes the file
