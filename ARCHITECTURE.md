@@ -302,7 +302,8 @@ Its parts:
   table aligned or raw as a whole.
 - `tui::render`: `render(&App, &mut Frame)`, pure over state. One file line
   is one or more screen rows (word-wrapped by `tui::wrap`, tabs shown as four
-  spaces). Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim),
+  spaces). A well-formed markdown table shows aligned, in place: each of its
+  lines is one row with its own number, glyph and highlight. Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim),
   then the line number, then `│`; the glyph and number show on a line's first
   row only, continuation rows keep just the `│`. The cursor highlight covers
   every row of the cursor line. Footer: path (or the last save message),
