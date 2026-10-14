@@ -17,7 +17,10 @@ Produce an execution plan for one GitHub issue in this repo, in the same shape a
    - The code that exists now (`src/`, `tests/`, `Cargo.toml`) — plans must build on what is actually there, not what the docs say should be.
    - `CLAUDE.md` if present.
 2. **Draft the plan** to the scratchpad as `plan-<n>.md` using the template below.
-3. **Show it to the user** in the reply, lead with the decisions you made that they may want to veto, and ask for changes. Iterate on the file until they approve.
+3. **Review it with ptal.** `ptal` is expected on `PATH` (`command -v ptal`); if it is missing, stop and tell the user to install it (`cargo install --path .`). Then:
+   - Give the user the plan's absolute path to open: `ptal <absolute path to plan-<n>.md>`, in their own terminal (it needs an interactive terminal; you cannot open it). Lead the reply with the decisions you made that they may want to veto, and wait for them to say they are done.
+   - Work the threads with `ptal comments <file>`; edit the plan; `ptal reply` or `ptal resolve ... --as claude --note "<what changed>"`; re-run `ptal comments` since edits can leave threads outdated. `ptal --help` has the details. Leave a thread open and reply when a comment is unclear or you disagree.
+   - Tell the user what changed and ask for another look. Repeat until no thread is open and they approve.
 4. **Publish only on explicit approval**: `gh issue comment <n> --body-file <file>`. Post as a comment (keeps the original scope and acceptance criteria intact) unless the user asks to edit the body. Return the comment URL.
 5. Do not start implementing unless asked.
 

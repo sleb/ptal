@@ -69,8 +69,10 @@ exits `1` with a `not_a_terminal` JSON error.
 
 ### For agents
 
-Everything an agent needs is on the CLI. Output is JSON when stdout is not a
-terminal.
+Everything an agent needs to use the tool is on the CLI: `ptal --help` says what
+each command does and what the output means. How you want reviews to run (when
+to resolve, when to ask, when to publish) is yours to put in your own skill or
+prompt. Output is JSON when stdout is not a terminal.
 
 ```sh
 ptal comments plan.md          # open threads: id, status, state, line range, quote, comments
