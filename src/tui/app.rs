@@ -496,8 +496,30 @@ impl App {
         }
     }
 
+    /// Move `top` and the cursor by the whole lines, from `top` down (or
+    /// above `top` up), that fit in half the view's rows; at least one line.
+    /// Past either end of the file a line counts as one row, so the cursor
+    /// still moves half a page when the view cannot.
     fn scroll_half_page(&mut self, down: bool) {
-        let step = (self.height() / 2).max(1);
+        let half = (self.height() / 2).max(1);
+        let rows_at = |step: usize| {
+            let line = if down {
+                self.top.checked_add(step)
+            } else {
+                self.top.checked_sub(step + 1)
+            };
+            line.filter(|&line| line < self.lines.len())
+                .map_or(1, |line| self.rows_of(line))
+        };
+        let (mut used, mut step) = (0, 0);
+        loop {
+            used += rows_at(step);
+            if used > half {
+                break;
+            }
+            step += 1;
+        }
+        let step = step.max(1);
         if down {
             self.top += step;
             self.cursor += step;
@@ -952,6 +974,19 @@ mod tests {
         assert_eq!(a.screen_rows()[0].text, "aaaa bbbb ");
         assert_eq!(at(&a), (3, 1));
         assert!(cursor_line_shown(&a));
+    }
+
+    #[test]
+    fn half_a_page_counts_rows_not_lines() {
+        // 2 digits, width 10: every line is 3 rows. Height 11, half page 5.
+        let mut a = wrapped(&[W3; 20], (15, 12));
+
+        send(&mut a, [ctrl('d')]);
+        assert_eq!(at(&a), (1, 1), "a second line would make 6 rows");
+        send(&mut a, [ctrl('d'), ctrl('d')]);
+        assert_eq!(at(&a), (3, 3));
+        send(&mut a, [ctrl('u')]);
+        assert_eq!(at(&a), (2, 2));
     }
 
     #[test]
