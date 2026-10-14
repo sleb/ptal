@@ -267,7 +267,8 @@ Its parts:
   the cursor, never cached. `screen_rows()` maps the view to
   `ScreenRow { line, first, text }`, filling the view height from `top` with
   each line's `tui::wrap` rows at `text_width()` (terminal columns minus the
-  gutter, at least 1); `render` draws from it.
+  gutter, at least 1); `render` draws from it, and the view clamp in `update`
+  counts rows at the same width.
   `Event` is `Key | Resize | Saved { id, done, threads } | SaveFailed`, where
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
   always the thread id; `Effect` is `Add { line, body } | Reply { id, body }
@@ -309,9 +310,15 @@ Its parts:
   machine is tested without a terminal.
 - The TUI owns no persistent state. Every write goes through `review`; after
   a write it re-reads `view` rather than patching local state.
-- `top <= cursor < top + height` after every event, where height is the rows
-  left after the footer, panel or input box. The panel never moves the
-  cursor, so the listed threads are always those of the line shown selected.
+- After every event `top <= cursor` and lines `top..=cursor` fit in `height`
+  screen rows (wrapped rows counted), where height is the rows left after the
+  footer, panel or input box, so the whole cursor line is on screen. The one
+  exception: a cursor line taller than the view sets `top == cursor` and its
+  tail is cut off (`top` is a file line; there is no sub-line scroll). `top`
+  never leaves blank rows below the last line while earlier lines could fill
+  them. Each clamp walks back at most `height` lines. The panel never moves
+  the cursor, so the listed threads are always those of the line shown
+  selected.
 - A failed write keeps the draft and mode and shows the error; nothing is lost
   silently.
 - The terminal is restored on every exit path: `TerminalSession` restores on

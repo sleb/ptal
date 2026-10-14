@@ -361,7 +361,33 @@ impl App {
         self.lines.len().saturating_sub(1)
     }
 
-    /// Restore `top <= cursor < top + height` and never leave blank rows
+    /// Screen rows 0-based `line` takes at the current width.
+    fn rows_of(&self, line: usize) -> usize {
+        self.lines
+            .get(line)
+            .map_or(0, |text| wrap::rows(text, self.text_width()).len())
+    }
+
+    /// The first line of the longest run ending at `end` that fits in
+    /// `height` rows; `end` itself when it alone is taller. Touches at most
+    /// `height` lines.
+    fn fit_back(&self, end: usize, height: usize) -> usize {
+        let mut first = end;
+        let mut used = self.rows_of(end);
+        while first > 0 {
+            let above = self.rows_of(first - 1);
+            if used + above > height {
+                break;
+            }
+            used += above;
+            first -= 1;
+        }
+        first
+    }
+
+    /// Keep the whole cursor line on screen (`top <= cursor` and lines
+    /// `top..=cursor` fit in `height` rows; only a cursor line taller than
+    /// the view is cut off, with `top == cursor`), and never leave blank rows
     /// below the last line while earlier lines could fill them.
     fn clamp_view(&mut self) {
         if matches!(self.mode, Mode::Panel { .. }) && self.threads_on(self.cursor).is_empty() {
@@ -369,12 +395,10 @@ impl App {
         }
         let height = self.height();
         self.cursor = self.cursor.min(self.last_line());
-        self.top = self.top.min(self.lines.len().saturating_sub(height));
-        if self.cursor < self.top {
-            self.top = self.cursor;
-        } else if self.cursor >= self.top + height {
-            self.top = self.cursor + 1 - height;
-        }
+        self.top = self
+            .top
+            .min(self.fit_back(self.last_line(), height))
+            .clamp(self.fit_back(self.cursor, height), self.cursor);
         self.clamp_panel();
     }
 
@@ -835,6 +859,133 @@ mod tests {
                 row(2, true, "x"),
             ]
         );
+    }
+
+    /// Wraps into 3 rows at text width 10; one row at 80 columns.
+    const W3: &str = "aaaa bbbb cccc dddd eeee";
+
+    /// Screen rows of lines `from..=to` at the app's current width.
+    fn rows_between(a: &App, from: usize, to: usize) -> usize {
+        a.lines[from..=to]
+            .iter()
+            .map(|line| wrap::rows(line, a.text_width()).len())
+            .sum()
+    }
+
+    /// Whether every row of the cursor line is on screen.
+    fn cursor_line_shown(a: &App) -> bool {
+        let shown = a
+            .screen_rows()
+            .iter()
+            .filter(|r| r.line == a.cursor)
+            .count();
+        shown == wrap::rows(&a.lines[a.cursor], a.text_width()).len()
+    }
+
+    #[test]
+    fn j_scrolls_so_a_wrapped_cursor_line_is_fully_shown() {
+        let mut a = wrapped(&[W3, W3, W3, "x"], (14, 8)); // height 7
+
+        send(&mut a, [ch('j'), ch('j')]);
+
+        assert_eq!(at(&a), (2, 1), "lines 1 and 2 take 6 of the 7 rows");
+        assert!(cursor_line_shown(&a));
+    }
+
+    #[test]
+    fn capital_g_shows_all_of_a_wrapped_last_line_with_no_blank_rows() {
+        let mut lines = vec!["x"; 10];
+        lines.push(W3);
+        let mut a = wrapped(&lines, (15, 8)); // 2 digits, width 10, height 7
+
+        send(&mut a, [ch('G')]);
+
+        assert_eq!(at(&a), (10, 6), "4 short lines and the 3 rows of the last");
+        assert_eq!(a.screen_rows().len(), 7);
+    }
+
+    #[test]
+    fn a_cursor_line_taller_than_the_view_starts_at_the_top() {
+        let mut a = wrapped(&["x", W3, "y"], (14, 3)); // height 2
+
+        send(&mut a, [ch('j')]);
+
+        assert_eq!(at(&a), (1, 1));
+    }
+
+    #[test]
+    fn a_bracket_jump_past_wrapped_lines_shows_the_target() {
+        let lines = [W3, W3, W3, "x", "y"].map(String::from).to_vec();
+        let threads = [view("c1", (4, 4), Status::Open, State::Current)];
+        let mut a = App::open(lines, &threads, "scott", (14, 8)); // height 7
+
+        send(&mut a, [ch(']')]);
+
+        assert_eq!(at(&a), (3, 1));
+        assert!(cursor_line_shown(&a));
+    }
+
+    #[test]
+    fn opening_the_panel_below_wrapped_lines_keeps_the_cursor_line_shown() {
+        let lines = [W3, W3, W3, W3, "t"].map(String::from).to_vec();
+        let threads = [chatty("c1", (5, 5), 1)];
+        let mut a = App::open(lines, &threads, "scott", (14, 16)); // height 15
+        send(&mut a, [ch('G')]);
+        assert_eq!(at(&a), (4, 0));
+
+        send(&mut a, [press(KeyCode::Enter)]); // height 7
+
+        assert!(cursor_line_shown(&a));
+        assert_eq!(a.top, 2);
+        send(&mut a, [press(KeyCode::Esc)]);
+        assert_eq!(at(&a), (4, 0), "everything fits again");
+    }
+
+    #[test]
+    fn resizing_narrower_rewraps_and_keeps_the_cursor_line_shown() {
+        let mut a = wrapped(&[W3, W3, W3, "x"], (80, 8));
+        send(&mut a, [ch('G')]);
+        assert_eq!(at(&a), (3, 0));
+
+        send(&mut a, [Event::Resize(14, 8)]);
+
+        assert_eq!(a.screen_rows()[0].text, "aaaa bbbb ");
+        assert_eq!(at(&a), (3, 1));
+        assert!(cursor_line_shown(&a));
+    }
+
+    #[test]
+    fn the_cursor_line_stays_shown_through_a_walk_over_wrapped_lines() {
+        let long = "word ".repeat(30);
+        let mixed: Vec<&str> = (0..40)
+            .map(|i| match i % 4 {
+                0 => W3,
+                1 => "short",
+                2 => long.as_str(),
+                _ => "",
+            })
+            .collect();
+        let walk = "jjjjjjjjjjjjGkkkkkkkgjjjjjj]]][[";
+        let mut events: Vec<Event> = walk.chars().map(ch).collect();
+        events.extend([ctrl('d'), ctrl('u'), ctrl('d'), ctrl('d'), ch('G')]);
+        events.extend([ctrl('u'), ctrl('u'), ctrl('d')]);
+
+        for cols in [12, 14, 20, 40, 80] {
+            for rows in [4, 8, 13] {
+                let mut a = wrapped(&mixed, (cols, rows));
+                for e in &events {
+                    update(&mut a, e.clone());
+                    let height = a.height();
+                    assert!(
+                        a.top <= a.cursor
+                            && (rows_between(&a, a.top, a.cursor) <= height || a.top == a.cursor),
+                        "{cols}x{rows} after {e:?}: top {} cursor {}",
+                        a.top,
+                        a.cursor
+                    );
+                }
+            }
+        }
     }
 
     #[test]
