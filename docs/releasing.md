@@ -28,7 +28,21 @@ cargo package --locked
 cargo info ptal                             # first release only: the name must be free
 ```
 
+`cargo info ptal` inside the checkout reports the local package, not the
+registry. For the first release, check the registry instead:
+`curl -s -o /dev/null -w '%{http_code}\n' https://crates.io/api/v1/crates/ptal -H 'User-Agent: ptal-release'`
+(expect `404`).
+
+The crates.io token needs the `publish-update` scope, plus `publish-new` for a
+first release, and no crate-name restriction that excludes `ptal`. A token
+without them fails at upload with `403 Forbidden`, after the dry run passed.
+Save a replacement with `cargo login` in a normal terminal tab: it needs an
+interactive prompt, so `! cargo login` from an agent session saves nothing.
+
 ## 2. Bump the version
+
+For the first release (0.1.0 is already in `Cargo.toml`) there is nothing to
+bump: confirm the version and skip to step 3.
 
 Edit `version` in `Cargo.toml`, then refresh the lockfile and re-check:
 
@@ -129,7 +143,9 @@ shasum -a 256 -c SHA256SUMS --ignore-missing   # expect: OK for each downloaded 
 ```
 
 Also open https://crates.io/crates/ptal and https://docs.rs/ptal and confirm
-the version and a successful docs build.
+the version and a successful docs build. `https://docs.rs/ptal/X.Y.Z/ptal/`
+returning `200` means the build succeeded. `crate/ptal/X.Y.Z/builds.json`
+returned HTML, not JSON, when tried, so don't script against it.
 
 ## 9. Failure handling
 
