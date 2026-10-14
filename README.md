@@ -11,7 +11,7 @@ state persist across rounds and revisions.
 
 > **Status:** core library, the agent CLI (`comments`, `add`, `resolve`, `reply`,
 > `reopen`), and a TUI (scroll a file, comment on a line, read threads and the
-> agent's replies, jump between threads, reply, resolve, reopen) implemented. Ranges, and live refresh are planned. See [ARCHITECTURE.md](https://github.com/sleb/ptal/blob/main/ARCHITECTURE.md).
+> agent's replies, jump between threads, reply, resolve, reopen) implemented. Ranges, and live refresh are planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why not a PR?
 
@@ -96,14 +96,14 @@ ptal --help                    # the full agent guide: workflow, JSON shape, exi
 Writes require `--as <name>` (or `PTAL_AUTHOR`) so every message is attributed.
 Failures print nothing on stdout and one JSON error line on stderr; exit `2`
 means the invocation can be fixed, `1` is a runtime failure (see
-[docs/interfaces.md](https://github.com/sleb/ptal/blob/main/docs/interfaces.md#exit-codes)). A skill or prompt for
+[docs/interfaces.md](docs/interfaces.md#exit-codes)). A skill or prompt for
 your agent of choice is just: *"run `ptal comments <file>`, edit the file to
 address each thread, then `ptal resolve` it."*
 
 **Planned, not built:** `ptal schema` (JSON Schema for all output).
 
 The full command and key map, agent and human side by side, is in
-[docs/interfaces.md](https://github.com/sleb/ptal/blob/main/docs/interfaces.md).
+[docs/interfaces.md](docs/interfaces.md).
 
 ## Troubleshooting
 

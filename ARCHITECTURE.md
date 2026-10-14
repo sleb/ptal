@@ -382,7 +382,8 @@ The crate is publishable but not yet published; publishing is manual. The
 `include` allowlist in `Cargo.toml` is the source of truth for what ships
 (`src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `README.md`, `LICENSE`); `docs/`,
 `ARCHITECTURE.md`, `scripts/` and agent/editor directories are deliberately
-excluded, so README links to them are absolute GitHub URLs. `rust-version`
+excluded; README links to them are relative, which GitHub and crates.io
+(via `repository`) resolve against the repo. `rust-version`
 is the floor declared by the dependency tree, checked by hand and not
 enforced in CI. CI runs `cargo package --locked`, fails if a forbidden path
 enters the tarball, and builds the docs from the unpacked tarball.
