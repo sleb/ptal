@@ -170,12 +170,13 @@ impl<C: Clock> Reviews<C> {
     /// Resolve thread `id`, optionally appending `note` as a comment by
     /// `author`.
     ///
-    /// Resolving an already-resolved thread succeeds and changes nothing; the
-    /// new note is ignored. A blank note adds no comment.
+    /// A blank note adds no comment.
     ///
     /// # Errors
     /// [`Error::EmptyAuthor`], [`Error::NotFound`] if no thread has this id,
-    /// plus any store error. Nothing is written on error.
+    /// [`Error::AlreadyResolved`] if the thread is not open, plus any store
+    /// error, checked in that order. Nothing is written on error, so a note
+    /// on a resolved thread is dropped, not appended.
     ///
     /// # Examples
     /// ```
@@ -205,7 +206,7 @@ impl<C: Clock> Reviews<C> {
         self.store.with_review(file, |review| {
             let index = find_thread(review, id)?;
             if review.threads[index].status != Status::Open {
-                return Ok(review.threads[index].clone());
+                return Err(Error::AlreadyResolved(id.to_string()));
             }
             let note_comment = note.map(|body| new_comment(review, author, body, &now));
             let thread = &mut review.threads[index];
@@ -711,21 +712,40 @@ mod tests {
     }
 
     #[test]
-    fn repeat_resolve_is_a_no_op_success() {
+    fn resolving_a_resolved_thread_is_already_resolved_and_changes_nothing() {
         let fx = fixture();
         fx.reviews.add_thread(&fx.file, 1, 1, "x", "scott").unwrap();
-        let first = fx
-            .reviews
+        fx.reviews
             .resolve(&fx.file, "c1", "claude", Some("Done"))
             .unwrap();
         let bytes = fx.review_json();
 
-        let second = fx
+        let result = fx
             .reviews
-            .resolve(&fx.file, "c1", "someone-else", Some("Again"))
-            .unwrap();
+            .resolve(&fx.file, "c1", "someone-else", Some("Again"));
 
-        assert_eq!(second, first);
+        assert!(matches!(result, Err(Error::AlreadyResolved(id)) if id == "c1"));
+        assert_eq!(fx.review_json(), bytes);
+    }
+
+    #[test]
+    fn resolve_error_precedence_is_author_then_not_found_then_already_resolved() {
+        let fx = fixture();
+        resolved_thread(&fx);
+        let bytes = fx.review_json();
+
+        assert!(matches!(
+            fx.reviews.resolve(&fx.file, "c1", " ", None),
+            Err(Error::EmptyAuthor)
+        ));
+        assert!(matches!(
+            fx.reviews.resolve(&fx.file, "c99", "claude", None),
+            Err(Error::NotFound(id)) if id == "c99"
+        ));
+        assert!(matches!(
+            fx.reviews.resolve(&fx.file, "c1", "claude", None),
+            Err(Error::AlreadyResolved(id)) if id == "c1"
+        ));
         assert_eq!(fx.review_json(), bytes);
     }
 

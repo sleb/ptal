@@ -162,7 +162,8 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 - `view(file, include_resolved)` — threads in id order, open only by default,
   each with a computed `state`.
 - `resolve(file, id, author, note?)` — marks the thread resolved; a note is
-  appended as a second comment by the resolver.
+  appended as a second comment by the resolver. Resolving a resolved thread
+  is `AlreadyResolved` and writes nothing, so the note is dropped.
 - `reply(file, id, body, author)` — appends a comment to the thread. A reply
   to a resolved thread sets it `open` in the same write; no extra comment is
   synthesised.
@@ -185,15 +186,14 @@ below, so a front end that displays the file shows exactly what
 - A mutation that fails (unknown id, bad range, empty author or body) changes
   nothing.
 - Every message has a non-empty `author` and `body`.
-- `resolve` on a resolved thread is a no-op success: the new note is ignored
-  and nothing is written. (`reopen` on an open thread is the opposite:
-  `AlreadyOpen`.)
-- Error precedence: `reply` checks author, body, then thread id; `reopen`
-  checks author, thread id, then status. An id is allocated only after the
+- `resolve` on a resolved thread is `AlreadyResolved` and `reopen` on an open
+  thread is `AlreadyOpen`: both write nothing, so a note is dropped.
+- Error precedence: `reply` checks author, body, then thread id; `resolve`
+  and `reopen` check author, thread id, then status. An id is allocated only after the
   thread is found, so a failed write never burns one.
 
 **Contract:** returns typed results and typed errors (`NotFound`,
-`AlreadyOpen`, `InvalidRange`, `FileUnreadable`, `Locked`,
+`AlreadyOpen`, `AlreadyResolved`, `InvalidRange`, `FileUnreadable`, `Locked`,
 `UnsupportedSchema`, `EmptyAuthor`, `EmptyBody`, `Io`, `Corrupt`). No printing, no terminal awareness. This is the
 API both front ends share. Mapping errors to exit codes belongs to `cli`.
 
@@ -225,9 +225,9 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   open threads; `--all` includes resolved. Threads are in id order. Replies are
   flat: there is no reply tree yet.
 - `add`, `reply`, `resolve` and `reopen` print `{"file", "thread"}` (no
-  `state`: it is a read-time concept). Resolving a resolved thread succeeds
-  and prints it unchanged; reopening an open thread fails with `already_open`
-  (exit `2`).
+  `state`: it is a read-time concept). Resolving a resolved thread fails with
+  `already_resolved` and reopening an open thread with `already_open` (both
+  exit `2`).
 - There is no `waiting_on` field. A thread is waiting on an agent when its
   last comment's `author` is not the agent's `--as` name (exact match); the
   help says so and tells agents to use one stable name.

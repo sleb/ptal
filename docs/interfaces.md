@@ -29,7 +29,7 @@ acceptance criteria and link here instead of restating commands.
 | Comment on one line | `ptal add <file> --lines N "text" --as <name>` | `enter` on an unthreaded line (or `a` in the thread panel, which adds a thread beside the existing ones), type, `enter` saves, `esc` (or `ctrl+c`) cancels | `add_thread` |
 | Edit the draft | n/a | `←`/`→`, `Home`/`End` move; `backspace`/`delete` remove; single line | none |
 | Comment on a range | `ptal add <file> --lines A-B "text" --as <name>` | n/a | `add_thread` |
-| Resolve a thread | `ptal resolve <file> <id> --as <name> [--note "..."]` | `x` in the thread panel resolves the selected thread (no note; already resolved: footer says so) | `resolve` |
+| Resolve a thread | `ptal resolve <file> <id> --as <name> [--note "..."]` (`already_resolved` if resolved) | `x` in the thread panel resolves the selected thread (no note; already resolved: footer says so) | `resolve` |
 | Reply to a thread | `ptal reply <file> <id> "text" --as <name>` (reopens a resolved thread) | `r` in the thread panel replies to the selected thread (the box says `Reply to <id>`); `enter` saves, `esc` (or `ctrl+c`) cancels | `reply` |
 | Reopen a thread | `ptal reopen <file> <id> --as <name> [--note "..."]` (`already_open` if open) | `o` in the thread panel reopens the selected resolved thread (no note; already open: footer says so) | `reopen` |
 | See whether a thread is stale | `state: "current" \| "outdated"` in `comments` | `outdated` in the thread panel; the footer counts open outdated threads (`N outdated`) | `view` |
@@ -54,7 +54,7 @@ stderr carries one error. The table below is pinned by a unit test in
 | Exit | Meaning | Error codes |
 |---|---|---|
 | `0` | Success (also `--help`, `--version`) | none |
-| `2` | The caller can fix the invocation | `usage`, `missing_author`, `not_found`, `invalid_range`, `empty_body`, `already_open` |
+| `2` | The caller can fix the invocation | `usage`, `missing_author`, `not_found`, `invalid_range`, `empty_body`, `already_open`, `already_resolved` |
 | `1` | Runtime failure | `file_unreadable`, `locked`, `unsupported_schema`, `io`, `corrupt`, `no_data_dir`, `not_a_terminal`, `terminal` |
 
 `no_data_dir` is reported only by commands that read or write review data.

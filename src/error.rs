@@ -17,6 +17,10 @@ pub enum Error {
     #[error("thread {0} is already open")]
     AlreadyOpen(String),
 
+    /// The thread is already resolved, so there is nothing to resolve.
+    #[error("thread {0} is already resolved")]
+    AlreadyResolved(String),
+
     /// The requested line range is not valid for the file.
     #[error("invalid line range {start}-{end}: {reason}")]
     InvalidRange {
