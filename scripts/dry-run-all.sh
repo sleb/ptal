@@ -5,13 +5,17 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 sandbox=${1:-${TMPDIR:-/tmp}/ptal-dry-run}
+mkdir -p "$sandbox"
+sandbox=$(cd "$sandbox" && pwd)   # absolute: the scripts cd into it
 "$here/dry-run-a.sh" "$sandbox" >/dev/null
 "$here/dry-run-b.sh" 1 "$sandbox" >/dev/null
 "$here/dry-run-seed.sh" 1 "$sandbox" >/dev/null
 "$here/dry-run-b.sh" 2 "$sandbox" >/dev/null
 export PATH="$sandbox/bin:$PATH" PTAL_DATA_DIR="$sandbox/b/data"
 plan="$sandbox/b/plan.md"
-for id in $(ptal comments "$plan" | python3 -I -c 'import json,sys; print(*[t["id"] for t in json.load(sys.stdin)["threads"]])'); do
+# Separate assignment so a failed `ptal comments` stops the run under `set -e`.
+ids=$(ptal comments "$plan" | python3 -I -c 'import json,sys; print(*[t["id"] for t in json.load(sys.stdin)["threads"]])')
+for id in $ids; do
   ptal reply "$plan" "$id" 'Go with your first suggestion.' --as scott >/dev/null
 done
 "$here/dry-run-b.sh" 3 "$sandbox" >/dev/null

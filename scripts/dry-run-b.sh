@@ -8,6 +8,8 @@ set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 turn=${1:?turn 1, 2 or 3}
 sandbox=${2:-${TMPDIR:-/tmp}/ptal-dry-run}
+mkdir -p "$sandbox"
+sandbox=$(cd "$sandbox" && pwd)   # absolute: the scripts cd into it
 b="$sandbox/b"
 export PATH="$sandbox/bin:$PATH" PTAL_DATA_DIR="$b/data"
 
@@ -30,7 +32,7 @@ case $turn in
     echo "$session" > "$b/session"
     echo
     echo "Now comment as the human, with the SAME data dir (separate terminal):"
-    echo "  PTAL_DATA_DIR=$b/data ptal $b/plan.md"
+    printf '  PTAL_DATA_DIR=%q ptal %q\n' "$b/data" "$b/plan.md"
     echo "Leave 3 comments: a question, a change request, an ambiguous one."
     ;;
   2) run 2 --resume "$(cat "$b/session")" "done" ;;

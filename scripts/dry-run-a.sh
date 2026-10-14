@@ -6,11 +6,14 @@
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 sandbox=${1:-${TMPDIR:-/tmp}/ptal-dry-run}
+mkdir -p "$sandbox"
+sandbox=$(cd "$sandbox" && pwd)   # absolute: the scripts cd into it
 a="$sandbox/a"
 
 rm -rf "$a"
 mkdir -p "$a/skills" "$sandbox/bin" "$a/data"
 cp -R "$repo/scripts/fixtures/draft-plan" "$a/skills/draft-plan"
+(cd "$repo" && cargo build -q)
 # A copy, not a symlink: the agent must not be able to follow it back into the repo.
 cp "$repo/target/debug/ptal" "$sandbox/bin/ptal"
 
