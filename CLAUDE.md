@@ -19,7 +19,7 @@ Work is tracked in GitHub: an **MVP/milestone issue** holds the scope and design
 
 5. **Rust skills.** Any step that writes, reviews, or refactors Rust code uses `/rust-skills`.
 
-Green gate for every step: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`.
+Green gate for every step: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`, `cargo package --locked`.
 
 Plan stories with `/ptal-plan <issue#>`; the approved plan is posted as a comment on the issue and is the execution script.
 
@@ -35,6 +35,7 @@ cargo test --test <file>          # one integration test file in tests/
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+cargo package --locked
 ```
 
 ## Architecture

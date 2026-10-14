@@ -25,6 +25,15 @@ plans, specs-in-progress, notes. It is inspired by
 - Threads are flat conversations that can be resolved and reopened (nested replies are deferred).
 - Comments live in your user data directory, never in your repo.
 
+## Install
+
+```sh
+cargo install ptal
+```
+
+> Not yet published to crates.io; until then, build from source (see
+> [Building](#building)).
+
 ## Usage
 
 ```sh
@@ -113,4 +122,11 @@ with `PTAL_DATA_DIR`. Nothing is written next to the reviewed file.
 ```sh
 cargo build --release
 cargo test
+cargo install --path .   # install the checkout's binary
 ```
+
+Requires Rust 1.89 or newer.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
