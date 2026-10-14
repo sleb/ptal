@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   gate:
-    name: fmt, clippy, test
+    name: fmt, clippy, test, docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -29,3 +29,6 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
