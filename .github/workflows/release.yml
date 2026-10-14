@@ -22,7 +22,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  TAG: v0.1.0
+  TAG: v9.9.9
   DRY_RUN: 'true'
 
 jobs:

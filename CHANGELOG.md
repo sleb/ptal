@@ -5,7 +5,3 @@ workflow publishes that section as the GitHub Release notes. See
 [docs/releasing.md](docs/releasing.md).
 
 ## Unreleased
-
-## 0.1.0 - 2026-10-13
-
-- Rehearsal section (temporary).
