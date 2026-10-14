@@ -33,9 +33,6 @@ plans, specs-in-progress, notes. It is inspired by
 cargo install ptal
 ```
 
-> Not yet published to crates.io; until then, build from source (see
-> [Building](#building)).
-
 ## Usage
 
 ```sh
