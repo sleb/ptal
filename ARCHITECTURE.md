@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built (MVP subset): `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built (MVP subset): `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built (MVP subset): `Normal`/`Panel`/`Input` modes, gutter markers, thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
+| `tui` | Built (MVP subset): `Normal`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
 | `anchor`, `highlight`, `diffview` | Deferred |
 
 Deferred within built components: revisions and snapshots, anchor mapping
@@ -254,7 +254,7 @@ types, so changing them is a `schema_version` bump.
 **Role:** the human front end (ratatui; crossterm via `ratatui::crossterm`).
 Depends on `review` and `model` only.
 
-Three parts:
+Its parts:
 
 - `tui::app`: `App` state (`lines`, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
@@ -264,7 +264,11 @@ Three parts:
   range whatever its `state`; `Marker = Waiting | Open | Resolved` is derived
   per line (waiting > open > resolved). Waiting means open and last comment
   not by `author`. The panel's thread set is recomputed from the threads and
-  the cursor, never cached.
+  the cursor, never cached. `screen_rows()` maps the view to
+  `ScreenRow { line, first, text }`, filling the view height from `top` with
+  each line's `tui::wrap` rows at `text_width()` (terminal columns minus the
+  gutter, at least 1); `render` draws from it, and the view clamp in `update`
+  counts rows at the same width.
   `Event` is `Key | Resize | Saved { id, done, threads } | SaveFailed`, where
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
   always the thread id; `Effect` is `Add { line, body } | Reply { id, body }
@@ -276,10 +280,19 @@ Three parts:
   `c3 resolved by claude`), `> ` quote lines, then each comment's
   `author · YYYY-MM-DD HH:MMZ` and body, word-wrapped by `char` count.
   `update` clamps scroll from `lines.len()`; `render` draws a slice.
+- `tui::wrap`: `rows(line, width) -> Vec<String>`, pure, the only place file
+  lines are wrapped. Breaks after the last whitespace that fits, hard-breaks a
+  word wider than a row, and leaves whitespace at a break hanging on the end
+  of its row, so the rows join back to the displayed line. Tabs are four
+  spaces and control characters are dropped. Widths are measured as ratatui
+  draws (`Span::styled_graphemes`, `CellWidth`); a grapheme cluster is never
+  split.
 - `tui::render`: `render(&App, &mut Frame)`, pure over state. One file line
-  is one screen row (long lines are truncated, tabs shown as four spaces).
-  Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim), then the
-  line number, then `│`. Footer: path (or the last save message),
+  is one or more screen rows (word-wrapped by `tui::wrap`, tabs shown as four
+  spaces). Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim),
+  then the line number, then `│`; the glyph and number show on a line's first
+  row only, continuation rows keep just the `│`. The cursor highlight covers
+  every row of the cursor line. Footer: path (or the last save message),
   `L<line>/<total>`, `N outdated` (open threads only), key hints. In `Panel`
   a bordered box of half the terminal (at least 4 rows) sits above the
   footer and the view shrinks to stay above it. In `Input` the bordered 3-row
@@ -297,9 +310,15 @@ Three parts:
   machine is tested without a terminal.
 - The TUI owns no persistent state. Every write goes through `review`; after
   a write it re-reads `view` rather than patching local state.
-- `top <= cursor < top + height` after every event, where height is the rows
-  left after the footer, panel or input box. The panel never moves the
-  cursor, so the listed threads are always those of the line shown selected.
+- After every event `top <= cursor` and lines `top..=cursor` fit in `height`
+  screen rows (wrapped rows counted), where height is the rows left after the
+  footer, panel or input box, so the whole cursor line is on screen. The one
+  exception: a cursor line taller than the view sets `top == cursor` and its
+  tail is cut off (`top` is a file line; there is no sub-line scroll). `top`
+  never leaves blank rows below the last line while earlier lines could fill
+  them. Each clamp walks back at most `height` lines. The panel never moves
+  the cursor, so the listed threads are always those of the line shown
+  selected.
 - A failed write keeps the draft and mode and shows the error; nothing is lost
   silently.
 - The terminal is restored on every exit path: `TerminalSession` restores on
@@ -308,8 +327,9 @@ Three parts:
   handled.
 - Display only; never mutates the reviewed file (it is read once on open).
 
-*Deferred within `tui`:* `Visual` and `Help` modes; wrapping long lines in the
-file view; polling the file and `review.json` mtimes and re-syncing; draft
+*Deferred within `tui`:* `Visual` and `Help` modes; sub-line scrolling of a
+line taller than the view; a hanging indent for wrapped list items; real tab
+stops; polling the file and `review.json` mtimes and re-syncing; draft
 survival across a re-sync; mapping the cursor through `anchor`; viewing,
 editing threads; notes on resolve/reopen from the TUI. Until live refresh exists,
 the screen shows the file as read at open, while `add_thread` quotes the file
@@ -370,7 +390,9 @@ state or `review`.
   env. Schema conformance is deferred with `ptal schema`.
 - `tui`: scripted key events through `update` assert on state; `TestBackend`
   snapshots (inline expected strings) cover Normal, Panel and Input rendering,
-  gutter glyphs and styles;
+  gutter glyphs and styles; `tui::wrap` has examples plus a property test
+  over a fixed corpus (ASCII, CJK, emoji, tabs, long words) and widths
+  1..=12: rows join back to the line and each fits the width;
   `tests/tui.rs` runs scripted rounds through `step` against a real
   `Reviews`; the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the

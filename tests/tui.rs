@@ -132,6 +132,21 @@ fn a_saved_comment_shows_in_the_gutter_and_after_reopening() {
 }
 
 #[test]
+fn a_long_prose_line_is_readable_in_full_across_wrapped_rows() {
+    let words: Vec<String> = (0..30).map(|i| format!("word{i:02}")).collect();
+    let long = words.join(" ");
+    assert!(long.len() > 200);
+    let sb = sandbox(&format!("intro\n{long}\noutro\n"));
+
+    let text = screen(&sb.open());
+
+    for word in &words {
+        assert!(text.contains(word.as_str()), "{word} missing from\n{text}");
+    }
+    assert!(text.contains("outro"));
+}
+
+#[test]
 fn threads_added_with_a_range_mark_every_line_on_open() {
     let sb = sandbox(PLAN);
     sb.reviews

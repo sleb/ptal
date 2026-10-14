@@ -58,6 +58,10 @@ ptal plan.md            # open the TUI
 | `esc` (or `q`, `ctrl+c`) | In the panel: close it |
 | `q` (or `ctrl+c`) | Quit |
 
+Long lines wrap at word boundaries onto continuation rows; the line number and
+thread marker show on a line's first row, and `j` / `k` move by file line,
+not by screen row.
+
 Comments are written as `$USER`. The gutter marks lines inside a thread: `●`
 open, `◆` open and waiting on you (its last comment is not yours), `○`
 resolved. The thread panel shows each thread's status, `outdated` state,

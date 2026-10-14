@@ -6,7 +6,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Widget};
 
-use super::app::{App, Marker, Mode};
+use super::app::{App, Marker, Mode, ScreenRow};
 
 /// Draw `app` onto `frame`. Reads state only; never mutates it.
 pub fn render(app: &App, frame: &mut Frame) {
@@ -55,8 +55,6 @@ pub fn render(app: &App, frame: &mut Frame) {
     }
 }
 
-const TAB: &str = "    ";
-
 fn draw_file(app: &App, buf: &mut Buffer, area: Rect) {
     if area.is_empty() {
         return;
@@ -71,24 +69,23 @@ fn draw_file(app: &App, buf: &mut Buffer, area: Rect) {
         );
         return;
     }
-    let digits = app.lines().len().to_string().len();
-    let rows = app
-        .lines()
-        .iter()
-        .enumerate()
-        .skip(app.top())
-        .zip(area.rows());
-    for ((index, line), row) in rows {
-        let style = if index == app.cursor() {
+    let digits = app.digits();
+    for (screen_row, row) in app.screen_rows().into_iter().zip(area.rows()) {
+        let ScreenRow { line, first, text } = screen_row;
+        let style = if line == app.cursor() {
             Style::new().bg(Color::DarkGray)
         } else {
             Style::new()
         };
         buf.set_style(row, style);
-        let text = line.replace('\t', TAB);
-        let row_text = format!("  {:>digits$}│{text}", index + 1);
+        let number = if first {
+            (line + 1).to_string()
+        } else {
+            String::new()
+        };
+        let row_text = format!("  {number:>digits$}│{text}");
         buf.set_stringn(row.x, row.y, row_text, usize::from(row.width), style);
-        if let Some(marker) = app.marker(index) {
+        if let Some(marker) = app.marker(line).filter(|_| first) {
             let (glyph, color) = glyph(marker);
             buf.set_stringn(row.x, row.y, glyph, 1, style.patch(color));
         }
@@ -696,14 +693,57 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit"
         assert!(screen.ends_with("L30/30  enter:thread/comment ]/[:jump q:quit"));
     }
 
+    /// An app on a terminal `cols` wide, so wrapping matches the drawing.
+    fn narrow(lines: &[&str], threads: &[ThreadView], (cols, rows): (u16, u16)) -> App {
+        let lines = lines.iter().map(ToString::to_string).collect();
+        App::open(lines, threads, "scott", (cols, rows)).labeled("plan.md")
+    }
+
+    const LONG: &str = "a\tbravo charlie delta echo foxtrot";
+
     #[test]
-    fn long_lines_are_truncated_and_tabs_become_four_spaces() {
-        let long = format!("a\tb{}", "x".repeat(40));
-        let app = app_with(vec![long, "short".into()], &[], 4);
+    fn long_lines_wrap_with_the_number_on_the_first_row_only() {
+        let app = narrow(&[LONG, "short"], &[], (20, 5));
 
-        let screen = screen(&draw(&app, 20, 4));
+        let screen = screen(&draw(&app, 20, 5));
 
-        assert_eq!(screen.lines().next().unwrap(), "  1│a    bxxxxxxxxxx");
+        assert_eq!(
+            screen,
+            "  1│a    bravo
+   │charlie delta
+   │echo foxtrot
+  2│short
+plan.md  L1/2  enter"
+        );
+    }
+
+    #[test]
+    fn the_cursor_highlight_covers_every_row_of_a_wrapped_line() {
+        let mut app = narrow(&["one", LONG, "three"], &[], (20, 6));
+        key(&mut app, KeyCode::Char('j'));
+
+        let terminal = draw(&app, 20, 6);
+
+        let buffer = terminal.backend().buffer();
+        let bg = |y: u16| buffer[(5, y)].bg;
+        for y in 1..=3 {
+            assert_eq!(bg(y), Color::DarkGray, "row {y}");
+        }
+        assert_eq!(bg(0), Color::Reset);
+        assert_eq!(bg(4), Color::Reset);
+    }
+
+    #[test]
+    fn a_thread_glyph_shows_on_a_wrapped_lines_first_row_only() {
+        let threads = [open_thread("c1", (1, 1), State::Current)];
+        let app = narrow(&[LONG, "short"], &threads, (20, 5));
+
+        let terminal = draw(&app, 20, 5);
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), "●");
+        assert_eq!(buffer[(0, 1)].symbol(), " ");
+        assert_eq!(buffer[(0, 2)].symbol(), " ");
     }
 
     #[test]

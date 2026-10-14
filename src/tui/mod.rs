@@ -3,12 +3,13 @@
 //!
 //! Depends on [`crate::review`] and [`crate::model`] only, never on `store`.
 //! [`app`] is the pure state machine, [`panel`] the pure thread layout,
-//! [`mod@render`] the pure drawing; this
+//! [`wrap`] the pure line wrapping, [`mod@render`] the pure drawing; this
 //! module is the driver that performs the effects `update` asks for.
 
 pub mod app;
 pub mod panel;
 pub mod render;
+pub mod wrap;
 
 use std::io;
 use std::ops::ControlFlow;
