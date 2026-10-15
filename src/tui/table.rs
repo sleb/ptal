@@ -34,6 +34,8 @@
 //!   closes on a line of the same character, at least as long as the opener;
 //!   an unclosed fence runs to the end of the file.
 
+use ratatui::text::Line;
+
 use super::wrap;
 
 /// How a column's cells sit in its width.
@@ -124,9 +126,9 @@ fn layout_line(cells: &[String], widths: &[usize], aligns: &[Align]) -> Vec<Stri
         .iter()
         .zip(widths)
         .map(|(cell, &w)| {
-            wrap::rows(cell, w)
+            wrap::rows(&Line::raw(cell.as_str()), w)
                 .iter()
-                .map(|piece| piece.trim_end().to_owned())
+                .map(|piece| piece.to_string().trim_end().to_owned())
                 .collect()
         })
         .collect();

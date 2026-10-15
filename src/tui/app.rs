@@ -4,6 +4,7 @@
 //! state change and, at most, an [`Effect`] for the driver to perform.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::text::Line;
 
 use crate::model::{State, Status};
 use crate::review::ThreadView;
@@ -375,7 +376,10 @@ impl App {
     fn wrapped(&self, line: usize) -> Vec<String> {
         match &self.tables[line] {
             Some(rows) => rows.clone(),
-            None => wrap::rows(&self.lines[line], self.text_width()),
+            None => wrap::rows(&Line::raw(self.lines[line].as_str()), self.text_width())
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
         }
     }
 
@@ -383,7 +387,9 @@ impl App {
     fn rows_of(&self, line: usize) -> usize {
         match self.tables.get(line) {
             Some(Some(rows)) => rows.len(),
-            Some(None) => wrap::rows(&self.lines[line], self.text_width()).len(),
+            Some(None) => {
+                wrap::rows(&Line::raw(self.lines[line].as_str()), self.text_width()).len()
+            }
             None => 0,
         }
     }
