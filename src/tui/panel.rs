@@ -34,11 +34,13 @@ const BODY_INDENT: &str = "    ";
 /// Stack `threads` (already filtered to the cursor line, in store order) as
 /// rows of at most `width` cells. `selected` gets a `▶` on its header.
 ///
-/// Every row is wrapped by [`wrap::plain_rows`], so text is measured as
-/// ratatui draws it and nothing is clipped at the border: whitespace shows as
-/// written and hangs on the end of the row it breaks. Quote and body lines
-/// wrap one source line at a time under their indent; header and author
-/// lines wrap with no indent on their continuation rows.
+/// Every row is wrapped by [`wrap::plain_rows`], one source line at a time,
+/// so text is measured as ratatui draws it and every newline is a row break.
+/// Whitespace shows as written and hangs on the end of the row it breaks
+/// (clipped when drawn, like the file view's). Quote and body rows sit under
+/// their indent; header and author lines continue with no indent. The only
+/// row wider than `width` is one holding a single cluster wider than the room
+/// after its indent.
 pub fn layout(threads: &[&ThreadView], selected: usize, width: usize) -> Layout {
     let mut lines = Vec::new();
     let mut thread_starts = Vec::with_capacity(threads.len());
@@ -51,31 +53,25 @@ pub fn layout(threads: &[&ThreadView], selected: usize, width: usize) -> Layout 
         }
         thread_starts.push(lines.len());
         let dim = matches!(view.thread.status, Status::Resolved { .. });
-        let mut push = |text: String| lines.push(PanelLine { text, dim });
+        let mut push = |rows: Vec<String>| {
+            lines.extend(rows.into_iter().map(|text| PanelLine { text, dim }));
+        };
 
         let marker = if index == selected {
             SELECTED
         } else {
             UNSELECTED
         };
-        for row in wrap::plain_rows(&format!("{marker}{}", header(view)), width) {
-            push(row);
-        }
-        for row in indented(&view.thread.anchor.quote, QUOTE_INDENT, width) {
-            push(row);
-        }
+        push(indented(&format!("{marker}{}", header(view)), "", width));
+        push(indented(&view.thread.anchor.quote, QUOTE_INDENT, width));
         for comment in &view.thread.comments {
             let who = format!(
                 "{AUTHOR_INDENT}{} · {}",
                 comment.author,
                 time(&comment.created_at)
             );
-            for row in wrap::plain_rows(&who, width) {
-                push(row);
-            }
-            for row in indented(&comment.body, BODY_INDENT, width) {
-                push(row);
-            }
+            push(indented(&who, "", width));
+            push(indented(&comment.body, BODY_INDENT, width));
         }
     }
     Layout {
@@ -367,6 +363,34 @@ mod tests {
                 "  山田太郎山田太郎 · ",
                 "2026-10-12 09:00Z",
                 "    b",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_newline_in_a_name_is_a_row_break() {
+        let status = Status::Resolved {
+            resolved_by: "ops\nbot".into(),
+            resolved_at: "2026-10-12T11:00:00Z".into(),
+        };
+        let view = comment(
+            thread("c1", "q", status, State::Current),
+            "a\nb",
+            "2026-10-12T09:00:00Z",
+            "x",
+        );
+
+        let layout = layout(&[&view], 0, 40);
+
+        assert_eq!(
+            texts(&layout),
+            [
+                "▶ c1 resolved by ops",
+                "bot",
+                "  > q",
+                "  a",
+                "b · 2026-10-12 09:00Z",
+                "    x",
             ]
         );
     }

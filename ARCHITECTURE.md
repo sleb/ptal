@@ -287,10 +287,11 @@ Its parts:
   thread_starts }`, pure. Per thread: header (`c3 open`, `c3 open · outdated`,
   `c3 resolved by claude`), `> ` quote lines, then each comment's
   `author · YYYY-MM-DD HH:MMZ` and body. Every row is wrapped by
-  `tui::wrap::plain_rows` (quote and body lines one source line at a time,
-  so newlines and blank lines are kept and whitespace shows as written), so
-  no panel row is clipped. `update` clamps scroll from `lines.len()`;
-  `render` draws a slice.
+  `tui::wrap::plain_rows`, one source line at a time, so newlines and blank
+  lines are kept and whitespace shows as written. Text fits the panel by
+  cells; only hanging whitespace at a break is clipped, and a single cluster
+  wider than the room after its indent overflows. `update` clamps scroll
+  from `lines.len()`; `render` draws a slice.
 - `tui::wrap`: `rows(&Line, width) -> Vec<Line>`, pure, the only place the
   TUI wraps text; `plain_rows(text, width) -> Vec<String>` and
   `row_count(text, width)` run the same algorithm on unstyled text (table
@@ -471,7 +472,8 @@ state or `review`.
   1..=12: rows join back to the line and each fits the width; `tui::panel`
   has examples plus a property over a fixed corpus (ASCII, CJK, emoji ZWJ,
   combining marks, tabs, newlines) as quotes, authors and bodies, and widths
-  5..=20: every row fits the panel by cells;
+  5..=20: every row, trailing whitespace trimmed, fits the panel by cells
+  unless it holds a single cluster wider than the room after its indent;
   `tui::table` has examples (GFM subset, fences, indentation, ragged blocks,
   alignment, wide characters, wrapped cells, column-width allocation) plus
   properties: allocated widths fit, respect the minimums and use all the
