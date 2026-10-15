@@ -32,14 +32,14 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 |---|---|
 | `model` | Built: `Review`, `Thread`, `Status`, `Comment`, `Anchor`, `State` |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
-| `review` | Built (MVP subset): `add_thread`, `view`, `resolve`, `reply`, `reopen` |
-| `cli` | Built (MVP subset): `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built (MVP subset): `Normal`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
+| `review` | Built: `add_thread`, `view`, `resolve`, `reply`, `reopen` |
+| `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
+| `tui` | Built: `Normal`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
 | `anchor`, `highlight`, `diffview` | Deferred |
 
 Deferred within built components: revisions and snapshots, anchor mapping
 between file versions, nested replies, edit, delete, `acknowledge`, and
-`ptal schema` in the CLI. In the MVP, `state` compares the
+`ptal schema` in the CLI. For now, `state` compares the
 quote against the file at the stored lines, with no mapping. Sections below describe deferred design where
 they say so.
 
