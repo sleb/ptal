@@ -20,7 +20,7 @@ for, and the invariants and contracts between them.
                ┌─────▼─────┐
                │   model   │   plain data types, serde, JSON Schema
                └───────────┘
-        (tui also uses: highlight, diffview)
+        (tui also uses: diffview; highlight lives under tui)
 ```
 
 Dependencies point downward only. `model` depends on nothing in the crate.
@@ -35,7 +35,8 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `review` | Built: `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
 | `tui` | Built: `Normal`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
-| `anchor`, `highlight`, `diffview` | Deferred |
+| `highlight` | Built (markdown structure, `tui::highlight`) |
+| `anchor`, `diffview` | Deferred |
 
 Deferred within built components: revisions and snapshots, anchor mapping
 between file versions, nested replies, edit, delete, `acknowledge`, and
@@ -257,7 +258,9 @@ Depends on `review` and `model` only.
 Its parts:
 
 - `tui::app`: `App` state (`lines`, their `tables` rows from `tui::table`
-  at `text_width()`, recomputed on open and on resize, `cursor`, `top`, terminal `cols` and
+  at `text_width()`, recomputed on open and on resize, their `stylings` from
+  `tui::highlight`, computed once by `App::highlighted(true)` since the file
+  never changes in a session, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
   outdated ones, footer `status`), `Mode = Normal | Panel { selected, scroll }
   | Input { draft, cursor, from_panel, reply_to }`, and
@@ -268,9 +271,12 @@ Its parts:
   the cursor, never cached. `screen_rows()` maps the view to
   `ScreenRow { line, first, text }`, filling the view height from `top` with
   each line's rows at `text_width()` (terminal columns minus the gutter, at
-  least 1): its `tables` rows when it has them, else the `tui::wrap` rows of
-  the raw line. `render` draws from it, and the view clamp in `update` counts
-  the same rows; `lines()` stays the raw file.
+  least 1): its `tables` rows when it has them, in the line's whole-line
+  style only, else the `tui::wrap` rows of the raw line with its styling
+  applied. `text` is a styled ratatui `Line`; styling never changes a row's
+  text, so layout, the clamp and every key behave the same highlighted or
+  not. `render` draws from it, and the view clamp in `update` counts the
+  same rows; `lines()` stays the raw file.
   `Event` is `Key | Resize | Saved { id, done, threads } | SaveFailed`, where
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
   always the thread id; `Effect` is `Add { line, body } | Reply { id, body }
@@ -282,13 +288,19 @@ Its parts:
   `c3 resolved by claude`), `> ` quote lines, then each comment's
   `author · YYYY-MM-DD HH:MMZ` and body, word-wrapped by `char` count.
   `update` clamps scroll from `lines.len()`; `render` draws a slice.
-- `tui::wrap`: `rows(line, width) -> Vec<String>`, pure, the only place file
-  lines are wrapped. Breaks after the last whitespace that fits, hard-breaks a
-  word wider than a row, and leaves whitespace at a break hanging on the end
-  of its row, so the rows join back to the displayed line. Tabs are four
-  spaces and control characters are dropped. Widths are measured as ratatui
-  draws (`Span::styled_graphemes`, `CellWidth`); a grapheme cluster is never
-  split. `width(text)` is the same measure on one unbounded row.
+- `tui::wrap`: `rows(&Line, width) -> Vec<Line>`, pure, the only place file
+  lines are wrapped; `plain_rows(text, width) -> Vec<String>` and
+  `row_count(text, width)` run the same algorithm on unstyled text (table
+  cells, and the view clamp, which counts rows without building them).
+  Breaks after the last whitespace that fits, hard-breaks a word wider than
+  a row, and leaves whitespace at a break hanging on the end of its row, so
+  the rows join back to the displayed line. Tabs are four spaces and control
+  characters are dropped. Widths are measured as ratatui draws
+  (`styled_graphemes`, `CellWidth`), segmenting the whole line at once, so a
+  grapheme cluster is never split, even across two spans. Every cluster
+  keeps its style (a straddling one takes its first byte's), so a styled
+  line wraps into exactly the rows of its plain text. `width(text)` is the
+  same measure on one unbounded row.
 - `tui::table`: `align(lines, width) -> Vec<Option<Vec<String>>>`, pure, the
   only place tables are parsed: one entry per file line, that line's screen
   rows if it belongs to a well-formed table that lays out in `width`, else
@@ -312,14 +324,21 @@ Its parts:
   still one number, glyph and highlight, over all of its rows. Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim),
   then the line number, then `│`; the glyph and number show on a line's first
   row only, continuation rows keep just the `│`. The cursor highlight covers
-  every row of the cursor line. Footer: path (or the last save message),
+  every row of the cursor line. A highlighted line's text is drawn with its
+  styles patched over the row's, so the cursor `bg` shows under markdown
+  styling; styling sets no backgrounds and never touches the gutter, and
+  `DIM` is dropped on the cursor row, where faint text on the cursor
+  background is hard to read.
+  Footer: path (or the last save message),
   `L<line>/<total>`, `N outdated` (open threads only), key hints. In `Panel`
   a bordered box of half the terminal (at least 4 rows) sits above the
   footer and the view shrinks to stay above it. In `Input` the bordered 3-row
   box replaces the footer (and hides the panel it came from); the draft
   scrolls sideways instead of wrapping, and the cursor is a reversed cell.
-- `tui` (module root): the driver. `open` loads lines (`review::file_lines`)
-  and all threads; `step(app, event, reviews, file, author)` is the only
+- `tui` (module root): the driver. `load` reads lines (`review::file_lines`)
+  and all threads; `Loaded::into_app` highlights the file only when it is
+  markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
+  `color_wanted(NO_COLOR)`, read once at startup); `step(app, event, reviews, file, author)` is the only
   place effects are performed (`Add` → `Reviews::add_thread`, `Reply` →
   `Reviews::reply`, `Resolve`/`Reopen` → `Reviews::resolve`/`reopen` with no
   note, then `Reviews::view(file, true)` → `Event::Saved`); `run` is the blocking loop (read event →
@@ -349,7 +368,8 @@ Its parts:
 
 *Deferred within `tui`:* `Visual` and `Help` modes; sub-line scrolling of a
 line taller than the view; a hanging indent for wrapped list items; real tab
-stops; bold table headers and inline markup in cells;
+stops; inline markup in laid-out table cells (a laid-out table gets only its
+header line's bold); `NO_COLOR` for the TUI's chrome as well;
 GFM padding of ragged table rows; pipes inside inline code in a cell; tables
 inside lists or blockquotes; polling the file and `review.json` mtimes and re-syncing; draft
 survival across a re-sync; mapping the cursor through `anchor`; viewing,
@@ -358,11 +378,41 @@ the screen shows the file as read at open, while `add_thread` quotes the file
 as it is at save time.
 
 ### `highlight`
-*Deferred.*
+Lives at `tui::highlight`. Depends on nothing else in the crate (only
+`pulldown-cmark` and ratatui's `Style`/`Line`).
 
-**Role:** syntax highlighting of the reviewed text (syntect), producing styled
-spans per line. Pure; language chosen from file extension, plain text
-fallback. Depends on nothing else in the crate.
+**Role:** make a markdown file's structure visible in the file view.
+`highlight(lines) -> Vec<Styling>` parses the lines, joined by `\n`, as one
+CommonMark document (strikethrough and tables on, nothing else) and returns
+one `Styling { line: Style, spans: Vec<(Range<usize>, Style)> }` per line: a
+whole-line style plus inline spans in byte offsets of the raw line, outermost
+first, cut at line boundaries. `Styling::apply(line) -> Line` builds the
+styled line. `is_markdown(path)` is true for a `md`, `markdown` or `mdx`
+extension in any case; only those files are highlighted.
+
+Styles: heading lines bold magenta; strong bold, emphasis italic,
+strikethrough crossed out; inline code cyan, backticks included; fenced and
+indented code blocks with dim fence lines and a cyan body, no markup parsed
+inside; list markers bold green, the marker only; block quotes with dim `>`
+markers and italic text; links with underlined text and a dim `(target)`;
+a table's header line bold. The style constants sit together at the top of
+the module.
+
+**Invariants**
+- Highlighting never changes text: delimiters stay visible, `apply` yields
+  exactly the raw line, and spans are non-empty and on `char` boundaries.
+- Only modifiers and the 16 named ANSI colors, which the terminal theme sets
+  for light or dark; no RGB, no 256-color indexes, no backgrounds (the
+  cursor owns `bg`).
+- Off when `NO_COLOR` is set and non-empty, decided once in `cli`; the TUI's
+  own chrome (cursor, gutter glyphs) keeps its colors.
+- Styling is computed once per session (the file is read once); a resize
+  only re-wraps.
+
+*Deferred:* highlighting code inside fenced blocks by language (`syntect` or
+tree-sitter, language from the info string), highlighting non-markdown files
+by extension, front-matter detection (a leading `---` block may show as a
+setext heading), a toggle key, and themes (#49).
 
 ### `diffview`
 *Deferred.*
@@ -421,6 +471,11 @@ state or `review`.
   space when short; over a fixed corpus and view widths 1..=60, one entry per
   line, every row of a table equally wide and within the view with `│` in
   the same columns, and no cell text lost;
+  `tui::highlight` has examples per element (nesting, emphasis across a line
+  break, unclosed fences, quoted lists) plus a property over a fixed corpus:
+  one styling per line, spans in bounds and on `char` boundaries, and the
+  styled line's text is the raw line; `tui::app` checks that screen rows,
+  the clamp and key effects are identical with highlighting on and off;
   `tests/tui.rs` runs scripted rounds through `step` against a real
   `Reviews`; the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the

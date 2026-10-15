@@ -124,9 +124,12 @@ fn layout_line(cells: &[String], widths: &[usize], aligns: &[Align]) -> Vec<Stri
         .iter()
         .zip(widths)
         .map(|(cell, &w)| {
-            wrap::rows(cell, w)
-                .iter()
-                .map(|piece| piece.trim_end().to_owned())
+            wrap::plain_rows(cell, w)
+                .into_iter()
+                .map(|mut piece| {
+                    piece.truncate(piece.trim_end().len());
+                    piece
+                })
                 .collect()
         })
         .collect();

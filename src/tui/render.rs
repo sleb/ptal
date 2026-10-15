@@ -71,20 +71,37 @@ fn draw_file(app: &App, buf: &mut Buffer, area: Rect) {
     }
     let digits = app.digits();
     for (screen_row, row) in app.screen_rows().into_iter().zip(area.rows()) {
-        let ScreenRow { line, first, text } = screen_row;
-        let style = if line == app.cursor() {
+        let ScreenRow {
+            line,
+            first,
+            mut text,
+        } = screen_row;
+        let on_cursor = line == app.cursor();
+        let style = if on_cursor {
             Style::new().bg(Color::DarkGray)
         } else {
             Style::new()
         };
+        if on_cursor {
+            // Faint text on the cursor background is hard to read.
+            for span in &mut text.spans {
+                span.style = span.style.remove_modifier(Modifier::DIM);
+            }
+        }
         buf.set_style(row, style);
         let number = if first {
             (line + 1).to_string()
         } else {
             String::new()
         };
-        let row_text = format!("  {number:>digits$}│{text}");
-        buf.set_stringn(row.x, row.y, row_text, usize::from(row.width), style);
+        let gutter = format!("  {number:>digits$}│");
+        let (x, _) = buf.set_stringn(row.x, row.y, gutter, usize::from(row.width), style);
+        let room = row.right().saturating_sub(x);
+        if room > 0 {
+            // Patches the text's styles over the row's, so the cursor `bg`
+            // shows under highlighted text.
+            buf.set_line(x, row.y, &text, room);
+        }
         if let Some(marker) = app.marker(line).filter(|_| first) {
             let (glyph, color) = glyph(marker);
             buf.set_stringn(row.x, row.y, glyph, 1, style.patch(color));
@@ -887,5 +904,76 @@ plan.md  L1/5  enter:thread/co"
         for y in [0, 2, 3, 4] {
             assert_eq!(bg(y), Color::Reset, "row {y}");
         }
+    }
+
+    fn highlighted(lines: &[&str]) -> App {
+        let lines = lines.iter().map(ToString::to_string).collect();
+        App::open(lines, &[], "scott", (W, 6)).highlighted(true)
+    }
+
+    #[test]
+    fn a_highlighted_heading_is_bold_magenta_in_its_text_and_not_its_gutter() {
+        let app = highlighted(&["x", "# Title"]); // cursor on line 1
+
+        let terminal = draw(&app, W, 6);
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(screen(&terminal).lines().nth(1), Some("  2│# Title"));
+        for x in 4..11 {
+            assert_eq!(buffer[(x, 1)].fg, Color::Magenta, "x {x}");
+            assert!(buffer[(x, 1)].modifier.contains(Modifier::BOLD), "x {x}");
+        }
+        for x in 0..4 {
+            assert_eq!(buffer[(x, 1)].fg, Color::Reset, "gutter x {x}");
+            assert!(
+                !buffer[(x, 1)].modifier.contains(Modifier::BOLD),
+                "gutter x {x}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cursor_highlight_shows_under_highlighted_text() {
+        let app = highlighted(&["# Title", "x"]);
+
+        let terminal = draw(&app, W, 6);
+
+        let cell = &terminal.backend().buffer()[(4, 0)];
+        assert_eq!((cell.fg, cell.bg), (Color::Magenta, Color::DarkGray));
+        assert_eq!(terminal.backend().buffer()[(20, 0)].bg, Color::DarkGray);
+    }
+
+    #[test]
+    fn a_fenced_block_has_dim_fences_and_a_cyan_body() {
+        let app = highlighted(&["x", "```", "code", "```"]); // cursor on "x"
+
+        let terminal = draw(&app, W, 6);
+
+        let buffer = terminal.backend().buffer();
+        for y in [1, 3] {
+            assert!(buffer[(4, y)].modifier.contains(Modifier::DIM), "fence {y}");
+        }
+        assert_eq!(buffer[(4, 2)].fg, Color::Cyan);
+        assert_eq!(buffer[(7, 2)].fg, Color::Cyan);
+    }
+
+    #[test]
+    fn nothing_on_the_cursor_row_is_dim_so_it_stays_legible() {
+        let app = highlighted(&["```", "code", "```", "> quote"]);
+
+        let terminal = draw(&app, W, 6);
+
+        let buffer = terminal.backend().buffer();
+        let cell = &buffer[(4, 0)];
+        assert!(!cell.modifier.contains(Modifier::DIM));
+        assert_eq!(cell.bg, Color::DarkGray);
+        assert!(
+            buffer[(4, 2)].modifier.contains(Modifier::DIM),
+            "off the cursor row"
+        );
+        assert!(
+            buffer[(4, 3)].modifier.contains(Modifier::DIM),
+            "quote marker"
+        );
     }
 }
