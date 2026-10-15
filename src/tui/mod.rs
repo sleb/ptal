@@ -3,10 +3,12 @@
 //!
 //! Depends on [`crate::review`] and [`crate::model`] only, never on `store`.
 //! [`app`] is the pure state machine, [`panel`] the pure thread layout,
-//! [`wrap`] the pure line wrapping, [`mod@render`] the pure drawing; this
+//! [`wrap`] the pure line wrapping, [`table`] the pure table layout,
+//! [`highlight`] the pure markdown styling, [`mod@render`] the pure drawing; this
 //! module is the driver that performs the effects `update` asks for.
 
 pub mod app;
+pub mod highlight;
 pub mod panel;
 pub mod render;
 pub mod table;
