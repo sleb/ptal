@@ -286,12 +286,16 @@ Its parts:
 - `tui::panel`: `layout(threads, selected, width) -> Layout { lines,
   thread_starts }`, pure. Per thread: header (`c3 open`, `c3 open · outdated`,
   `c3 resolved by claude`), `> ` quote lines, then each comment's
-  `author · YYYY-MM-DD HH:MMZ` and body, word-wrapped by `char` count.
-  `update` clamps scroll from `lines.len()`; `render` draws a slice.
-- `tui::wrap`: `rows(&Line, width) -> Vec<Line>`, pure, the only place file
-  lines are wrapped; `plain_rows(text, width) -> Vec<String>` and
+  `author · YYYY-MM-DD HH:MMZ` and body. Every row is wrapped by
+  `tui::wrap::plain_rows` (quote and body lines one source line at a time,
+  so newlines and blank lines are kept and whitespace shows as written), so
+  no panel row is clipped. `update` clamps scroll from `lines.len()`;
+  `render` draws a slice.
+- `tui::wrap`: `rows(&Line, width) -> Vec<Line>`, pure, the only place the
+  TUI wraps text; `plain_rows(text, width) -> Vec<String>` and
   `row_count(text, width)` run the same algorithm on unstyled text (table
-  cells, and the view clamp, which counts rows without building them).
+  cells, thread panel rows, and the view clamp, which counts rows without
+  building them).
   Breaks after the last whitespace that fits, hard-breaks a word wider than
   a row, and leaves whitespace at a break hanging on the end of its row, so
   the rows join back to the displayed line. Tabs are four spaces and control
@@ -464,7 +468,10 @@ state or `review`.
   snapshots (inline expected strings) cover Normal, Panel and Input rendering,
   gutter glyphs and styles; `tui::wrap` has examples plus a property test
   over a fixed corpus (ASCII, CJK, emoji, tabs, long words) and widths
-  1..=12: rows join back to the line and each fits the width;
+  1..=12: rows join back to the line and each fits the width; `tui::panel`
+  has examples plus a property over a fixed corpus (ASCII, CJK, emoji ZWJ,
+  combining marks, tabs, newlines) as quotes, authors and bodies, and widths
+  5..=20: every row fits the panel by cells;
   `tui::table` has examples (GFM subset, fences, indentation, ragged blocks,
   alignment, wide characters, wrapped cells, column-width allocation) plus
   properties: allocated widths fit, respect the minimums and use all the
