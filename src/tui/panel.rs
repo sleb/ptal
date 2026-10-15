@@ -1,12 +1,13 @@
 //! The thread panel's content: a pure function from threads and a width to
 //! wrapped, styled rows.
 //!
-//! [`layout`] is the single owner of wrapping, so `update` can clamp scroll
-//! from `lines.len()` and `render` can draw a slice without either repeating
-//! the arithmetic.
+//! [`layout`] is the single owner of the panel's rows, so `update` can clamp
+//! scroll from `lines.len()` and `render` can draw a slice without either
+//! repeating the arithmetic. How text wraps is [`tui::wrap`](super::wrap)'s.
 
 use crate::model::{State, Status};
 use crate::review::ThreadView;
+use crate::tui::wrap;
 
 /// One screen row of the panel.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,10 +32,15 @@ const AUTHOR_INDENT: &str = "  ";
 const BODY_INDENT: &str = "    ";
 
 /// Stack `threads` (already filtered to the cursor line, in store order) as
-/// rows of at most `width` chars. `selected` gets a `▶` on its header.
+/// rows of at most `width` cells. `selected` gets a `▶` on its header.
 ///
-/// Wrapping counts `char`s, not display cells; wide glyphs may overflow and
-/// are clipped by the buffer edge, as in the file view.
+/// Every row is wrapped by [`wrap::plain_rows`], one source line at a time,
+/// so text is measured as ratatui draws it and every newline is a row break.
+/// Whitespace shows as written and hangs on the end of the row it breaks
+/// (clipped when drawn, like the file view's). Quote and body rows sit under
+/// their indent; header and author lines continue with no indent. The only
+/// row wider than `width` is one holding a single cluster wider than the room
+/// after its indent.
 pub fn layout(threads: &[&ThreadView], selected: usize, width: usize) -> Layout {
     let mut lines = Vec::new();
     let mut thread_starts = Vec::with_capacity(threads.len());
@@ -47,27 +53,25 @@ pub fn layout(threads: &[&ThreadView], selected: usize, width: usize) -> Layout 
         }
         thread_starts.push(lines.len());
         let dim = matches!(view.thread.status, Status::Resolved { .. });
-        let mut push = |text: String| lines.push(PanelLine { text, dim });
+        let mut push = |rows: Vec<String>| {
+            lines.extend(rows.into_iter().map(|text| PanelLine { text, dim }));
+        };
 
         let marker = if index == selected {
             SELECTED
         } else {
             UNSELECTED
         };
-        push(format!("{marker}{}", header(view)));
-        for row in indented(&view.thread.anchor.quote, QUOTE_INDENT, width) {
-            push(row);
-        }
+        push(indented(&format!("{marker}{}", header(view)), "", width));
+        push(indented(&view.thread.anchor.quote, QUOTE_INDENT, width));
         for comment in &view.thread.comments {
             let who = format!(
                 "{AUTHOR_INDENT}{} · {}",
                 comment.author,
                 time(&comment.created_at)
             );
-            push(who);
-            for row in indented(&comment.body, BODY_INDENT, width) {
-                push(row);
-            }
+            push(indented(&who, "", width));
+            push(indented(&comment.body, BODY_INDENT, width));
         }
     }
     Layout {
@@ -106,45 +110,14 @@ fn time(created_at: &str) -> String {
 }
 
 /// `text` wrapped to what is left of `width` after `indent`, each row
-/// prefixed with `indent`.
+/// prefixed with `indent`. Each source line wraps on its own, so every
+/// newline is a row break and a blank line is an empty row.
 fn indented(text: &str, indent: &str, width: usize) -> Vec<String> {
-    let room = width.saturating_sub(indent.chars().count());
-    wrap(text, room)
-        .into_iter()
+    let room = width.saturating_sub(wrap::width(indent));
+    text.split('\n')
+        .flat_map(|line| wrap::plain_rows(line, room))
         .map(|row| format!("{indent}{row}"))
         .collect()
-}
-
-/// Greedy word wrap at `width` chars (at least 1). Words longer than a row
-/// are hard-broken; blank lines are kept.
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut rows = Vec::new();
-    for source in text.split('\n') {
-        let mut current = String::new();
-        let mut len = 0;
-        for word in source.split_whitespace() {
-            let mut chars: Vec<char> = word.chars().collect();
-            if len > 0 && len + 1 + chars.len() <= width {
-                current.push(' ');
-                current.extend(&chars);
-                len += 1 + chars.len();
-                continue;
-            }
-            if len > 0 {
-                rows.push(std::mem::take(&mut current));
-            }
-            while chars.len() > width {
-                let rest = chars.split_off(width);
-                rows.push(chars.into_iter().collect());
-                chars = rest;
-            }
-            len = chars.len();
-            current = chars.into_iter().collect();
-        }
-        rows.push(current);
-    }
-    rows
 }
 
 #[cfg(test)]
@@ -188,6 +161,12 @@ mod tests {
 
     fn texts(layout: &Layout) -> Vec<&str> {
         layout.lines.iter().map(|l| l.text.as_str()).collect()
+    }
+
+    /// The last `n` rows: a body's, when the author line above it wraps.
+    fn last(layout: &Layout, n: usize) -> Vec<&str> {
+        let texts = texts(layout);
+        texts[texts.len() - n..].to_vec()
     }
 
     fn one() -> ThreadView {
@@ -284,8 +263,9 @@ mod tests {
         let layout = layout(&[&view], 0, 14); // 10 chars after the indent
 
         assert_eq!(
-            texts(&layout)[3..],
-            ["    alpha beta", "    gamma", "    ", "    delta"]
+            last(&layout, 4),
+            ["    alpha beta ", "    gamma", "    ", "    delta"],
+            "the space a row breaks on hangs on its end"
         );
     }
 
@@ -300,7 +280,7 @@ mod tests {
 
         let layout = layout(&[&view], 0, 10); // 6 chars after the indent
 
-        assert_eq!(texts(&layout)[3..], ["    abcdef", "    ghij"]);
+        assert_eq!(last(&layout, 2), ["    abcdef", "    ghij"]);
     }
 
     #[test]
@@ -315,6 +295,146 @@ mod tests {
         let layout = layout(&[&view], 0, 40);
 
         assert_eq!(layout.lines[2].text, "  x · yesterday");
+    }
+
+    fn body(text: &str) -> ThreadView {
+        comment(
+            thread("c1", "q", Status::Open, State::Current),
+            "claude",
+            "2026-10-12T09:00:00Z",
+            text,
+        )
+    }
+
+    #[test]
+    fn wide_characters_fill_rows_by_cells() {
+        let view = body("一二三四五六七八九十一二");
+
+        let layout = layout(&[&view], 0, 14); // 10 cells after the indent
+
+        assert_eq!(
+            last(&layout, 3),
+            ["    一二三四五", "    六七八九十", "    一二"]
+        );
+    }
+
+    #[test]
+    fn a_grapheme_cluster_is_never_split_across_rows() {
+        let family = "👨\u{200d}👩\u{200d}👧";
+        let view = body(&family.repeat(3));
+
+        let layout = layout(&[&view], 0, 6); // 2 cells after the indent
+
+        let row = format!("    {family}");
+        assert_eq!(last(&layout, 3), [row.as_str(); 3]);
+    }
+
+    #[test]
+    fn whitespace_in_a_body_is_kept_as_written() {
+        let view = body("  - item\n  - item  two");
+
+        let layout = layout(&[&view], 0, 40);
+
+        assert_eq!(texts(&layout)[3..], ["      - item", "      - item  two"]);
+    }
+
+    #[test]
+    fn long_header_and_author_lines_wrap() {
+        let status = Status::Resolved {
+            resolved_by: "a-very-long-resolver-name".into(),
+            resolved_at: "2026-10-12T11:00:00Z".into(),
+        };
+        let view = comment(
+            thread("c12", "q", status, State::Outdated),
+            "山田太郎山田太郎",
+            "2026-10-12T09:00:00Z",
+            "b",
+        );
+
+        let layout = layout(&[&view], 0, 20);
+
+        assert_eq!(
+            texts(&layout),
+            [
+                "▶ c12 resolved by ",
+                "a-very-long-resolver",
+                "-name · outdated",
+                "  > q",
+                "  山田太郎山田太郎 · ",
+                "2026-10-12 09:00Z",
+                "    b",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_newline_in_a_name_is_a_row_break() {
+        let status = Status::Resolved {
+            resolved_by: "ops\nbot".into(),
+            resolved_at: "2026-10-12T11:00:00Z".into(),
+        };
+        let view = comment(
+            thread("c1", "q", status, State::Current),
+            "a\nb",
+            "2026-10-12T09:00:00Z",
+            "x",
+        );
+
+        let layout = layout(&[&view], 0, 40);
+
+        assert_eq!(
+            texts(&layout),
+            [
+                "▶ c1 resolved by ops",
+                "bot",
+                "  > q",
+                "  a",
+                "b · 2026-10-12 09:00Z",
+                "    x",
+            ]
+        );
+    }
+
+    const CORPUS: &[&str] = &[
+        "plain ascii words that run on past the edge",
+        "漢字かなカナ混じりの文、そして English words too",
+        "emoji 👨\u{200d}👩\u{200d}👧👨\u{200d}👩\u{200d}👧 and 🎉🎉🎉",
+        "e\u{301}e\u{301}e\u{301} combining marks e\u{301}",
+        "\tTabbed\tcolumns",
+        "first\n\nthird after a blank\n",
+        "",
+    ];
+
+    #[test]
+    fn every_panel_row_fits_the_panel() {
+        for text in CORPUS {
+            let view = comment(
+                thread("c1", text, Status::Open, State::Outdated),
+                text,
+                "2026-10-12T09:00:00Z",
+                text,
+            );
+            for width in 5..=20 {
+                for line in layout(&[&view], 0, width).lines {
+                    let shown = line.text.trim_end();
+                    // A cluster wider than the room after the indent still
+                    // gets a row of its own.
+                    let content = [QUOTE_INDENT, BODY_INDENT]
+                        .iter()
+                        .find_map(|indent| shown.strip_prefix(indent))
+                        .unwrap_or(shown);
+                    let one_cluster = ratatui::text::Span::raw(content)
+                        .styled_graphemes(ratatui::style::Style::new())
+                        .count()
+                        == 1;
+                    assert!(
+                        wrap::width(shown) <= width || one_cluster,
+                        "{:?} overflows {width} for {text:?}",
+                        line.text
+                    );
+                }
+            }
+        }
     }
 
     #[test]
