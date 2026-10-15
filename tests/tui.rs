@@ -260,8 +260,9 @@ fn a_wide_tables_long_cell_wraps_in_its_column_and_a_comment_quotes_the_raw_line
         assert!(text.contains(word.as_str()), "{word} missing from\n{text}");
     }
 
-    sb.press(&mut app, &["j", "j", "j", "enter", "h", "i", "enter"]);
+    let flow = sb.press(&mut app, &["j", "j", "j", "enter", "h", "i", "enter"]);
 
+    assert_eq!(flow, ControlFlow::Continue(()));
     let json = cli_comments(&sb);
     let anchor = &json["threads"][0]["anchor"];
     assert_eq!(anchor["start_line"], 4);
