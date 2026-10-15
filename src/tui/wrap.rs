@@ -1,5 +1,5 @@
-//! Word-wrapping a file line into screen rows. This is the only place file
-//! lines are wrapped.
+//! Word-wrapping a line of text into screen rows. This is the only place the
+//! TUI wraps text: file lines, table cells and thread panel comments.
 //!
 //! - A tab is four spaces; control characters are dropped.
 //! - Width is measured exactly as ratatui draws: grapheme clusters of the
