@@ -257,7 +257,7 @@ Depends on `review` and `model` only.
 Its parts:
 
 - `tui::app`: `App` state (`lines`, their `tables` rows from `tui::table`
-  computed once on open, `cursor`, `top`, terminal `cols` and
+  at `text_width()`, recomputed on open and on resize, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
   outdated ones, footer `status`), `Mode = Normal | Panel { selected, scroll }
   | Input { draft, cursor, from_panel, reply_to }`, and
@@ -267,11 +267,10 @@ Its parts:
   not by `author`. The panel's thread set is recomputed from the threads and
   the cursor, never cached. `screen_rows()` maps the view to
   `ScreenRow { line, first, text }`, filling the view height from `top` with
-  the `tui::wrap` rows of each line's shown text at `text_width()` (terminal
-  columns minus the gutter, at least 1); `render` draws from it, and the view
-  clamp in `update` counts rows of the same text at the same width. A line's
-  shown text (`shown`) is its aligned table row when it has one that fits
-  `text_width()`, else the raw line; `lines()` stays the raw file.
+  each line's rows at `text_width()` (terminal columns minus the gutter, at
+  least 1): its `tables` rows when it has them, else the `tui::wrap` rows of
+  the raw line. `render` draws from it, and the view clamp in `update` counts
+  the same rows; `lines()` stays the raw file.
   `Event` is `Key | Resize | Saved { id, done, threads } | SaveFailed`, where
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
   always the thread id; `Effect` is `Add { line, body } | Reply { id, body }
