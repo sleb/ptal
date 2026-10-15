@@ -26,6 +26,7 @@
 //! is not highlighted by language.
 
 use std::ops::Range;
+use std::path::Path;
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
@@ -82,6 +83,17 @@ impl Styling {
             .collect();
         Line::from(spans).style(self.line)
     }
+}
+
+/// Whether `path` names a markdown file: its extension is `md`, `markdown`
+/// or `mdx`, in any case. Only markdown files are highlighted; anything
+/// else is shown plain.
+pub fn is_markdown(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| {
+        ["md", "markdown", "mdx"]
+            .iter()
+            .any(|md| ext.eq_ignore_ascii_case(md))
+    })
 }
 
 /// One [`Styling`] per line of `lines` (a file split by [`str::lines`]),
@@ -447,6 +459,16 @@ mod tests {
                 span("`c`", heading.patch(code)),
             ]
         );
+    }
+
+    #[test]
+    fn markdown_is_an_md_markdown_or_mdx_extension_in_any_case() {
+        for yes in ["plan.md", "PLAN.MD", "x.markdown", "dir/x.mdx", "x.Md"] {
+            assert!(is_markdown(Path::new(yes)), "{yes}");
+        }
+        for no in ["x.txt", "Makefile", "x.md.bak", ".md", "md", "x.mdown"] {
+            assert!(!is_markdown(Path::new(no)), "{no}");
+        }
     }
 
     const CORPUS: &str = "\
