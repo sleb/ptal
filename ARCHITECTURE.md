@@ -290,16 +290,22 @@ Its parts:
   spaces and control characters are dropped. Widths are measured as ratatui
   draws (`Span::styled_graphemes`, `CellWidth`); a grapheme cluster is never
   split. `width(text)` is the same measure on one unbounded row.
-- `tui::table`: `align(lines) -> Vec<Option<String>>`, pure, the only place
-  tables are parsed: one entry per file line, the aligned row for a line of a
-  well-formed table, else `None`. A GFM subset: a header and a `|---|:-:|`
+- `tui::table`: `align(lines, width) -> Vec<Option<Vec<String>>>`, pure, the
+  only place tables are parsed: one entry per file line, that line's screen
+  rows if it belongs to a well-formed table that lays out in `width`, else
+  `None`. A GFM subset: a header and a `|---|:-:|`
   delimiter with equal cell counts, a body up to the first blank, pipeless
   or fence line; `\|` is a pipe in a cell; lines in ```` ``` ```` / `~~~`
   fences or indented 4+ columns are never tables; a ragged body row leaves
-  the whole block raw. Cells are padded to their column by `wrap::width`
-  (left, right or center) and joined by ` │ `; the delimiter row is `─` runs
-  joined by `┼`. Every row of a table is equally wide, so the `App` shows a
-  table aligned or raw as a whole.
+  the whole block raw. A table that fits keeps its natural column widths;
+  one too wide shares `width` max-min fairly (narrow columns keep their
+  width, the rest split what is left), each column at least
+  `min(natural, MIN_COLUMN)` cells or the whole table is `None`. Cells are
+  wrapped by `wrap::rows` inside their column, padded by `wrap::width`
+  (left, right or center, each piece on its own) and joined by ` │ `; a line
+  takes as many rows as its tallest cell, shorter cells top-aligned. The
+  delimiter is one row of `─` runs joined by `┼`. Every row of a table is
+  equally wide, so the `App` shows a table laid out or raw as a whole.
 - `tui::render`: `render(&App, &mut Frame)`, pure over state. One file line
   is one or more screen rows (word-wrapped by `tui::wrap`, tabs shown as four
   spaces). A well-formed markdown table shows aligned, in place: each of its
@@ -411,8 +417,11 @@ state or `review`.
   over a fixed corpus (ASCII, CJK, emoji, tabs, long words) and widths
   1..=12: rows join back to the line and each fits the width;
   `tui::table` has examples (GFM subset, fences, indentation, ragged blocks,
-  alignment, wide characters) plus a property over a fixed corpus: one entry
-  per line and every row of a table equally wide;
+  alignment, wide characters, wrapped cells, column-width allocation) plus
+  properties: allocated widths fit, respect the minimums and use all the
+  space when short; over a fixed corpus and view widths 1..=60, one entry per
+  line, every row of a table equally wide and within the view with `│` in
+  the same columns, and no cell text lost;
   `tests/tui.rs` runs scripted rounds through `step` against a real
   `Reviews`; the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the

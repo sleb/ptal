@@ -106,9 +106,10 @@ pub enum Effect {
 #[derive(Debug, Clone)]
 pub struct App {
     pub(super) lines: Vec<String>,
-    /// Each line's aligned table row, from [`table::align`]; computed once,
-    /// since the file never changes under the TUI.
-    tables: Vec<Option<String>>,
+    /// Each line's aligned table row (one, at unbounded width), from
+    /// [`table::align`]; computed once, since the file never changes under
+    /// the TUI.
+    tables: Vec<Option<Vec<String>>>,
     pub(super) cursor: usize,
     pub(super) top: usize,
     /// Terminal width; the thread panel wraps to it.
@@ -173,7 +174,7 @@ impl App {
         (cols, rows): (u16, u16),
     ) -> Self {
         let mut app = App {
-            tables: table::align(&lines),
+            tables: table::align(&lines, usize::MAX),
             lines,
             cursor: 0,
             top: 0,
@@ -367,7 +368,7 @@ impl App {
     /// wide, so a table is aligned or raw as a whole.
     fn shown(&self, line: usize) -> &str {
         match &self.tables[line] {
-            Some(row) if wrap::width(row) <= self.text_width() => row,
+            Some(rows) if wrap::width(&rows[0]) <= self.text_width() => &rows[0],
             _ => &self.lines[line],
         }
     }

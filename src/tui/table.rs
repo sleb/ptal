@@ -1,17 +1,20 @@
 //! Aligning markdown tables in place. This is the only place tables are
 //! parsed.
 //!
-//! Each source line of a table becomes one aligned row, so line numbers,
-//! the cursor and anchors keep mapping one-to-one to file lines. Cells are
-//! trimmed, padded to their column (measured as [`wrap::rows`] measures) and
-//! joined by ` │ `; each row starts and ends with one space. The delimiter
-//! row shows as `─` runs joined by `┼`, as wide as the other rows.
+//! Each source line of a table becomes one or more screen rows of its own,
+//! so line numbers, the cursor and anchors keep mapping to file lines. Cells
+//! are trimmed, wrapped and padded to their column (measured as
+//! [`wrap::rows`] measures) and joined by ` │ `; each row starts and ends
+//! with one space. A line takes as many rows as its tallest cell; shorter
+//! cells are top-aligned, and each piece of a cell is aligned on its own.
+//! The delimiter row is one row of `─` runs joined by `┼`. Every row of a
+//! table is equally wide, its separators in the same columns.
 //!
-//! Too wide for the view: when a table's natural width does not fit, its
-//! columns share the view max-min fairly (narrow columns keep their natural
-//! width, the rest split what is left), but no column gets fewer than
-//! `MIN_COLUMN` cells, or its natural width if that is narrower. A view too
-//! narrow for those minimums shows the table raw.
+//! Column widths: a table whose natural width fits the view keeps it, one
+//! row per line. Otherwise its columns share the view max-min fairly (narrow
+//! columns keep their natural width, the rest split what is left), but no
+//! column gets fewer than `MIN_COLUMN` cells, or its natural width if that
+//! is narrower. A view too narrow for those minimums shows the table raw.
 //!
 //! What counts as a table, a subset of GitHub-flavored markdown:
 //!
@@ -41,9 +44,10 @@ enum Align {
     Right,
 }
 
-/// One entry per line of `lines`: its aligned row if it is a line of a
-/// well-formed table, else `None`. All rows of one table are equally wide.
-pub fn align(lines: &[String]) -> Vec<Option<String>> {
+/// One entry per line of `lines`: its screen rows if it is a line of a
+/// well-formed table that lays out in `width` cells, else `None`. Every
+/// screen row of one table is equally wide, at most `width`.
+pub fn align(lines: &[String], width: usize) -> Vec<Option<Vec<String>>> {
     let mut shown = vec![None; lines.len()];
     let mut fence: Option<Fence> = None;
     let mut at = 0;
@@ -60,9 +64,11 @@ pub fn align(lines: &[String]) -> Vec<Option<String>> {
         } else if let Some((aligns, end)) = table_at(lines, at) {
             let block = &lines[at..end];
             let columns = aligns.len();
-            if block.iter().all(|row| split(row).len() == columns) {
-                for (slot, row) in shown[at..end].iter_mut().zip(format(block, &aligns)) {
-                    *slot = Some(row);
+            if block.iter().all(|row| split(row).len() == columns)
+                && let Some(rows) = format(block, &aligns, width)
+            {
+                for (slot, rows) in shown[at..end].iter_mut().zip(rows) {
+                    *slot = Some(rows);
                 }
             }
             at = end;
@@ -76,11 +82,13 @@ pub fn align(lines: &[String]) -> Vec<Option<String>> {
 /// Where the delimiter row sits in a table block.
 const DELIMITER: usize = 1;
 
-/// The aligned rows of a well-formed table: `block` is its header, delimiter
-/// and body lines, every one with as many cells as `aligns`.
-fn format(block: &[String], aligns: &[Align]) -> Vec<String> {
+/// The screen rows of each line of a well-formed table laid out in `width`
+/// cells, or `None` if it does not fit its minimum column widths. `block` is
+/// its header, delimiter and body lines, every one with as many cells as
+/// `aligns`.
+fn format(block: &[String], aligns: &[Align], width: usize) -> Option<Vec<Vec<String>>> {
     let cells: Vec<Vec<String>> = block.iter().map(|row| split(row)).collect();
-    let widths: Vec<usize> = (0..aligns.len())
+    let natural: Vec<usize> = (0..aligns.len())
         .map(|column| {
             cells
                 .iter()
@@ -92,22 +100,44 @@ fn format(block: &[String], aligns: &[Align]) -> Vec<String> {
                 .max(1)
         })
         .collect();
-    cells
+    let widths = widths(&natural, width)?;
+    let rows = cells
         .iter()
         .enumerate()
         .map(|(at, row)| {
             if at == DELIMITER {
-                return widths
-                    .iter()
-                    .map(|&w| "─".repeat(w + 2))
-                    .collect::<Vec<_>>()
-                    .join("┼");
+                let rule = widths.iter().map(|&w| "─".repeat(w + 2));
+                vec![rule.collect::<Vec<_>>().join("┼")]
+            } else {
+                layout_line(row, &widths, aligns)
             }
-            let padded: Vec<String> = row
+        })
+        .collect();
+    Some(rows)
+}
+
+/// The screen rows of one table line: each cell wrapped in its column, as
+/// many rows as its tallest cell, shorter cells top-aligned. Each piece of a
+/// cell is aligned on its own.
+fn layout_line(cells: &[String], widths: &[usize], aligns: &[Align]) -> Vec<String> {
+    let pieces: Vec<Vec<String>> = cells
+        .iter()
+        .zip(widths)
+        .map(|(cell, &w)| {
+            wrap::rows(cell, w)
                 .iter()
-                .zip(&widths)
+                .map(|piece| piece.trim_end().to_owned())
+                .collect()
+        })
+        .collect();
+    let height = pieces.iter().map(Vec::len).max().unwrap_or(1);
+    (0..height)
+        .map(|row| {
+            let padded: Vec<String> = pieces
+                .iter()
+                .zip(widths)
                 .zip(aligns)
-                .map(|((cell, &w), &align)| pad(cell, w, align))
+                .map(|((cell, &w), &align)| pad(cell.get(row).map_or("", String::as_str), w, align))
                 .collect();
             format!(" {} ", padded.join(" │ "))
         })
@@ -116,10 +146,6 @@ fn format(block: &[String], aligns: &[Align]) -> Vec<String> {
 
 /// The narrowest a column is squeezed to when its table is too wide for the
 /// view; a column naturally narrower than this keeps its natural width.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by align in the next step")
-)]
 const MIN_COLUMN: usize = 10;
 
 /// Column widths for a table whose columns are `natural` cells wide, laid out
@@ -131,10 +157,6 @@ const MIN_COLUMN: usize = 10;
 /// while that is no more than an equal share of what is left, and the
 /// columns left over split the rest equally, a leftover cell each to the
 /// leftmost of them.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by align in the next step")
-)]
 fn widths(natural: &[usize], width: usize) -> Option<Vec<usize>> {
     let mut space = width.checked_sub((3 * natural.len()).saturating_sub(1))?;
     let minimum: usize = natural.iter().map(|&n| n.min(MIN_COLUMN)).sum();
@@ -374,8 +396,11 @@ mod tests {
     /// Which lines of `text` [`align`] treats as table rows.
     fn found(text: &str) -> Vec<bool> {
         let lines: Vec<String> = text.lines().map(str::to_owned).collect();
-        align(&lines).iter().map(Option::is_some).collect()
+        align(&lines, WIDE).iter().map(Option::is_some).collect()
     }
+
+    /// A view width every test table fits in unwrapped.
+    const WIDE: usize = 200;
 
     #[test]
     fn a_well_formed_table_is_found_and_the_prose_around_it_is_not() {
@@ -438,12 +463,24 @@ mod tests {
         assert_eq!(found("  | a |\n  |---|\n  | 1 |"), [true; 3]);
     }
 
-    /// [`align`]'s rows for `text`, which must all be table lines.
-    fn shown(text: &str) -> Vec<String> {
+    /// [`align`]'s screen rows for `text` at `width`, which must all be
+    /// table lines.
+    fn laid_out(text: &str, width: usize) -> Vec<Vec<String>> {
         let lines: Vec<String> = text.lines().map(str::to_owned).collect();
-        align(&lines)
+        align(&lines, width)
             .into_iter()
-            .map(|row| row.expect("every line is a table row"))
+            .map(|rows| rows.expect("every line is a table row"))
+            .collect()
+    }
+
+    /// [`align`]'s rows for `text` in a wide view: one per line.
+    fn shown(text: &str) -> Vec<String> {
+        laid_out(text, WIDE)
+            .into_iter()
+            .map(|rows| {
+                let [row] = <[String; 1]>::try_from(rows).expect("one row per line");
+                row
+            })
             .collect()
     }
 
@@ -492,27 +529,127 @@ mod tests {
     }
 
     #[test]
-    fn every_row_of_a_table_is_equally_wide_and_each_line_has_one_entry() {
-        let corpus = [
-            "| a | b |\n|---|---|\n| 1 | 2 |",
-            "| 漢字 | x |\n|:-:|--:|\n| a | かなカナ |",
-            "| 👨\u{200d}👩\u{200d}👧 | 🎉 |\n|---|---|\n| e\u{301} | |",
-            "| | |\n|-|-|\n| | |",
-            "| esc \\| aped |\n|---|\n| \\| |",
-            "| one |\n|---|\n| column |\n| rows |",
-            "prose\n| a |\n|---|\n\nmore prose",
-        ];
-        for text in corpus {
-            let lines: Vec<String> = text.lines().map(str::to_owned).collect();
-            let rows = align(&lines);
+    fn a_long_cell_wraps_inside_its_column_and_the_short_one_keeps_its_width() {
+        let text = "| Q | Decision |\n|---|---|\n| 1 | use the water filling rule for widths |";
 
-            assert_eq!(rows.len(), lines.len(), "{text:?}");
-            let widths: Vec<usize> = rows.iter().flatten().map(|row| width(row)).collect();
-            assert!(!widths.is_empty(), "{text:?}");
-            assert!(
-                widths.windows(2).all(|w| w[0] == w[1]),
-                "{text:?}: {widths:?}"
-            );
+        assert_eq!(
+            laid_out(text, 20),
+            [
+                vec![" Q │ Decision       "],
+                vec!["───┼────────────────"],
+                vec![
+                    " 1 │ use the water  ",
+                    "   │ filling rule   ",
+                    "   │ for widths     ",
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn the_tallest_cell_sets_the_height_and_each_piece_keeps_its_alignment() {
+        let text = "| key | value |\n|---|--:|\n| a | aaaa bbbb cccc dddd |";
+
+        assert_eq!(
+            laid_out(text, 18),
+            [
+                vec![" key │      value "],
+                vec!["─────┼────────────"],
+                vec![" a   │  aaaa bbbb ", "     │  cccc dddd "],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_word_wider_than_its_column_is_broken_and_wide_characters_wrap_by_cells() {
+        assert_eq!(
+            laid_out("| id | word |\n|---|---|\n| x | abcdefghijklmnop |", 17)[2],
+            [" x  │ abcdefghij ", "    │ klmnop     "]
+        );
+        assert_eq!(
+            laid_out("| k | v |\n|---|---|\n| x | 漢字漢字漢字漢字漢字漢字 |", 17)[2],
+            [
+                " x │ 漢字漢字漢  ",
+                "   │ 字漢字漢字  ",
+                "   │ 漢字        "
+            ]
+        );
+    }
+
+    #[test]
+    fn below_the_minimum_widths_a_table_is_raw_and_a_ragged_one_is_raw_at_any_width() {
+        let lines = |text: &str| -> Vec<String> { text.lines().map(str::to_owned).collect() };
+        let narrow = lines("| id | word |\n|---|---|\n| x | abcdefghijklmnop |");
+        assert_eq!(align(&narrow, 15), [None, None, None]);
+
+        let ragged = lines("| a | b |\n|---|---|\n| 1 |");
+        let malformed = lines("| a | b |\n|---|\n| 1 | 2 |");
+        for width in 1..=WIDE {
+            assert_eq!(align(&ragged, width), [None, None, None]);
+            assert_eq!(align(&malformed, width), [None, None, None]);
+        }
+    }
+
+    /// Cell offsets of `bar` in `row`.
+    fn offsets(row: &str, bar: char) -> Vec<usize> {
+        row.match_indices(bar)
+            .map(|(at, _)| width(&row[..at]))
+            .collect()
+    }
+
+    /// The non-whitespace text of `text`, separators dropped.
+    fn ink(text: &str) -> String {
+        text.chars()
+            .filter(|c| !c.is_whitespace() && !matches!(c, '│' | '─' | '┼'))
+            .collect()
+    }
+
+    #[test]
+    fn every_screen_row_of_a_table_is_equally_wide_aligned_and_loses_no_text() {
+        let long = "word ".repeat(40);
+        let corpus = [
+            "| a | b |\n|---|---|\n| 1 | 2 |".to_owned(),
+            "| 漢字 | x |\n|:-:|--:|\n| a | かなカナ |".to_owned(),
+            "| 👨\u{200d}👩\u{200d}👧 | 🎉 |\n|---|---|\n| e\u{301} | |".to_owned(),
+            "| | |\n|-|-|\n| | |".to_owned(),
+            "| esc \\| aped |\n|---|\n| \\| |".to_owned(),
+            "| one |\n|---|\n| column |\n| rows |".to_owned(),
+            "prose\n| a |\n|---|\n\nmore prose".to_owned(),
+            format!("| id | why |\n|---|:-:|\n| 1 | {long} |\n| 22 | short |"),
+            format!("| {long} | b | {long} |\n|--:|---|---|\n| x | 漢字漢字漢字 | y |"),
+            format!("| a | b |\n|---|---|\n| superlongidentifierwithoutspaces | {long} |"),
+        ];
+        for text in &corpus {
+            let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+            for view in 1..=60 {
+                let laid = align(&lines, view);
+                assert_eq!(laid.len(), lines.len(), "{text:?} at {view}");
+                let rows: Vec<&String> = laid.iter().flatten().flatten().collect();
+                if rows.is_empty() {
+                    continue;
+                }
+                let first = width(rows[0]);
+                assert!(first <= view, "{text:?} at {view}: {rows:?}");
+                let bars = offsets(rows[0].replace('┼', "│").as_str(), '│');
+                for row in &rows {
+                    assert_eq!(width(row), first, "{text:?} at {view}: {rows:?}");
+                    let row = row.replace('┼', "│");
+                    assert_eq!(offsets(&row, '│'), bars, "{text:?} at {view}: {rows:?}");
+                }
+                for (raw, shown) in lines.iter().zip(&laid) {
+                    let Some(shown) = shown else { continue };
+                    if shown.concat().chars().all(|c| "─┼".contains(c)) {
+                        continue;
+                    }
+                    for (column, cell) in split(raw).iter().enumerate() {
+                        let pieces: String = shown
+                            .iter()
+                            .map(|row| row.split('│').nth(column).unwrap_or_default())
+                            .collect();
+                        assert_eq!(ink(cell), ink(&pieces), "{text:?} at {view}");
+                    }
+                }
+            }
         }
     }
 }
