@@ -20,7 +20,7 @@ for, and the invariants and contracts between them.
                ┌─────▼─────┐
                │   model   │   plain data types, serde, JSON Schema
                └───────────┘
-        (tui also uses: highlight, diffview)
+        (tui also uses: diffview; highlight lives under tui)
 ```
 
 Dependencies point downward only. `model` depends on nothing in the crate.
@@ -35,7 +35,8 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `review` | Built: `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
 | `tui` | Built: `Normal`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
-| `anchor`, `highlight`, `diffview` | Deferred |
+| `highlight` | Built (markdown structure, `tui::highlight`) |
+| `anchor`, `diffview` | Deferred |
 
 Deferred within built components: revisions and snapshots, anchor mapping
 between file versions, nested replies, edit, delete, `acknowledge`, and
@@ -361,7 +362,8 @@ Its parts:
 
 *Deferred within `tui`:* `Visual` and `Help` modes; sub-line scrolling of a
 line taller than the view; a hanging indent for wrapped list items; real tab
-stops; bold table headers and inline markup in cells;
+stops; inline markup in laid-out table cells (a laid-out table gets only its
+header line's bold); `NO_COLOR` for the TUI's chrome as well;
 GFM padding of ragged table rows; pipes inside inline code in a cell; tables
 inside lists or blockquotes; polling the file and `review.json` mtimes and re-syncing; draft
 survival across a re-sync; mapping the cursor through `anchor`; viewing,
@@ -370,11 +372,41 @@ the screen shows the file as read at open, while `add_thread` quotes the file
 as it is at save time.
 
 ### `highlight`
-*Deferred.*
+Lives at `tui::highlight`. Depends on nothing else in the crate (only
+`pulldown-cmark` and ratatui's `Style`/`Line`).
 
-**Role:** syntax highlighting of the reviewed text (syntect), producing styled
-spans per line. Pure; language chosen from file extension, plain text
-fallback. Depends on nothing else in the crate.
+**Role:** make a markdown file's structure visible in the file view.
+`highlight(lines) -> Vec<Styling>` parses the lines, joined by `\n`, as one
+CommonMark document (strikethrough and tables on, nothing else) and returns
+one `Styling { line: Style, spans: Vec<(Range<usize>, Style)> }` per line: a
+whole-line style plus inline spans in byte offsets of the raw line, outermost
+first, cut at line boundaries. `Styling::apply(line) -> Line` builds the
+styled line. `is_markdown(path)` is true for a `md`, `markdown` or `mdx`
+extension in any case; only those files are highlighted.
+
+Styles: heading lines bold magenta; strong bold, emphasis italic,
+strikethrough crossed out; inline code cyan, backticks included; fenced and
+indented code blocks with dim fence lines and a cyan body, no markup parsed
+inside; list markers bold blue, the marker only; block quotes with dim `>`
+markers and italic text; links with underlined text and a dim `(target)`;
+a table's header line bold. The style constants sit together at the top of
+the module.
+
+**Invariants**
+- Highlighting never changes text: delimiters stay visible, `apply` yields
+  exactly the raw line, and spans are non-empty and on `char` boundaries.
+- Only modifiers and the 16 named ANSI colors, which the terminal theme sets
+  for light or dark; no RGB, no 256-color indexes, no backgrounds (the
+  cursor owns `bg`).
+- Off when `NO_COLOR` is set and non-empty, decided once in `cli`; the TUI's
+  own chrome (cursor, gutter glyphs) keeps its colors.
+- Styling is computed once per session (the file is read once); a resize
+  only re-wraps.
+
+*Deferred:* highlighting code inside fenced blocks by language (`syntect` or
+tree-sitter, language from the info string), highlighting non-markdown files
+by extension, front-matter detection (a leading `---` block may show as a
+setext heading), a toggle key, and themes (#49).
 
 ### `diffview`
 *Deferred.*
@@ -433,6 +465,11 @@ state or `review`.
   space when short; over a fixed corpus and view widths 1..=60, one entry per
   line, every row of a table equally wide and within the view with `│` in
   the same columns, and no cell text lost;
+  `tui::highlight` has examples per element (nesting, emphasis across a line
+  break, unclosed fences, quoted lists) plus a property over a fixed corpus:
+  one styling per line, spans in bounds and on `char` boundaries, and the
+  styled line's text is the raw line; `tui::app` checks that screen rows,
+  the clamp and key effects are identical with highlighting on and off;
   `tests/tui.rs` runs scripted rounds through `step` against a real
   `Reviews`; the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the

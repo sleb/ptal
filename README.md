@@ -63,7 +63,11 @@ thread marker show on a line's first row, and `j` / `k` move by file line,
 not by screen row. Markdown tables show with aligned columns; one too wide
 for the window wraps its cells inside their columns, still one cursor stop
 per file line. A malformed table, or a window too narrow for it, shows as
-written.
+written. In a markdown file (`.md`, `.markdown` or `.mdx`) headings,
+emphasis, inline code, code blocks, list markers, block quotes and links are
+highlighted, in your terminal theme's colors and never hiding a character;
+set `NO_COLOR` (to any non-empty value) to turn it off. Other files show
+plain.
 
 Comments are written as `$USER`. The gutter marks lines inside a thread: `●`
 open, `◆` open and waiting on you (its last comment is not yours), `○`
