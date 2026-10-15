@@ -289,14 +289,18 @@ Its parts:
   `author · YYYY-MM-DD HH:MMZ` and body, word-wrapped by `char` count.
   `update` clamps scroll from `lines.len()`; `render` draws a slice.
 - `tui::wrap`: `rows(&Line, width) -> Vec<Line>`, pure, the only place file
-  lines are wrapped. Breaks after the last whitespace that fits, hard-breaks a
-  word wider than a row, and leaves whitespace at a break hanging on the end
-  of its row, so the rows join back to the displayed line. Tabs are four
-  spaces and control characters are dropped. Widths are measured as ratatui
-  draws (`Span::styled_graphemes`, `CellWidth`); a grapheme cluster is never
-  split. Every cluster keeps its style, so a span cut by a break goes on in
-  its style on the next row. `width(text)` is the same measure on one
-  unbounded row.
+  lines are wrapped; `plain_rows(text, width) -> Vec<String>` and
+  `row_count(text, width)` run the same algorithm on unstyled text (table
+  cells, and the view clamp, which counts rows without building them).
+  Breaks after the last whitespace that fits, hard-breaks a word wider than
+  a row, and leaves whitespace at a break hanging on the end of its row, so
+  the rows join back to the displayed line. Tabs are four spaces and control
+  characters are dropped. Widths are measured as ratatui draws
+  (`styled_graphemes`, `CellWidth`), segmenting the whole line at once, so a
+  grapheme cluster is never split, even across two spans. Every cluster
+  keeps its style (a straddling one takes its first byte's), so a styled
+  line wraps into exactly the rows of its plain text. `width(text)` is the
+  same measure on one unbounded row.
 - `tui::table`: `align(lines, width) -> Vec<Option<Vec<String>>>`, pure, the
   only place tables are parsed: one entry per file line, that line's screen
   rows if it belongs to a well-formed table that lays out in `width`, else

@@ -413,9 +413,7 @@ impl App {
     fn rows_of(&self, line: usize) -> usize {
         match self.tables.get(line) {
             Some(Some(rows)) => rows.len(),
-            Some(None) => {
-                wrap::rows(&Line::raw(self.lines[line].as_str()), self.text_width()).len()
-            }
+            Some(None) => wrap::row_count(&self.lines[line], self.text_width()),
             None => 0,
         }
     }
@@ -1149,6 +1147,7 @@ mod tests {
             "| 1 | a cell long enough to wrap in a narrow view |",
             "Setext",
             "---",
+            "> \u{301}abcd a combining accent right after a quote marker",
         ];
         let keys = [ch('j'), ch('j'), ch('G'), ch('k'), press(KeyCode::Enter)];
         for cols in [12, 20, 40, 80] {

@@ -2,17 +2,20 @@
 //! lines are wrapped.
 //!
 //! - A tab is four spaces; control characters are dropped.
-//! - Width is measured exactly as ratatui draws: grapheme clusters from
-//!   [`Line::styled_graphemes`], each [`CellWidth::cell_width`] cells wide. A
-//!   cluster is never split, and a wide one that does not fit moves to the
-//!   next row.
+//! - Width is measured exactly as ratatui draws: grapheme clusters of the
+//!   whole line (as [`Span::styled_graphemes`] yields them), each
+//!   [`CellWidth::cell_width`] cells wide. A cluster is never split, not even
+//!   where it straddles two spans, and a wide one that does not fit moves to
+//!   the next row.
 //! - A row breaks after the last whitespace that fits. A run with no
 //!   whitespace that is wider than a row is broken at the width.
 //! - Whitespace at a break stays on the end of the row it follows, even past
 //!   the width (it is clipped when drawn), so continuation rows never start
 //!   with the space they broke on and the rows join back to the displayed
 //!   line.
-//! - Every cluster keeps its style: wrapping never restyles text.
+//! - Every cluster keeps its style (a straddling one takes the style of its
+//!   first byte): wrapping never restyles text, and a styled line wraps into
+//!   exactly the rows its plain text does.
 
 use std::mem;
 
@@ -27,25 +30,67 @@ use ratatui::text::{Line, Span};
 ///
 /// Each cluster keeps the style it has in `line` (its span's style patched
 /// over the line's), so a span cut by a break goes on in its style on the
-/// next row. A tab takes the style of the span it is in.
+/// next row. A tab takes the style of the span it is in. The rows' text is
+/// [`plain_rows`] of the line's text.
 pub fn rows(line: &Line, width: usize) -> Vec<Line<'static>> {
-    let expanded = Line::from(
-        line.spans
-            .iter()
-            .map(|span| Span::styled(expand_tabs(&span.content), line.style.patch(span.style)))
-            .collect::<Vec<_>>(),
-    );
+    let mut text = String::new();
+    // Where each span's expanded text ends in `text`, and its style.
+    let mut ends: Vec<(usize, Style)> = Vec::with_capacity(line.spans.len());
+    for span in &line.spans {
+        text.push_str(&expand_tabs(&span.content));
+        ends.push((text.len(), line.style.patch(span.style)));
+    }
+    let style_at = |at: usize| {
+        let span = ends.partition_point(|&(end, _)| end <= at);
+        ends.get(span).map_or(Style::new(), |&(_, style)| style)
+    };
+    split(&text, width)
+        .iter()
+        .map(|row| {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            for &symbol in row {
+                let style = style_at(offset_in(&text, symbol));
+                match spans.last_mut() {
+                    Some(span) if span.style == style => span.content.to_mut().push_str(symbol),
+                    _ => spans.push(Span::styled(symbol.to_owned(), style)),
+                }
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// [`rows`] of unstyled `text`, as strings.
+pub fn plain_rows(text: &str, width: usize) -> Vec<String> {
+    split(&expand_tabs(text), width)
+        .iter()
+        .map(|row| row.concat())
+        .collect()
+}
+
+/// How many rows [`rows`] (or [`plain_rows`]) makes of `text`, without
+/// building them.
+pub fn row_count(text: &str, width: usize) -> usize {
+    split(&expand_tabs(text), width).len()
+}
+
+/// The clusters of `text` (tabs already expanded) on each row: the one
+/// wrapping algorithm behind [`rows`], [`plain_rows`] and [`row_count`].
+fn split(text: &str, width: usize) -> Vec<Vec<&str>> {
     let mut rows = Vec::new();
-    let mut row: Vec<(&str, Style)> = Vec::new();
+    let mut row: Vec<&str> = Vec::new();
     let mut used = 0;
     // Index in `row` just after its last whitespace, and the cells used up
     // to there.
     let mut break_at: Option<(usize, usize)> = None;
-    for grapheme in expanded.styled_graphemes(Style::new()) {
-        let symbol = grapheme.symbol;
+    let span = Span::raw(text);
+    for grapheme in span.styled_graphemes(Style::new()) {
+        // The same cluster, borrowed from `text` rather than from `span`.
+        let at = offset_in(text, grapheme.symbol);
+        let symbol = &text[at..at + grapheme.symbol.len()];
         let cells = usize::from(symbol.cell_width());
         if symbol.chars().all(char::is_whitespace) {
-            row.push((symbol, grapheme.style));
+            row.push(symbol);
             used += cells;
             break_at = Some((row.len(), used));
             continue;
@@ -54,31 +99,23 @@ pub fn rows(line: &Line, width: usize) -> Vec<Line<'static>> {
             && let Some((at, used_at)) = break_at.take()
         {
             let tail = row.split_off(at);
-            rows.push(styled(&mem::replace(&mut row, tail)));
+            rows.push(mem::replace(&mut row, tail));
             used -= used_at;
         }
         if used + cells > width && !row.is_empty() {
-            rows.push(styled(&mem::take(&mut row)));
+            rows.push(mem::take(&mut row));
             used = 0;
         }
-        row.push((symbol, grapheme.style));
+        row.push(symbol);
         used += cells;
     }
-    rows.push(styled(&row));
+    rows.push(row);
     rows
 }
 
-/// One row of clusters as a line, adjacent clusters of one style merged
-/// into a span.
-fn styled(clusters: &[(&str, Style)]) -> Line<'static> {
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    for &(symbol, style) in clusters {
-        match spans.last_mut() {
-            Some(span) if span.style == style => span.content.to_mut().push_str(symbol),
-            _ => spans.push(Span::styled(symbol.to_owned(), style)),
-        }
-    }
-    Line::from(spans)
+/// Byte offset of `part`, a slice of `text`, within `text`.
+fn offset_in(text: &str, part: &str) -> usize {
+    part.as_ptr() as usize - text.as_ptr() as usize
 }
 
 /// Cells `text` takes on one unbounded row, by the same measure as [`rows`]:
@@ -159,6 +196,27 @@ mod tests {
     }
 
     #[test]
+    fn a_cluster_straddling_a_span_boundary_is_not_split() {
+        let dim = Style::new().add_modifier(Modifier::DIM);
+        let italic = Style::new().add_modifier(Modifier::ITALIC);
+        let line = Line::from(vec![
+            Span::styled("> ", dim),
+            Span::styled("\u{301}abcd", italic),
+        ]);
+
+        let rows = rows(&line, 3);
+
+        let text: Vec<String> = rows.iter().map(ToString::to_string).collect();
+        assert_eq!(text, plain("> \u{301}abcd", 3));
+        assert_eq!(row_count("> \u{301}abcd", 3), rows.len());
+        assert_eq!(
+            clusters(&rows)[0][1],
+            (" \u{301}".to_string(), dim),
+            "styled as its first byte"
+        );
+    }
+
+    #[test]
     fn a_line_that_fits_is_one_row_and_an_empty_line_is_one_empty_row() {
         assert_eq!(plain("short", 10), ["short"]);
         assert_eq!(plain("exactly10!", 10), ["exactly10!"]);
@@ -234,6 +292,7 @@ mod tests {
         "averyveryverylongwordwithnospacesatallinsideit and more",
         "漢字かなカナ混じりの文、そして English words too",
         "emoji 👨\u{200d}👩\u{200d}👧 and e\u{301} accents 🎉🎉🎉",
+        "> \u{301}abcd",
         "trailing spaces   ",
         "  a  b  c  ",
         "",
@@ -245,6 +304,29 @@ mod tests {
             .chars()
             .filter(|c| !c.is_control())
             .collect()
+    }
+
+    #[test]
+    fn styling_a_line_never_changes_how_it_wraps() {
+        let bold = Style::new().add_modifier(Modifier::BOLD);
+        for line in CORPUS {
+            for (cut, _) in line.char_indices() {
+                let (head, tail) = line.split_at(cut);
+                let styled = Line::from(vec![Span::raw(head), Span::styled(tail, bold)]);
+                for width in 1..=12 {
+                    let text: Vec<String> = rows(&styled, width)
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect();
+                    assert_eq!(
+                        text,
+                        plain_rows(line, width),
+                        "{line:?} cut at {cut}, width {width}"
+                    );
+                    assert_eq!(row_count(line, width), text.len());
+                }
+            }
+        }
     }
 
     #[test]
@@ -261,9 +343,14 @@ mod tests {
                         super::width(shown) <= width || one_cluster,
                         "{row:?} overflows {width} in {line:?}"
                     );
+                    let first = Span::raw(row.as_str())
+                        .styled_graphemes(Style::new())
+                        .next()
+                        .map(|g| g.symbol.to_string());
                     assert!(
-                        row == &rows[0] || !row.starts_with(' '),
-                        "continuation {row:?} starts with a space in {line:?}"
+                        row == &rows[0]
+                            || !first.is_some_and(|g| g.chars().all(char::is_whitespace)),
+                        "continuation {row:?} starts with whitespace in {line:?}"
                     );
                 }
             }
