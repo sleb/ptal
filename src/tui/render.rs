@@ -71,12 +71,23 @@ fn draw_file(app: &App, buf: &mut Buffer, area: Rect) {
     }
     let digits = app.digits();
     for (screen_row, row) in app.screen_rows().into_iter().zip(area.rows()) {
-        let ScreenRow { line, first, text } = screen_row;
-        let style = if line == app.cursor() {
+        let ScreenRow {
+            line,
+            first,
+            mut text,
+        } = screen_row;
+        let on_cursor = line == app.cursor();
+        let style = if on_cursor {
             Style::new().bg(Color::DarkGray)
         } else {
             Style::new()
         };
+        if on_cursor {
+            // Faint text on the cursor background is hard to read.
+            for span in &mut text.spans {
+                span.style = span.style.remove_modifier(Modifier::DIM);
+            }
+        }
         buf.set_style(row, style);
         let number = if first {
             (line + 1).to_string()
@@ -934,15 +945,35 @@ plan.md  L1/5  enter:thread/co"
 
     #[test]
     fn a_fenced_block_has_dim_fences_and_a_cyan_body() {
-        let app = highlighted(&["```", "code", "```"]);
+        let app = highlighted(&["x", "```", "code", "```"]); // cursor on "x"
 
         let terminal = draw(&app, W, 6);
 
         let buffer = terminal.backend().buffer();
-        for y in [0, 2] {
+        for y in [1, 3] {
             assert!(buffer[(4, y)].modifier.contains(Modifier::DIM), "fence {y}");
         }
-        assert_eq!(buffer[(4, 1)].fg, Color::Cyan);
-        assert_eq!(buffer[(7, 1)].fg, Color::Cyan);
+        assert_eq!(buffer[(4, 2)].fg, Color::Cyan);
+        assert_eq!(buffer[(7, 2)].fg, Color::Cyan);
+    }
+
+    #[test]
+    fn nothing_on_the_cursor_row_is_dim_so_it_stays_legible() {
+        let app = highlighted(&["```", "code", "```", "> quote"]);
+
+        let terminal = draw(&app, W, 6);
+
+        let buffer = terminal.backend().buffer();
+        let cell = &buffer[(4, 0)];
+        assert!(!cell.modifier.contains(Modifier::DIM));
+        assert_eq!(cell.bg, Color::DarkGray);
+        assert!(
+            buffer[(4, 2)].modifier.contains(Modifier::DIM),
+            "off the cursor row"
+        );
+        assert!(
+            buffer[(4, 3)].modifier.contains(Modifier::DIM),
+            "quote marker"
+        );
     }
 }

@@ -326,7 +326,9 @@ Its parts:
   row only, continuation rows keep just the `│`. The cursor highlight covers
   every row of the cursor line. A highlighted line's text is drawn with its
   styles patched over the row's, so the cursor `bg` shows under markdown
-  styling; styling sets no backgrounds and never touches the gutter.
+  styling; styling sets no backgrounds and never touches the gutter, and
+  `DIM` is dropped on the cursor row, where faint text on the cursor
+  background is hard to read.
   Footer: path (or the last save message),
   `L<line>/<total>`, `N outdated` (open threads only), key hints. In `Panel`
   a bordered box of half the terminal (at least 4 rows) sits above the
@@ -391,7 +393,7 @@ extension in any case; only those files are highlighted.
 Styles: heading lines bold magenta; strong bold, emphasis italic,
 strikethrough crossed out; inline code cyan, backticks included; fenced and
 indented code blocks with dim fence lines and a cyan body, no markup parsed
-inside; list markers bold blue, the marker only; block quotes with dim `>`
+inside; list markers bold green, the marker only; block quotes with dim `>`
 markers and italic text; links with underlined text and a dim `(target)`;
 a table's header line bold. The style constants sit together at the top of
 the module.

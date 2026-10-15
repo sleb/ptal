@@ -16,10 +16,13 @@
 //! | `**strong**` / `*emphasis*` / `~~strike~~` | bold / italic / crossed out |
 //! | `` `inline code` `` | cyan, backticks included |
 //! | Fenced or indented code block | fence lines dim, body cyan, no markup inside |
-//! | List marker (`-`, `*`, `+`, `1.`, `1)`) | bold blue, the marker only |
+//! | List marker (`-`, `*`, `+`, `1.`, `1)`) | bold green, the marker only |
 //! | Block quote | `>` markers dim, quoted text italic |
 //! | Link | text underlined, the `(target)` dim |
 //! | Table header line | whole line bold |
+//!
+//! The file view drops `DIM` on the cursor row, where faint text on the
+//! cursor background is hard to read.
 //!
 //! Highlighting never changes text: delimiters stay visible, and
 //! [`Styling::apply`] yields exactly the raw line. Code inside fenced blocks
@@ -38,7 +41,7 @@ const EMPHASIS: Style = Style::new().add_modifier(Modifier::ITALIC);
 const STRIKETHROUGH: Style = Style::new().add_modifier(Modifier::CROSSED_OUT);
 const CODE: Style = Style::new().fg(Color::Cyan);
 const FENCE: Style = Style::new().add_modifier(Modifier::DIM);
-const LIST_MARKER: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
+const LIST_MARKER: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 const QUOTE_MARKER: Style = Style::new().add_modifier(Modifier::DIM);
 const QUOTE: Style = Style::new().add_modifier(Modifier::ITALIC);
 const LINK_TEXT: Style = Style::new().add_modifier(Modifier::UNDERLINED);
@@ -398,7 +401,7 @@ mod tests {
 
     #[test]
     fn a_list_marker_is_styled_and_nothing_else_on_the_line() {
-        let marker = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
+        let marker = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
         assert_eq!(spans("- item", 0), [span("-", marker)]);
         assert_eq!(spans("12. item", 0), [span("12.", marker)]);
         assert_eq!(spans("3) item", 0), [span("3)", marker)]);
@@ -413,7 +416,7 @@ mod tests {
             spans("> quote", 0),
             [span("> ", dim), span("quote", italic)]
         );
-        let marker = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
+        let marker = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
         assert_eq!(
             spans("> - x", 0),
             [span("> ", dim), span("- x", italic), span("-", marker)]
