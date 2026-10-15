@@ -106,9 +106,10 @@ pub enum Effect {
 #[derive(Debug, Clone)]
 pub struct App {
     pub(super) lines: Vec<String>,
-    /// Each line's aligned table row, from [`table::align`]; computed once,
-    /// since the file never changes under the TUI.
-    tables: Vec<Option<String>>,
+    /// Each line's table rows from [`table::align`] at `text_width()`.
+    /// Recomputed by `relayout` whenever the text width can change (on open
+    /// and resize); anything else that changes it must call `relayout` too.
+    tables: Vec<Option<Vec<String>>>,
     pub(super) cursor: usize,
     pub(super) top: usize,
     /// Terminal width; the thread panel wraps to it.
@@ -173,7 +174,7 @@ impl App {
         (cols, rows): (u16, u16),
     ) -> Self {
         let mut app = App {
-            tables: table::align(&lines),
+            tables: Vec::new(),
             lines,
             cursor: 0,
             top: 0,
@@ -185,6 +186,7 @@ impl App {
             author: author.to_string(),
             threads: threads.to_vec(),
         };
+        app.relayout();
         app.clamp_view();
         app
     }
@@ -362,27 +364,27 @@ impl App {
         self.lines.len().saturating_sub(1)
     }
 
-    /// What 0-based `line` shows: its aligned table row if it has one that
-    /// fits the text width, else the raw line. A table's rows are equally
-    /// wide, so a table is aligned or raw as a whole.
-    fn shown(&self, line: usize) -> &str {
-        match &self.tables[line] {
-            Some(row) if wrap::width(row) <= self.text_width() => row,
-            _ => &self.lines[line],
-        }
+    /// Lay out the tables again for the current text width.
+    fn relayout(&mut self) {
+        self.tables = table::align(&self.lines, self.text_width());
     }
 
-    /// The screen rows of 0-based `line`'s shown text at the current width.
+    /// The screen rows of 0-based `line` at the current width: its table
+    /// rows if it has them, else the raw line wrapped by [`wrap::rows`]. A
+    /// table is laid out or raw as a whole.
     fn wrapped(&self, line: usize) -> Vec<String> {
-        wrap::rows(self.shown(line), self.text_width())
+        match &self.tables[line] {
+            Some(rows) => rows.clone(),
+            None => wrap::rows(&self.lines[line], self.text_width()),
+        }
     }
 
     /// Screen rows 0-based `line` takes at the current width.
     fn rows_of(&self, line: usize) -> usize {
-        if line < self.lines.len() {
-            self.wrapped(line).len()
-        } else {
-            0
+        match self.tables.get(line) {
+            Some(Some(rows)) => rows.len(),
+            Some(None) => wrap::rows(&self.lines[line], self.text_width()).len(),
+            None => 0,
         }
     }
 
@@ -562,6 +564,7 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
         Event::Resize(cols, rows) => {
             app.cols = usize::from(cols);
             app.rows = usize::from(rows);
+            app.relayout();
             None
         }
         Event::Saved { id, done, threads } => {
@@ -1032,7 +1035,7 @@ mod tests {
     }
 
     #[test]
-    fn a_table_too_wide_for_the_view_shows_raw_and_resizing_switches_it() {
+    fn a_table_too_narrow_for_its_minimum_widths_shows_raw_and_resizing_switches_it() {
         let texts =
             |a: &App| -> Vec<String> { a.screen_rows().into_iter().map(|row| row.text).collect() };
         let mut a = wrapped(&TABLE, (19, 10)); // text width 15
@@ -1042,6 +1045,95 @@ mod tests {
         assert_eq!(texts(&a)[1], " a        │ bbbbbbbb ");
         send(&mut a, [Event::Resize(19, 10)]);
         assert_eq!(texts(&a), TABLE);
+    }
+
+    /// A decision table with a long cell, then prose. 4 lines, so the gutter
+    /// is 4 columns; at 24 columns the text width is 20 and the long cell
+    /// wraps into 3 rows; at 80 it fits on one.
+    const DECISION: [&str; 4] = [
+        "| Q | Decision |",
+        "|---|---|",
+        "| 1 | use the water filling rule for widths |",
+        "outro",
+    ];
+
+    fn texts(a: &App) -> Vec<String> {
+        a.screen_rows().into_iter().map(|row| row.text).collect()
+    }
+
+    #[test]
+    fn a_table_too_wide_for_the_view_wraps_its_cells_inside_their_columns() {
+        let a = wrapped(&DECISION, (24, 10));
+
+        let row = |line, first, text: &str| ScreenRow {
+            line,
+            first,
+            text: text.into(),
+        };
+        assert_eq!(
+            a.screen_rows(),
+            [
+                row(0, true, " Q │ Decision       "),
+                row(1, true, "───┼────────────────"),
+                row(2, true, " 1 │ use the water  "),
+                row(2, false, "   │ filling rule   "),
+                row(2, false, "   │ for widths     "),
+                row(3, true, "outro"),
+            ]
+        );
+    }
+
+    #[test]
+    fn resizing_reflows_a_table_between_one_row_wrapped_and_raw() {
+        let mut a = wrapped(&DECISION, (80, 10));
+        assert_eq!(texts(&a)[2], " 1 │ use the water filling rule for widths ");
+
+        send(&mut a, [Event::Resize(24, 10)]);
+        assert_eq!(
+            texts(&a)[2..5],
+            [
+                " 1 │ use the water  ",
+                "   │ filling rule   ",
+                "   │ for widths     "
+            ]
+        );
+        send(&mut a, [Event::Resize(14, 10)]); // text width 10: below 1 + 10
+        assert_eq!(texts(&a)[0], "| Q | ");
+        send(&mut a, [Event::Resize(80, 10)]);
+        assert_eq!(a.screen_rows().len(), 4);
+    }
+
+    #[test]
+    fn j_moves_over_a_wrapped_table_line_in_one_step_and_enter_comments_on_it() {
+        let mut a = wrapped(&DECISION, (24, 10));
+
+        send(&mut a, [ch('j'), ch('j')]);
+        assert_eq!(a.cursor, 2);
+        send(&mut a, [ch('j')]);
+        assert_eq!(a.cursor, 3);
+        send(&mut a, [ch('k'), press(KeyCode::Enter)]);
+        typed(&mut a, "why?");
+
+        assert_eq!(
+            update(&mut a, press(KeyCode::Enter)),
+            Some(Effect::Add {
+                line: 3,
+                body: "why?".into()
+            })
+        );
+    }
+
+    #[test]
+    fn the_clamp_counts_the_rows_of_a_wrapped_table_line() {
+        let mut lines = vec!["x"; 6];
+        lines.extend(&DECISION[..3]);
+        let mut a = wrapped(&lines, (24, 5)); // text width 20, height 4
+
+        send(&mut a, [ch('G')]);
+        assert_eq!(at(&a), (8, 7), "the delimiter and the body's 3 rows");
+        assert!(cursor_line_shown(&a));
+        send(&mut a, [ch('g'), ctrl('d'), ctrl('d'), ctrl('d')]);
+        assert!(cursor_line_shown(&a));
     }
 
     #[test]
@@ -1079,7 +1171,8 @@ mod tests {
     #[test]
     fn the_cursor_line_stays_shown_through_a_walk_over_wrapped_lines() {
         let long = "word ".repeat(30);
-        let mixed: Vec<&str> = (0..40)
+        let wide_row = format!("| 1 | {long} |");
+        let mut mixed: Vec<&str> = (0..40)
             .map(|i| match i % 4 {
                 0 => W3,
                 1 => "short",
@@ -1087,6 +1180,7 @@ mod tests {
                 _ => "",
             })
             .collect();
+        mixed.extend(["| id | why |", "|---|---|", &wide_row, "| 2 | ok |"]);
         let walk = "jjjjjjjjjjjjGkkkkkkkgjjjjjj]]][[";
         let mut events: Vec<Event> = walk.chars().map(ch).collect();
         events.extend([ctrl('d'), ctrl('u'), ctrl('d'), ctrl('d'), ch('G')]);

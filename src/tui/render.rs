@@ -794,6 +794,58 @@ plan.md  L1/2  enter"
         }
     }
 
+    /// At 30 columns the text width is 26 and the long cell wraps in 3 rows.
+    const WIDE_TABLE: [&str; 5] = [
+        "before",
+        "| Q | Decision |",
+        "|---|---|",
+        "| 1 | use the water filling rule for widths |",
+        "after",
+    ];
+
+    #[test]
+    fn a_wide_table_wraps_its_cells_in_their_columns_numbered_once_per_line() {
+        let app = narrow(&WIDE_TABLE, &[], (30, 8));
+
+        let screen = screen(&draw(&app, 30, 8));
+
+        assert_eq!(
+            screen,
+            "  1│before
+  2│ Q │ Decision
+  3│───┼──────────────────────
+  4│ 1 │ use the water
+   │   │ filling rule for
+   │   │ widths
+  5│after
+plan.md  L1/5  enter:thread/co"
+        );
+    }
+
+    #[test]
+    fn a_wrapped_table_lines_glyph_is_on_its_first_row_and_its_highlight_on_all() {
+        let threads = [open_thread("c1", (4, 4), State::Current)];
+        let mut app = narrow(&WIDE_TABLE, &threads, (30, 8));
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Char('j'));
+        }
+
+        let terminal = draw(&app, 30, 8);
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 3)].symbol(), "●");
+        for y in [0, 1, 2, 4, 5, 6] {
+            assert_eq!(buffer[(0, y)].symbol(), " ", "row {y}");
+        }
+        let bg = |y: u16| buffer[(5, y)].bg;
+        for y in 3..=5 {
+            assert_eq!(bg(y), Color::DarkGray, "row {y}");
+        }
+        for y in [0, 1, 2, 6] {
+            assert_eq!(bg(y), Color::Reset, "row {y}");
+        }
+    }
+
     #[test]
     fn tiny_terminals_do_not_panic() {
         for width in 0..=3 {

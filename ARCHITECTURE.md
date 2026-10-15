@@ -32,14 +32,14 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 |---|---|
 | `model` | Built: `Review`, `Thread`, `Status`, `Comment`, `Anchor`, `State` |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
-| `review` | Built (MVP subset): `add_thread`, `view`, `resolve`, `reply`, `reopen` |
-| `cli` | Built (MVP subset): `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built (MVP subset): `Normal`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables, thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
+| `review` | Built: `add_thread`, `view`, `resolve`, `reply`, `reopen` |
+| `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
+| `tui` | Built: `Normal`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
 | `anchor`, `highlight`, `diffview` | Deferred |
 
 Deferred within built components: revisions and snapshots, anchor mapping
 between file versions, nested replies, edit, delete, `acknowledge`, and
-`ptal schema` in the CLI. In the MVP, `state` compares the
+`ptal schema` in the CLI. For now, `state` compares the
 quote against the file at the stored lines, with no mapping. Sections below describe deferred design where
 they say so.
 
@@ -257,7 +257,7 @@ Depends on `review` and `model` only.
 Its parts:
 
 - `tui::app`: `App` state (`lines`, their `tables` rows from `tui::table`
-  computed once on open, `cursor`, `top`, terminal `cols` and
+  at `text_width()`, recomputed on open and on resize, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
   outdated ones, footer `status`), `Mode = Normal | Panel { selected, scroll }
   | Input { draft, cursor, from_panel, reply_to }`, and
@@ -267,11 +267,10 @@ Its parts:
   not by `author`. The panel's thread set is recomputed from the threads and
   the cursor, never cached. `screen_rows()` maps the view to
   `ScreenRow { line, first, text }`, filling the view height from `top` with
-  the `tui::wrap` rows of each line's shown text at `text_width()` (terminal
-  columns minus the gutter, at least 1); `render` draws from it, and the view
-  clamp in `update` counts rows of the same text at the same width. A line's
-  shown text (`shown`) is its aligned table row when it has one that fits
-  `text_width()`, else the raw line; `lines()` stays the raw file.
+  each line's rows at `text_width()` (terminal columns minus the gutter, at
+  least 1): its `tables` rows when it has them, else the `tui::wrap` rows of
+  the raw line. `render` draws from it, and the view clamp in `update` counts
+  the same rows; `lines()` stays the raw file.
   `Event` is `Key | Resize | Saved { id, done, threads } | SaveFailed`, where
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
   always the thread id; `Effect` is `Add { line, body } | Reply { id, body }
@@ -290,20 +289,27 @@ Its parts:
   spaces and control characters are dropped. Widths are measured as ratatui
   draws (`Span::styled_graphemes`, `CellWidth`); a grapheme cluster is never
   split. `width(text)` is the same measure on one unbounded row.
-- `tui::table`: `align(lines) -> Vec<Option<String>>`, pure, the only place
-  tables are parsed: one entry per file line, the aligned row for a line of a
-  well-formed table, else `None`. A GFM subset: a header and a `|---|:-:|`
+- `tui::table`: `align(lines, width) -> Vec<Option<Vec<String>>>`, pure, the
+  only place tables are parsed: one entry per file line, that line's screen
+  rows if it belongs to a well-formed table that lays out in `width`, else
+  `None`. A GFM subset: a header and a `|---|:-:|`
   delimiter with equal cell counts, a body up to the first blank, pipeless
   or fence line; `\|` is a pipe in a cell; lines in ```` ``` ```` / `~~~`
   fences or indented 4+ columns are never tables; a ragged body row leaves
-  the whole block raw. Cells are padded to their column by `wrap::width`
-  (left, right or center) and joined by ` │ `; the delimiter row is `─` runs
-  joined by `┼`. Every row of a table is equally wide, so the `App` shows a
-  table aligned or raw as a whole.
+  the whole block raw. A table that fits keeps its natural column widths;
+  one too wide shares `width` max-min fairly (narrow columns keep their
+  width, the rest split what is left), each column at least
+  `min(natural, MIN_COLUMN)` cells or the whole table is `None`. Cells are
+  wrapped by `wrap::rows` inside their column, padded by `wrap::width`
+  (left, right or center, each piece on its own) and joined by ` │ `; a line
+  takes as many rows as its tallest cell, shorter cells top-aligned. The
+  delimiter is one row of `─` runs joined by `┼`. Every row of a table is
+  equally wide, so the `App` shows a table laid out or raw as a whole.
 - `tui::render`: `render(&App, &mut Frame)`, pure over state. One file line
   is one or more screen rows (word-wrapped by `tui::wrap`, tabs shown as four
-  spaces). A well-formed markdown table shows aligned, in place: each of its
-  lines is one row with its own number, glyph and highlight. Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim),
+  spaces). A well-formed markdown table shows aligned, in place; one too
+  wide for the view wraps its cells inside their columns. Each table line is
+  still one number, glyph and highlight, over all of its rows. Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim),
   then the line number, then `│`; the glyph and number show on a line's first
   row only, continuation rows keep just the `│`. The cursor highlight covers
   every row of the cursor line. Footer: path (or the last save message),
@@ -345,8 +351,7 @@ Its parts:
 line taller than the view; a hanging indent for wrapped list items; real tab
 stops; bold table headers and inline markup in cells;
 GFM padding of ragged table rows; pipes inside inline code in a cell; tables
-inside lists or blockquotes; wrapping inside cells for a table wider than the
-view (it shows raw instead); polling the file and `review.json` mtimes and re-syncing; draft
+inside lists or blockquotes; polling the file and `review.json` mtimes and re-syncing; draft
 survival across a re-sync; mapping the cursor through `anchor`; viewing,
 editing threads; notes on resolve/reopen from the TUI. Until live refresh exists,
 the screen shows the file as read at open, while `add_thread` quotes the file
@@ -411,8 +416,11 @@ state or `review`.
   over a fixed corpus (ASCII, CJK, emoji, tabs, long words) and widths
   1..=12: rows join back to the line and each fits the width;
   `tui::table` has examples (GFM subset, fences, indentation, ragged blocks,
-  alignment, wide characters) plus a property over a fixed corpus: one entry
-  per line and every row of a table equally wide;
+  alignment, wide characters, wrapped cells, column-width allocation) plus
+  properties: allocated widths fit, respect the minimums and use all the
+  space when short; over a fixed corpus and view widths 1..=60, one entry per
+  line, every row of a table equally wide and within the view with `│` in
+  the same columns, and no cell text lost;
   `tests/tui.rs` runs scripted rounds through `step` against a real
   `Reviews`; the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the
