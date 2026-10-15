@@ -4,11 +4,13 @@
 //! state change and, at most, an [`Effect`] for the driver to perform.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::text::Line;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 
 use crate::model::{State, Status};
 use crate::review::ThreadView;
 
+use super::highlight::{self, Styling};
 use super::panel::{self, Layout};
 use super::{table, wrap};
 
@@ -111,6 +113,10 @@ pub struct App {
     /// Recomputed by `relayout` whenever the text width can change (on open
     /// and resize); anything else that changes it must call `relayout` too.
     tables: Vec<Option<Vec<String>>>,
+    /// Each line's markdown styling, from [`highlight::highlight`] once at
+    /// [`App::highlighted`] (the file never changes in a session); empty
+    /// when not highlighted.
+    stylings: Vec<Styling>,
     pub(super) cursor: usize,
     pub(super) top: usize,
     /// Terminal width; the thread panel wraps to it.
@@ -148,8 +154,8 @@ pub struct ScreenRow {
     pub line: usize,
     /// Whether this is the line's first row (which carries its gutter).
     pub first: bool,
-    /// The part of the line this row shows, as displayed.
-    pub text: String,
+    /// The part of the line this row shows, as displayed and styled.
+    pub text: Line<'static>,
 }
 
 /// Terminal rows taken by the footer in Normal mode.
@@ -176,6 +182,7 @@ impl App {
     ) -> Self {
         let mut app = App {
             tables: Vec::new(),
+            stylings: Vec::new(),
             lines,
             cursor: 0,
             top: 0,
@@ -196,6 +203,17 @@ impl App {
     #[must_use]
     pub fn labeled(mut self, file: impl Into<String>) -> Self {
         self.file = file.into();
+        self
+    }
+
+    /// Style the file view's markdown structure when `on`; plain otherwise.
+    #[must_use]
+    pub fn highlighted(mut self, on: bool) -> Self {
+        self.stylings = if on {
+            highlight::highlight(&self.lines)
+        } else {
+            Vec::new()
+        };
         self
     }
 
@@ -371,15 +389,23 @@ impl App {
     }
 
     /// The screen rows of 0-based `line` at the current width: its table
-    /// rows if it has them, else the raw line wrapped by [`wrap::rows`]. A
-    /// table is laid out or raw as a whole.
-    fn wrapped(&self, line: usize) -> Vec<String> {
+    /// rows if it has them, in the line's whole-line style only (layout
+    /// moves the bytes inline spans point at), else the styled line wrapped
+    /// by [`wrap::rows`]. A table is laid out or raw as a whole.
+    fn wrapped(&self, line: usize) -> Vec<Line<'static>> {
+        let styling = self.stylings.get(line);
         match &self.tables[line] {
-            Some(rows) => rows.clone(),
-            None => wrap::rows(&Line::raw(self.lines[line].as_str()), self.text_width())
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
+            Some(rows) => {
+                let style = styling.map_or(Style::new(), |styling| styling.line);
+                rows.iter()
+                    .map(|row| Line::from(Span::styled(row.clone(), style)))
+                    .collect()
+            }
+            None => {
+                let raw = self.lines[line].as_str();
+                let styled = styling.map_or_else(|| Line::raw(raw), |styling| styling.apply(raw));
+                wrap::rows(&styled, self.text_width())
+            }
         }
     }
 
@@ -753,6 +779,7 @@ fn byte_index(text: &str, index: usize) -> usize {
 mod tests {
     use super::*;
     use ratatui::crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+    use ratatui::style::{Color, Modifier, Style};
 
     fn press(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
@@ -876,6 +903,14 @@ mod tests {
         App::open(lines, &[], "scott", (cols, rows))
     }
 
+    /// The screen rows as (line, first, text), styles dropped.
+    fn plain_rows(a: &App) -> Vec<(usize, bool, String)> {
+        a.screen_rows()
+            .into_iter()
+            .map(|row| (row.line, row.first, row.text.to_string()))
+            .collect()
+    }
+
     #[test]
     fn text_width_is_the_columns_after_the_gutter_and_at_least_one() {
         assert_eq!(app(12, 10).text_width(), 80 - 5, "2 digits + 3");
@@ -893,13 +928,9 @@ mod tests {
             (14, 6), // view height 5
         );
 
-        let row = |line, first, text: &str| ScreenRow {
-            line,
-            first,
-            text: text.into(),
-        };
+        let row = |line, first, text: &str| (line, first, text.to_string());
         assert_eq!(
-            a.screen_rows(),
+            plain_rows(&a),
             [
                 row(0, true, "short"),
                 row(1, true, "aaaa bbbb "),
@@ -995,7 +1026,7 @@ mod tests {
 
         send(&mut a, [Event::Resize(14, 8)]);
 
-        assert_eq!(a.screen_rows()[0].text, "aaaa bbbb ");
+        assert_eq!(a.screen_rows()[0].text.to_string(), "aaaa bbbb ");
         assert_eq!(at(&a), (3, 1));
         assert!(cursor_line_shown(&a));
     }
@@ -1013,6 +1044,139 @@ mod tests {
         assert_eq!(at(&a), (2, 2));
     }
 
+    // --- highlighting ---
+
+    fn highlighted(lines: &[&str], size: (u16, u16)) -> App {
+        wrapped(lines, size).highlighted(true)
+    }
+
+    /// Each span of screen row `at` as its text and its full style.
+    fn styled_row(a: &App, at: usize) -> Vec<(String, Style)> {
+        let row = &a.screen_rows()[at].text;
+        row.spans
+            .iter()
+            .map(|span| (span.content.to_string(), row.style.patch(span.style)))
+            .collect()
+    }
+
+    fn bold() -> Style {
+        Style::new().add_modifier(Modifier::BOLD)
+    }
+
+    #[test]
+    fn a_highlighted_app_styles_its_rows_and_an_unhighlighted_one_does_not() {
+        let lines = ["# Title", "plain **bold**"];
+        let heading = Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD);
+
+        let a = highlighted(&lines, (80, 10));
+        assert_eq!(styled_row(&a, 0), [("# Title".into(), heading)]);
+        assert_eq!(
+            styled_row(&a, 1),
+            [("plain ".into(), Style::new()), ("**bold**".into(), bold())]
+        );
+
+        for a in [
+            wrapped(&lines, (80, 10)),
+            wrapped(&lines, (80, 10)).highlighted(false),
+        ] {
+            for at in 0..2 {
+                assert!(
+                    styled_row(&a, at)
+                        .iter()
+                        .all(|(_, style)| *style == Style::new())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_wrapped_styled_line_keeps_its_style_on_its_continuation_rows() {
+        let a = highlighted(&["**aaaa bbbb cccc**"], (12, 10)); // text width 10
+
+        assert_eq!(
+            plain_rows(&a),
+            [
+                (0, true, "**aaaa ".to_string()),
+                (0, false, "bbbb ".to_string()),
+                (0, false, "cccc**".to_string()),
+            ]
+        );
+        for at in 0..3 {
+            assert!(styled_row(&a, at).iter().all(|(_, style)| *style == bold()));
+        }
+    }
+
+    #[test]
+    fn a_laid_out_table_gets_only_its_line_styles_and_a_raw_one_gets_inline_ones() {
+        let table = ["| **h** | b |", "|---|---|", "| **x** | y |"];
+
+        let a = highlighted(&table, (40, 10));
+        assert!(styled_row(&a, 0).iter().all(|(_, style)| *style == bold()));
+        assert_eq!(plain_rows(&a)[2].2, " **x** │ y ");
+        assert!(
+            styled_row(&a, 2)
+                .iter()
+                .all(|(_, style)| *style == Style::new())
+        );
+
+        let narrow = highlighted(&table, (10, 12)); // text width 6: raw
+        assert_eq!(plain_rows(&narrow)[0].2, "| ");
+        let body_rows = narrow
+            .screen_rows()
+            .iter()
+            .filter(|row| row.line == 2)
+            .count();
+        let first_body = narrow.screen_rows().iter().position(|row| row.line == 2);
+        let first_body = first_body.expect("the body line is shown");
+        assert!(
+            (first_body..first_body + body_rows)
+                .any(|at| styled_row(&narrow, at).contains(&("**x**".into(), bold())))
+        );
+    }
+
+    #[test]
+    fn highlighting_changes_no_text_layout_or_behavior() {
+        let file = [
+            "# Plan **now**",
+            "",
+            "- a list item with `code` that goes on and on and on",
+            "> a quote with *emphasis* and [a link](http://example.com/long/path)",
+            "```rust",
+            "fn main() { let x = **y; }",
+            "```",
+            "| a | **b** |",
+            "|---|---|",
+            "| 1 | a cell long enough to wrap in a narrow view |",
+            "Setext",
+            "---",
+        ];
+        let keys = [ch('j'), ch('j'), ch('G'), ch('k'), press(KeyCode::Enter)];
+        for cols in [12, 20, 40, 80] {
+            for rows in [4, 10] {
+                let mut off = wrapped(&file, (cols, rows));
+                let mut on = highlighted(&file, (cols, rows));
+                assert_eq!(plain_rows(&on), plain_rows(&off), "{cols}x{rows}");
+                for line in 0..file.len() {
+                    assert_eq!(
+                        on.rows_of(line),
+                        on.wrapped(line).len(),
+                        "{cols}x{rows} line {line}"
+                    );
+                }
+                for key in keys.clone() {
+                    assert_eq!(update(&mut on, key.clone()), update(&mut off, key));
+                    assert_eq!((at(&on), plain_rows(&on)), (at(&off), plain_rows(&off)));
+                }
+                typed(&mut on, "x");
+                typed(&mut off, "x");
+                assert_eq!(
+                    update(&mut on, press(KeyCode::Enter)),
+                    update(&mut off, press(KeyCode::Enter))
+                );
+            }
+        }
+    }
+
     // --- tables ---
 
     /// Prose around a table that aligns 21 cells wide; its raw lines are at
@@ -1023,13 +1187,9 @@ mod tests {
     fn a_table_line_is_one_screen_row_showing_its_aligned_row() {
         let a = wrapped(&TABLE, (40, 10));
 
-        let row = |line, text: &str| ScreenRow {
-            line,
-            first: true,
-            text: text.into(),
-        };
+        let row = |line, text: &str| (line, true, text.to_string());
         assert_eq!(
-            a.screen_rows(),
+            plain_rows(&a),
             [
                 row(0, "intro"),
                 row(1, " a        │ bbbbbbbb "),
@@ -1042,8 +1202,12 @@ mod tests {
 
     #[test]
     fn a_table_too_narrow_for_its_minimum_widths_shows_raw_and_resizing_switches_it() {
-        let texts =
-            |a: &App| -> Vec<String> { a.screen_rows().into_iter().map(|row| row.text).collect() };
+        let texts = |a: &App| -> Vec<String> {
+            a.screen_rows()
+                .into_iter()
+                .map(|row| row.text.to_string())
+                .collect()
+        };
         let mut a = wrapped(&TABLE, (19, 10)); // text width 15
         assert_eq!(texts(&a), TABLE);
 
@@ -1064,20 +1228,19 @@ mod tests {
     ];
 
     fn texts(a: &App) -> Vec<String> {
-        a.screen_rows().into_iter().map(|row| row.text).collect()
+        a.screen_rows()
+            .into_iter()
+            .map(|row| row.text.to_string())
+            .collect()
     }
 
     #[test]
     fn a_table_too_wide_for_the_view_wraps_its_cells_inside_their_columns() {
         let a = wrapped(&DECISION, (24, 10));
 
-        let row = |line, first, text: &str| ScreenRow {
-            line,
-            first,
-            text: text.into(),
-        };
+        let row = |line, first, text: &str| (line, first, text.to_string());
         assert_eq!(
-            a.screen_rows(),
+            plain_rows(&a),
             [
                 row(0, true, " Q │ Decision       "),
                 row(1, true, "───┼────────────────"),

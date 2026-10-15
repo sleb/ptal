@@ -257,7 +257,9 @@ Depends on `review` and `model` only.
 Its parts:
 
 - `tui::app`: `App` state (`lines`, their `tables` rows from `tui::table`
-  at `text_width()`, recomputed on open and on resize, `cursor`, `top`, terminal `cols` and
+  at `text_width()`, recomputed on open and on resize, their `stylings` from
+  `tui::highlight`, computed once by `App::highlighted(true)` since the file
+  never changes in a session, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
   outdated ones, footer `status`), `Mode = Normal | Panel { selected, scroll }
   | Input { draft, cursor, from_panel, reply_to }`, and
@@ -268,9 +270,12 @@ Its parts:
   the cursor, never cached. `screen_rows()` maps the view to
   `ScreenRow { line, first, text }`, filling the view height from `top` with
   each line's rows at `text_width()` (terminal columns minus the gutter, at
-  least 1): its `tables` rows when it has them, else the `tui::wrap` rows of
-  the raw line. `render` draws from it, and the view clamp in `update` counts
-  the same rows; `lines()` stays the raw file.
+  least 1): its `tables` rows when it has them, in the line's whole-line
+  style only, else the `tui::wrap` rows of the raw line with its styling
+  applied. `text` is a styled ratatui `Line`; styling never changes a row's
+  text, so layout, the clamp and every key behave the same highlighted or
+  not. `render` draws from it, and the view clamp in `update` counts the
+  same rows; `lines()` stays the raw file.
   `Event` is `Key | Resize | Saved { id, done, threads } | SaveFailed`, where
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
   always the thread id; `Effect` is `Add { line, body } | Reply { id, body }
@@ -282,13 +287,15 @@ Its parts:
   `c3 resolved by claude`), `> ` quote lines, then each comment's
   `author · YYYY-MM-DD HH:MMZ` and body, word-wrapped by `char` count.
   `update` clamps scroll from `lines.len()`; `render` draws a slice.
-- `tui::wrap`: `rows(line, width) -> Vec<String>`, pure, the only place file
+- `tui::wrap`: `rows(&Line, width) -> Vec<Line>`, pure, the only place file
   lines are wrapped. Breaks after the last whitespace that fits, hard-breaks a
   word wider than a row, and leaves whitespace at a break hanging on the end
   of its row, so the rows join back to the displayed line. Tabs are four
   spaces and control characters are dropped. Widths are measured as ratatui
   draws (`Span::styled_graphemes`, `CellWidth`); a grapheme cluster is never
-  split. `width(text)` is the same measure on one unbounded row.
+  split. Every cluster keeps its style, so a span cut by a break goes on in
+  its style on the next row. `width(text)` is the same measure on one
+  unbounded row.
 - `tui::table`: `align(lines, width) -> Vec<Option<Vec<String>>>`, pure, the
   only place tables are parsed: one entry per file line, that line's screen
   rows if it belongs to a well-formed table that lays out in `width`, else
