@@ -54,9 +54,13 @@ pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<Loaded> {
 }
 
 impl Loaded {
-    /// A fresh [`App`] over this file on a terminal of `size` (cols, rows).
-    pub fn into_app(self, file: &Path, author: &str, size: (u16, u16)) -> App {
-        App::open(self.lines, &self.threads, author, size).labeled(file.display().to_string())
+    /// A fresh [`App`] over this file on a terminal of `size` (cols, rows),
+    /// its markdown structure highlighted when `file` is markdown
+    /// ([`highlight::is_markdown`]) and `color` is wanted.
+    pub fn into_app(self, file: &Path, author: &str, size: (u16, u16), color: bool) -> App {
+        App::open(self.lines, &self.threads, author, size)
+            .labeled(file.display().to_string())
+            .highlighted(color && highlight::is_markdown(file))
     }
 }
 
@@ -216,6 +220,31 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::io;
+
+    use ratatui::style::Modifier;
+
+    /// Whether `path`, opened with `color`, shows its `# Title` bold.
+    fn heading_is_bold(path: &str, color: bool) -> bool {
+        let loaded = Loaded {
+            lines: vec!["# Title".into()],
+            threads: Vec::new(),
+        };
+        let app = loaded.into_app(Path::new(path), "scott", (40, 5), color);
+        let row = &app.screen_rows()[0].text;
+        row.spans.iter().all(|span| {
+            row.style
+                .patch(span.style)
+                .add_modifier
+                .contains(Modifier::BOLD)
+        })
+    }
+
+    #[test]
+    fn a_markdown_file_is_highlighted_only_when_color_is_wanted() {
+        assert!(heading_is_bold("plan.md", true));
+        assert!(!heading_is_bold("plan.md", false));
+        assert!(!heading_is_bold("plan.txt", true));
+    }
 
     #[test]
     fn dropping_a_session_restores_exactly_once() {

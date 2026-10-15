@@ -3,7 +3,7 @@
 //! A thin layer over [`crate::review`]. All rules live in the core; this
 //! module only decides what bytes go to which stream and which exit code.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -94,6 +94,8 @@ pub struct Env<C: Clock> {
     pub stdout_is_tty: bool,
     /// Whether stderr is a terminal (selects readable errors).
     pub stderr_is_tty: bool,
+    /// Whether the TUI may highlight text: [`color_wanted`] of `NO_COLOR`.
+    pub color: bool,
 }
 
 // Help text. Examples live here once; `--help` and the docs quote these.
@@ -283,6 +285,12 @@ fn parse_lines(spec: &str) -> Result<(u32, u32), String> {
         None => number(spec).map(|n| (n, n)),
         Some((a, b)) => Ok((number(a)?, number(b)?)),
     }
+}
+
+/// Whether the TUI may highlight text, given the value of `NO_COLOR`: not
+/// when it is set and non-empty (<https://no-color.org>).
+pub fn color_wanted(no_color: Option<&OsStr>) -> bool {
+    no_color.is_none_or(OsStr::is_empty)
 }
 
 /// The author for a write: `--as`, else `PTAL_AUTHOR`; blank counts as unset.
@@ -484,7 +492,7 @@ fn launch_tui<C: Clock>(file: &Path, env: &Env<C>) -> Result<(), Failure> {
         .ok_or(Failure::Core(Error::NoDataDir))?;
     let loaded = tui::load(reviews, file)?;
     let size = tui::terminal_size().map_err(Failure::Terminal)?;
-    let app = loaded.into_app(file, author, size);
+    let app = loaded.into_app(file, author, size, env.color);
     tui::run(app, reviews, file, author).map_err(Failure::Terminal)
 }
 
@@ -579,6 +587,7 @@ pub fn main() -> ExitCode {
         stdin_is_tty: io::stdin().is_terminal(),
         stdout_is_tty,
         stderr_is_tty,
+        color: color_wanted(std::env::var_os("NO_COLOR").as_deref()),
     };
     let code = run(
         std::env::args_os(),
@@ -736,6 +745,7 @@ mod tests {
                 stdin_is_tty: tty,
                 stdout_is_tty: tty,
                 stderr_is_tty: tty,
+                color: true,
             }
         }
 
@@ -898,6 +908,14 @@ mod tests {
         assert_eq!(out.code, 1);
         assert_eq!(out.stdout, "");
         assert_eq!(out.error_code(), "file_unreadable");
+    }
+
+    #[test]
+    fn color_is_wanted_unless_no_color_is_set_and_non_empty() {
+        assert!(color_wanted(None));
+        assert!(color_wanted(Some(OsStr::new(""))));
+        assert!(!color_wanted(Some(OsStr::new("1"))));
+        assert!(!color_wanted(Some(OsStr::new("0"))), "any non-empty value");
     }
 
     #[test]

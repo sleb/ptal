@@ -83,8 +83,14 @@ fn draw_file(app: &App, buf: &mut Buffer, area: Rect) {
         } else {
             String::new()
         };
-        let row_text = format!("  {number:>digits$}│{text}");
-        buf.set_stringn(row.x, row.y, row_text, usize::from(row.width), style);
+        let gutter = format!("  {number:>digits$}│");
+        let (x, _) = buf.set_stringn(row.x, row.y, gutter, usize::from(row.width), style);
+        let room = row.right().saturating_sub(x);
+        if room > 0 {
+            // Patches the text's styles over the row's, so the cursor `bg`
+            // shows under highlighted text.
+            buf.set_line(x, row.y, &text, room);
+        }
         if let Some(marker) = app.marker(line).filter(|_| first) {
             let (glyph, color) = glyph(marker);
             buf.set_stringn(row.x, row.y, glyph, 1, style.patch(color));
@@ -887,5 +893,56 @@ plan.md  L1/5  enter:thread/co"
         for y in [0, 2, 3, 4] {
             assert_eq!(bg(y), Color::Reset, "row {y}");
         }
+    }
+
+    fn highlighted(lines: &[&str]) -> App {
+        let lines = lines.iter().map(ToString::to_string).collect();
+        App::open(lines, &[], "scott", (W, 6)).highlighted(true)
+    }
+
+    #[test]
+    fn a_highlighted_heading_is_bold_magenta_in_its_text_and_not_its_gutter() {
+        let app = highlighted(&["x", "# Title"]); // cursor on line 1
+
+        let terminal = draw(&app, W, 6);
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(screen(&terminal).lines().nth(1), Some("  2│# Title"));
+        for x in 4..11 {
+            assert_eq!(buffer[(x, 1)].fg, Color::Magenta, "x {x}");
+            assert!(buffer[(x, 1)].modifier.contains(Modifier::BOLD), "x {x}");
+        }
+        for x in 0..4 {
+            assert_eq!(buffer[(x, 1)].fg, Color::Reset, "gutter x {x}");
+            assert!(
+                !buffer[(x, 1)].modifier.contains(Modifier::BOLD),
+                "gutter x {x}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cursor_highlight_shows_under_highlighted_text() {
+        let app = highlighted(&["# Title", "x"]);
+
+        let terminal = draw(&app, W, 6);
+
+        let cell = &terminal.backend().buffer()[(4, 0)];
+        assert_eq!((cell.fg, cell.bg), (Color::Magenta, Color::DarkGray));
+        assert_eq!(terminal.backend().buffer()[(20, 0)].bg, Color::DarkGray);
+    }
+
+    #[test]
+    fn a_fenced_block_has_dim_fences_and_a_cyan_body() {
+        let app = highlighted(&["```", "code", "```"]);
+
+        let terminal = draw(&app, W, 6);
+
+        let buffer = terminal.backend().buffer();
+        for y in [0, 2] {
+            assert!(buffer[(4, y)].modifier.contains(Modifier::DIM), "fence {y}");
+        }
+        assert_eq!(buffer[(4, 1)].fg, Color::Cyan);
+        assert_eq!(buffer[(7, 1)].fg, Color::Cyan);
     }
 }
