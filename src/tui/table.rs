@@ -7,6 +7,12 @@
 //! joined by ` │ `; each row starts and ends with one space. The delimiter
 //! row shows as `─` runs joined by `┼`, as wide as the other rows.
 //!
+//! Too wide for the view: when a table's natural width does not fit, its
+//! columns share the view max-min fairly (narrow columns keep their natural
+//! width, the rest split what is left), but no column gets fewer than
+//! `MIN_COLUMN` cells, or its natural width if that is narrower. A view too
+//! narrow for those minimums shows the table raw.
+//!
 //! What counts as a table, a subset of GitHub-flavored markdown:
 //!
 //! - A header line with an unescaped `|`, then a delimiter line with an
@@ -106,6 +112,51 @@ fn format(block: &[String], aligns: &[Align]) -> Vec<String> {
             format!(" {} ", padded.join(" │ "))
         })
         .collect()
+}
+
+/// The narrowest a column is squeezed to when its table is too wide for the
+/// view; a column naturally narrower than this keeps its natural width.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "used by align in the next step")
+)]
+const MIN_COLUMN: usize = 10;
+
+/// Column widths for a table whose columns are `natural` cells wide, laid out
+/// in `width` cells (cell padding and ` │ ` separators included), or `None`
+/// if the columns cannot all get their minimum, `min(natural, MIN_COLUMN)`.
+///
+/// Columns that fit are kept at their natural width; otherwise the space is
+/// shared max-min fairly: narrowest first, a column keeps its natural width
+/// while that is no more than an equal share of what is left, and the
+/// columns left over split the rest equally, a leftover cell each to the
+/// leftmost of them.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "used by align in the next step")
+)]
+fn widths(natural: &[usize], width: usize) -> Option<Vec<usize>> {
+    let mut space = width.checked_sub((3 * natural.len()).saturating_sub(1))?;
+    let minimum: usize = natural.iter().map(|&n| n.min(MIN_COLUMN)).sum();
+    if space < minimum {
+        return None;
+    }
+    let mut widths = natural.to_vec();
+    let mut by_width: Vec<usize> = (0..natural.len()).collect();
+    by_width.sort_by_key(|&column| natural[column]);
+    let mut unsettled = by_width.as_slice();
+    while let Some((&column, rest)) = unsettled.split_first()
+        && natural[column] * unsettled.len() <= space
+    {
+        space -= natural[column];
+        unsettled = rest;
+    }
+    let mut shared = unsettled.to_vec();
+    shared.sort_unstable();
+    for (at, &column) in shared.iter().enumerate() {
+        widths[column] = space / shared.len() + usize::from(at < space % shared.len());
+    }
+    Some(widths)
 }
 
 /// `cell` padded with spaces to `width` cells. A center column's odd
@@ -260,6 +311,64 @@ mod tests {
         assert_eq!(delimiter("---"), None);
         assert_eq!(delimiter("|-x-|"), None);
         assert_eq!(delimiter("| |"), None);
+    }
+
+    #[test]
+    fn natural_widths_that_fit_are_kept() {
+        assert_eq!(widths(&[1, 8], 21), Some(vec![1, 8]));
+    }
+
+    #[test]
+    fn narrow_columns_keep_their_width_and_the_rest_share_what_is_left() {
+        assert_eq!(widths(&[10, 60, 300], 108), Some(vec![10, 45, 45]));
+        assert_eq!(widths(&[3, 300], 50), Some(vec![3, 42]));
+    }
+
+    #[test]
+    fn a_leftover_cell_goes_to_the_leftmost_shared_column() {
+        // Space for cells: 26 - 5 = 21.
+        assert_eq!(widths(&[100, 100], 26), Some(vec![11, 10]));
+    }
+
+    #[test]
+    fn below_the_minimum_column_widths_there_is_no_layout() {
+        assert_eq!(widths(&[8, 8], 15), None);
+        assert_eq!(widths(&[30, 30], 25), Some(vec![10, 10]));
+        assert_eq!(widths(&[30, 30, 1], 29), Some(vec![10, 10, 1]));
+        assert_eq!(widths(&[30, 30, 1], 28), None);
+        assert_eq!(widths(&[5, 5, 5], 3), None);
+    }
+
+    #[test]
+    fn allocated_widths_fit_respect_the_minimums_and_use_all_space_when_short() {
+        let naturals: [&[usize]; 7] = [
+            &[1],
+            &[40],
+            &[1, 8],
+            &[10, 60, 300],
+            &[3, 300, 7, 25],
+            &[9, 11, 10, 12],
+            &[200, 1, 200, 1, 200],
+        ];
+        for natural in naturals {
+            for width in 1..=80 {
+                let Some(got) = widths(natural, width) else {
+                    continue;
+                };
+                let space = width - (3 * natural.len() - 1);
+                let used: usize = got.iter().sum();
+                assert!(used <= space, "{natural:?} at {width}: {got:?}");
+                for (&w, &n) in got.iter().zip(natural) {
+                    assert!(
+                        w <= n && w >= n.min(MIN_COLUMN),
+                        "{natural:?} at {width}: {got:?}"
+                    );
+                }
+                if got.iter().zip(natural).any(|(w, n)| w < n) {
+                    assert_eq!(used, space, "{natural:?} at {width}: {got:?}");
+                }
+            }
+        }
     }
 
     /// Which lines of `text` [`align`] treats as table rows.
