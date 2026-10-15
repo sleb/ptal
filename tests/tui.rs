@@ -13,7 +13,9 @@ use ptal::tui::render::render;
 use ptal::tui::{load, step};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::style::{Color, Modifier};
 
 const COLS: u16 = 60;
 const ROWS: u16 = 24;
@@ -26,8 +28,12 @@ struct Sandbox {
 }
 
 fn sandbox(content: &str) -> Sandbox {
+    sandbox_named("plan.md", content)
+}
+
+fn sandbox_named(name: &str, content: &str) -> Sandbox {
     let tmp = tempfile::tempdir().unwrap();
-    let file = tmp.path().join("plan.md");
+    let file = tmp.path().join(name);
     fs::write(&file, content).unwrap();
     let data = tmp.path().join("data");
     let reviews = Reviews::new(Store::new(&data));
@@ -41,9 +47,13 @@ fn sandbox(content: &str) -> Sandbox {
 
 impl Sandbox {
     fn open(&self) -> App {
+        self.open_with(true)
+    }
+
+    fn open_with(&self, color: bool) -> App {
         load(&self.reviews, &self.file)
             .unwrap()
-            .into_app(&self.file, "scott", (COLS, ROWS), true)
+            .into_app(&self.file, "scott", (COLS, ROWS), color)
     }
 
     /// Feed `keys` through `step`; `Break` stops the script early.
@@ -67,10 +77,14 @@ fn key(name: &str) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
-fn screen(app: &App) -> String {
+fn drawn(app: &App) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(COLS, ROWS)).unwrap();
     terminal.draw(|frame| render(app, frame)).unwrap();
-    let buffer = terminal.backend().buffer().clone();
+    terminal.backend().buffer().clone()
+}
+
+fn screen(app: &App) -> String {
+    let buffer = drawn(app);
     buffer
         .content()
         .chunks(usize::from(COLS))
@@ -588,4 +602,41 @@ fn a_second_round_with_the_agent_runs_end_to_end() {
         fs::metadata(&sb.file).unwrap().modified().unwrap(),
     );
     assert_eq!(before, after, "the reviewed file is untouched");
+}
+
+const MARKDOWN: &str = "# Title\n\n- item with `code`\n\n```\nfn main() {}\n```\n";
+
+/// Whether the `# Title` on row 0 is bold and the fenced body on row 5
+/// (`fn main() {}`, after the 4-column gutter) is cyan.
+fn looks_highlighted(app: &App) -> (bool, bool) {
+    let buffer = drawn(app);
+    let bold = (4..11).all(|x| buffer[(x, 0)].modifier.contains(Modifier::BOLD));
+    let cyan = (4..16).all(|x| buffer[(x, 5)].fg == Color::Cyan);
+    (bold, cyan)
+}
+
+#[test]
+fn a_markdown_file_shows_highlighted_and_a_comment_still_quotes_the_raw_line() {
+    let sb = sandbox(MARKDOWN);
+    let mut app = sb.open();
+    assert!(screen(&app).starts_with("  1│# Title"));
+    assert_eq!(looks_highlighted(&app), (true, true));
+
+    let flow = sb.press(&mut app, &["enter", "h", "i", "enter"]);
+
+    assert_eq!(flow, ControlFlow::Continue(()));
+    let threads = sb.reviews.view(&sb.file, false).unwrap();
+    assert_eq!(threads[0].thread.anchor.quote, "# Title");
+    assert_eq!(looks_highlighted(&app), (true, true));
+}
+
+#[test]
+fn a_text_file_or_no_color_shows_markdown_plain() {
+    let text = sandbox_named("plan.txt", MARKDOWN);
+    assert_eq!(looks_highlighted(&text.open()), (false, false));
+
+    let no_color = sandbox(MARKDOWN);
+    let app = no_color.open_with(false);
+    assert!(screen(&app).starts_with("  1│# Title"));
+    assert_eq!(looks_highlighted(&app), (false, false));
 }
