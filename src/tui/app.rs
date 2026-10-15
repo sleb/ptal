@@ -2018,6 +2018,31 @@ mod tests {
     }
 
     #[test]
+    fn panel_scroll_clamps_to_rows_wrapped_by_cell_width() {
+        // 40 cols: 34 cells after the body indent, so 17 wide characters a
+        // row and 68 of them make 4 rows (2 if counted by char).
+        let mut wide = view("c1", (1, 1), Status::Open, State::Current);
+        wide.thread.comments = vec![Comment {
+            id: "c1-0".into(),
+            author: "claude".into(),
+            body: "漢".repeat(68),
+            created_at: "2026-10-12T10:00:00Z".into(),
+        }];
+        let mut a = panel_app(&[wide], 12); // 4 rows inside the panel
+        send(&mut a, [press(KeyCode::Enter)]);
+
+        for _ in 0..10 {
+            send(&mut a, [ch('j')]);
+        }
+
+        let layout = a.panel_layout().unwrap();
+        assert_eq!(layout.lines.len(), 7, "header, quote, author, 4 body rows");
+        assert_eq!(panel(&a).1, 3);
+        let last = format!("    {}", "漢".repeat(17));
+        assert_eq!(layout.lines[3 + a.panel_inner_rows() - 1].text, last);
+    }
+
+    #[test]
     fn esc_q_and_ctrl_c_close_the_panel_without_quitting() {
         for close in [press(KeyCode::Esc), ch('q'), ctrl('c')] {
             let mut a = panel_app(&[chatty("c1", (2, 2), 1)], 20);

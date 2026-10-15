@@ -475,6 +475,29 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_comment_wraps_in_full_inside_the_panel_border() {
+        let wide = "漢".repeat(40); // 80 cells; 64 fit after the indent
+        let threads = [talk(
+            "c1",
+            (1, 1),
+            "line 1",
+            Status::Open,
+            State::Current,
+            &[("scott", &wide)],
+        )];
+        let app = panel_app(&threads);
+
+        let terminal = draw(&app, W, 16);
+
+        let text = screen(&terminal);
+        assert_eq!(text.matches('漢').count(), 40, "{text}");
+        let buffer = terminal.backend().buffer();
+        for y in 8..14 {
+            assert_eq!(buffer[(W - 1, y)].symbol(), "│", "row {y}\n{text}");
+        }
+    }
+
+    #[test]
     fn typing_from_the_panel_swaps_the_box_for_the_input_and_keeps_the_file() {
         let threads = [talk(
             "c1",
