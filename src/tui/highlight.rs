@@ -270,7 +270,7 @@ impl Document {
         let mut spans = Vec::new();
         for (line, part) in self.cut(range) {
             let start = self.starts[line] + part.start;
-            let text = source[start..self.starts[line] + part.end].as_bytes();
+            let text = &source.as_bytes()[start..self.starts[line] + part.end];
             let mut markers = 0;
             for _ in 0..levels {
                 let blanks = text[markers..]
@@ -296,16 +296,18 @@ impl Document {
         spans
     }
 
-    /// Dim the lines of a code `block` that hold none of its `body`: its
-    /// fences. An indented block has none.
+    /// Dim the lines of a code `block` outside its `body` (in order, as
+    /// parsed): its fences. Every line from the body's first to its last is
+    /// body, blank ones too. An indented block has no fences.
     fn fences(&mut self, block: &Range<usize>, body: &[Range<usize>]) {
-        let body_lines: Vec<usize> = body
-            .iter()
-            .flat_map(|text| self.cut(text))
-            .map(|(line, _)| line)
-            .collect();
+        let body_lines = match (body.first(), body.last()) {
+            (Some(first), Some(last)) if last.end > first.start => {
+                Some(self.line_of(first.start)..=self.line_of(last.end - 1))
+            }
+            _ => None,
+        };
         for (line, part) in self.cut(block) {
-            if !body_lines.contains(&line) {
+            if !body_lines.as_ref().is_some_and(|body| body.contains(&line)) {
                 let start = self.starts[line];
                 self.span(start + part.start..start + part.end, FENCE);
             }
@@ -467,6 +469,38 @@ mod tests {
         assert_eq!(stylings[1].spans, [(0..lines[1].len(), code)]);
         assert_eq!(stylings[2].spans, [(0..3, dim)]);
         assert_eq!(stylings[3], Styling::default());
+    }
+
+    #[test]
+    fn blank_lines_inside_a_fenced_block_are_body_not_fences() {
+        let (_, stylings) = of("```\na\n\nb\n```");
+
+        let dim = Style::new().add_modifier(Modifier::DIM);
+        let fences: Vec<bool> = stylings
+            .iter()
+            .map(|s| s.spans.iter().any(|(_, style)| *style == dim))
+            .collect();
+        assert_eq!(fences, [true, false, false, false, true]);
+    }
+
+    #[test]
+    fn a_long_fenced_block_highlights_quickly() {
+        let mut lines = vec!["```".to_string()];
+        lines.extend((0..40_000).map(|i| format!("log line {i}")));
+        lines.push("```".to_string());
+
+        let started = std::time::Instant::now();
+        let stylings = highlight(&lines);
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            stylings[40_001].spans,
+            [(0..3, Style::new().add_modifier(Modifier::DIM))]
+        );
     }
 
     #[test]
