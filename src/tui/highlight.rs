@@ -99,7 +99,10 @@ pub fn is_markdown(path: &Path) -> bool {
 /// One [`Styling`] per line of `lines` (a file split by [`str::lines`]),
 /// parsed as one markdown document.
 pub fn highlight(lines: &[String]) -> Vec<Styling> {
-    let source = lines.join("\n");
+    // `str::lines` ends lines at `\n` only, but CommonMark also ends one
+    // at a lone `\r`. A space keeps every offset and the line structure the
+    // rest of ptal sees.
+    let source = lines.join("\n").replace('\r', " ");
     let mut doc = Document::new(lines);
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -430,6 +433,15 @@ mod tests {
     fn emphasis_across_a_line_break_is_cut_at_the_line() {
         assert_eq!(spans("**two\nlines**", 0), [span("**two", bold())]);
         assert_eq!(spans("**two\nlines**", 1), [span("lines**", bold())]);
+    }
+
+    #[test]
+    fn a_lone_carriage_return_does_not_end_a_line() {
+        let fence = vec!["a\r```".to_string(), "**x**".to_string()];
+        assert_eq!(highlight(&fence)[1].spans, [(0..5, bold())]);
+
+        let heading = vec!["x\r# h".to_string()];
+        assert_eq!(highlight(&heading)[0].line, Style::new());
     }
 
     #[test]
