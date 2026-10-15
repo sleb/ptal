@@ -113,6 +113,10 @@ pub fn highlight(lines: &[String]) -> Vec<Styling> {
     // spans go in at, so they stay outside the spans inside it, and the
     // range of its text so far.
     let mut link: Option<(usize, Option<Range<usize>>)> = None;
+    // The open outermost block quote: the index in `doc.spans` its spans go
+    // in at, its range, how deep quotes are nested now, and the deepest seen.
+    // A quote is styled once, at its outermost end, knowing its depth.
+    let mut quote: Option<(usize, Range<usize>, usize, usize)> = None;
     for (event, range) in Parser::new_ext(&source, options).into_offset_iter() {
         if let Some((_, text)) = &mut link
             && !matches!(event, Event::End(TagEnd::Link))
@@ -133,7 +137,22 @@ pub fn highlight(lines: &[String]) -> Vec<Styling> {
                 let marker = marker_len(&source[range.clone()]);
                 doc.span(range.start..range.start + marker, LIST_MARKER);
             }
-            Event::Start(Tag::BlockQuote(_)) => doc.quote(&source, &range),
+            Event::Start(Tag::BlockQuote(_)) => match &mut quote {
+                Some((_, _, depth, deepest)) => {
+                    *depth += 1;
+                    *deepest = (*deepest).max(*depth);
+                }
+                None => quote = Some((doc.spans.len(), range, 1, 1)),
+            },
+            Event::End(TagEnd::BlockQuote(_)) => match &mut quote {
+                Some((_, _, depth, _)) if *depth > 1 => *depth -= 1,
+                _ => {
+                    if let Some((at, range, _, deepest)) = quote.take() {
+                        let own = doc.quote(&source, &range, deepest);
+                        doc.spans.splice(at..at, own);
+                    }
+                }
+            },
             Event::Start(Tag::CodeBlock(_)) => code_block = Some((range, Vec::new())),
             Event::Text(_) if code_block.is_some() => {
                 if let Some((_, body)) = &mut code_block {
@@ -238,17 +257,43 @@ impl Document {
         }
     }
 
-    /// On each line of a block quote, dim the leading run of `>` markers
-    /// (and the blanks around them) and italicize the rest. A lazy
-    /// continuation line has no markers and is all text.
-    fn quote(&mut self, source: &str, range: &Range<usize>) {
+    /// The spans of a block quote nested `levels` deep: on each line, the
+    /// markers (up to one `>` and one blank after it per level, past any
+    /// container indentation) dim and the rest italic. A lazy continuation
+    /// line has no markers and is all text; a `>` past the markers is text.
+    fn quote(
+        &self,
+        source: &str,
+        range: &Range<usize>,
+        levels: usize,
+    ) -> Vec<(Range<usize>, Style)> {
+        let mut spans = Vec::new();
         for (line, part) in self.cut(range) {
             let start = self.starts[line] + part.start;
-            let text = &source[start..self.starts[line] + part.end];
-            let markers = text.len() - text.trim_start_matches(['>', ' ', '\t']).len();
-            self.span(start..start + markers, QUOTE_MARKER);
-            self.span(start + markers..start + text.len(), QUOTE);
+            let text = source[start..self.starts[line] + part.end].as_bytes();
+            let mut markers = 0;
+            for _ in 0..levels {
+                let blanks = text[markers..]
+                    .iter()
+                    .take_while(|b| matches!(b, b' ' | b'\t'))
+                    .count();
+                if text.get(markers + blanks) != Some(&b'>') {
+                    break;
+                }
+                markers += blanks + 1;
+                if matches!(text.get(markers), Some(b' ' | b'\t')) {
+                    markers += 1;
+                }
+            }
+            let marker = start..start + markers;
+            let rest = marker.end..start + text.len();
+            spans.extend(
+                [(marker, QUOTE_MARKER), (rest, QUOTE)]
+                    .into_iter()
+                    .filter(|(r, _)| !r.is_empty()),
+            );
         }
+        spans
     }
 
     /// Dim the lines of a code `block` that hold none of its `body`: its
@@ -375,6 +420,30 @@ mod tests {
             spans("> one\n> two", 1),
             [span("> ", dim), span("two", italic)]
         );
+    }
+
+    #[test]
+    fn a_quote_marker_is_one_gt_and_one_space_per_nesting_level() {
+        let dim = Style::new().add_modifier(Modifier::DIM);
+        let italic = Style::new().add_modifier(Modifier::ITALIC);
+        let code = Style::new().fg(Color::Cyan);
+        assert_eq!(
+            spans("> ```\n> >>> x\n> ```", 1),
+            [span("> ", dim), span(">>> x", italic), span(">>> x", code)]
+        );
+        assert_eq!(
+            spans(">     code", 0),
+            [
+                span("> ", dim),
+                span("    code", italic),
+                span("code", code)
+            ]
+        );
+        assert_eq!(
+            spans("> > a\n> > b", 1),
+            [span("> > ", dim), span("b", italic)]
+        );
+        assert_eq!(spans("> a\nlazy", 1), [span("lazy", italic)]);
     }
 
     #[test]
