@@ -236,6 +236,40 @@ fn a_table_shows_aligned_and_a_comment_on_a_row_anchors_to_its_raw_line() {
 }
 
 #[test]
+fn a_wide_tables_long_cell_wraps_in_its_column_and_a_comment_quotes_the_raw_line() {
+    let words: Vec<String> = (0..40).map(|i| format!("word{i:02}")).collect();
+    let long = words.join(" ");
+    assert!(long.len() > 250);
+    let row = format!("| 1 | {long} |");
+    let sb = sandbox(&format!(
+        "intro\n| Q | Decision |\n|---|---|\n{row}\noutro\n"
+    ));
+    let mut app = sb.open();
+
+    let text = screen(&app);
+    let wrapped: Vec<&str> = text.lines().filter(|l| l.contains("word")).collect();
+    assert!(wrapped.len() > 1, "the cell wraps:\n{text}");
+    for line in &wrapped {
+        assert!(
+            line.contains(" │ "),
+            "{line:?} is not in its column\n{text}"
+        );
+        assert!(!line.contains('|'), "{line:?} shows raw\n{text}");
+    }
+    for word in &words {
+        assert!(text.contains(word.as_str()), "{word} missing from\n{text}");
+    }
+
+    sb.press(&mut app, &["j", "j", "j", "enter", "h", "i", "enter"]);
+
+    let json = cli_comments(&sb);
+    let anchor = &json["threads"][0]["anchor"];
+    assert_eq!(anchor["start_line"], 4);
+    assert_eq!(anchor["end_line"], 4);
+    assert_eq!(anchor["quote"], row.as_str());
+}
+
+#[test]
 fn a_ragged_table_shows_its_raw_text() {
     let sb = sandbox("| a | b |\n|---|---|\n| 1 | 2 | 3 |\n");
 
