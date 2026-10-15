@@ -87,6 +87,7 @@ the terminal is taken over.
   file lines wrap at word boundaries onto continuation rows (the number and
   thread glyph show on the first row only); `j`/`k` move by file line, and
   anchors stay file lines. The TUI shows well-formed markdown tables with
-  aligned columns, one row per file line, while the agent reads the raw
+  aligned columns; a table too wide for the window wraps cells inside their
+  columns, still one cursor stop per file line. The agent reads the raw
   file; a comment on a table row anchors to that file line and quotes its
   raw text.

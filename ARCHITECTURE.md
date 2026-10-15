@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built (MVP subset): `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built (MVP subset): `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built (MVP subset): `Normal`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables, thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
+| `tui` | Built (MVP subset): `Normal`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
 | `anchor`, `highlight`, `diffview` | Deferred |
 
 Deferred within built components: revisions and snapshots, anchor mapping
@@ -351,8 +351,7 @@ Its parts:
 line taller than the view; a hanging indent for wrapped list items; real tab
 stops; bold table headers and inline markup in cells;
 GFM padding of ragged table rows; pipes inside inline code in a cell; tables
-inside lists or blockquotes; wrapping inside cells for a table wider than the
-view (it shows raw instead); polling the file and `review.json` mtimes and re-syncing; draft
+inside lists or blockquotes; polling the file and `review.json` mtimes and re-syncing; draft
 survival across a re-sync; mapping the cursor through `anchor`; viewing,
 editing threads; notes on resolve/reopen from the TUI. Until live refresh exists,
 the screen shows the file as read at open, while `add_thread` quotes the file
