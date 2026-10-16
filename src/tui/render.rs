@@ -146,7 +146,7 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
             "tab:next a:add r:reply o:reopen j/k:scroll esc:close"
         }
         Mode::Panel { .. } => "tab:next a:add r:reply x:resolve j/k:scroll esc:close",
-        Mode::Visual { .. } => "j/k:extend enter:comment esc:cancel",
+        Mode::Visual { .. } => "esc:cancel enter:comment j/k:extend",
         _ => "enter:thread/comment ]/[:jump q:quit v:select",
     };
     parts.push(hints.to_string());
@@ -1093,7 +1093,7 @@ plan.md  L1/5  enter:thread/co"
         let screen = screen(&draw(&app, W, 8));
 
         assert!(
-            screen.ends_with("plan.md  L4/12  visual 2-4  j/k:extend enter:comment esc:cancel"),
+            screen.ends_with("plan.md  L4/12  visual 2-4  esc:cancel enter:comment j/k:extend"),
             "{screen}"
         );
     }
@@ -1134,6 +1134,19 @@ plan.md  L1/5  enter:thread/co"
         let footer = screen.lines().last().unwrap();
         assert!(footer.contains("1 outdated"), "{footer}");
         assert!(footer.contains("q:quit"), "{footer}");
+    }
+
+    #[test]
+    fn cancel_stays_in_the_visual_footer_on_a_70_column_terminal() {
+        let threads = [open_thread("c1", (1, 1), State::Outdated)];
+        let mut app = app_with(lines(12), &threads, 8);
+        keys(&mut app, "vjj");
+
+        let screen = screen(&draw(&app, 70, 8));
+
+        let footer = screen.lines().last().unwrap();
+        assert!(footer.contains("visual 1-3  1 outdated"), "{footer}");
+        assert!(footer.contains("esc:cancel"), "{footer}");
     }
 
     #[test]
