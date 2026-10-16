@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built: `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built: `Normal`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
+| `tui` | Built: `Normal`/`Visual`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor`, `diffview` | Deferred |
 
@@ -386,7 +386,7 @@ Its parts:
   handled.
 - Display only; never mutates the reviewed file (it is read once on open).
 
-*Deferred within `tui`:* `Visual` and `Help` modes; sub-line scrolling of a
+*Deferred within `tui`:* the `Help` mode; character or column selection; sub-line scrolling of a
 line taller than the view; a hanging indent for wrapped list items; real tab
 stops; inline markup in laid-out table cells (a laid-out table gets only its
 header line's bold); `NO_COLOR` for the TUI's chrome as well;
@@ -481,8 +481,9 @@ state or `review`.
   `src/cli.rs`; process tests in `tests/cli.rs` for streams, exit status, and
   env. Schema conformance is deferred with `ptal schema`.
 - `tui`: scripted key events through `update` assert on state; `TestBackend`
-  snapshots (inline expected strings) cover Normal, Panel and Input rendering,
-  gutter glyphs and styles; `tui::wrap` has examples plus a property test
+  snapshots (inline expected strings) cover Normal, Visual, Panel and Input
+  rendering, gutter glyphs and styles (including the selection highlight on
+  wrapped and table rows, before and after a resize); `tui::wrap` has examples plus a property test
   over a fixed corpus (ASCII, CJK, emoji, tabs, long words) and widths
   1..=12: rows join back to the line and each fits the width; `tui::panel`
   has examples plus a property over a fixed corpus (ASCII, CJK, emoji ZWJ,
@@ -501,7 +502,8 @@ state or `review`.
   styled line's text is the raw line; `tui::app` checks that screen rows,
   the clamp and key effects are identical with highlighting on and off;
   `tests/tui.rs` runs scripted rounds through `step` against a real
-  `Reviews`; the terminal guard and panic hook are tested with injected
+  `Reviews` (single-line and Visual range comments checked through the real
+  `ptal comments`); the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the
   panic hook is global). A real-terminal check (pty) is manual.
 

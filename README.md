@@ -12,8 +12,8 @@ threads. You re-open ptal and see what changed. Comments, replies, and resolved
 state persist across rounds and revisions.
 
 > **Status:** core library, the agent CLI (`comments`, `add`, `resolve`, `reply`,
-> `reopen`), and a TUI (scroll a file, comment on a line, read threads and the
-> agent's replies, jump between threads, reply, resolve, reopen) implemented. Ranges, and live refresh are planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
+> `reopen`), and a TUI (scroll a file, comment on a line or a range, read threads and the
+> agent's replies, jump between threads, reply, resolve, reopen) implemented. Live refresh is planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why not a PR?
 
@@ -50,6 +50,9 @@ ptal plan.md            # open the TUI
 | `g` / `G` (or `Home` / `End`) | Top / bottom |
 | `enter` | On a threaded line: open the thread panel. Otherwise comment on the line; `enter` saves, `esc` cancels |
 | `]` / `[` | Next / previous threaded line |
+| `v` (or `V`) | Select lines from the cursor; the movement keys and `]` / `[` extend the selection either way |
+| `enter` | In a selection: comment on the selected lines; `enter` saves, `esc` returns to the selection |
+| `esc` (or `q`, `ctrl+c`, `v`, `V`) | In a selection: leave it without commenting (does not quit) |
 | `tab` / `shift+tab` | In the panel: next / previous thread on the line |
 | `j` / `k` | In the panel: scroll |
 | `a` | In the panel: add a thread on this line |
@@ -80,7 +83,6 @@ exits `1` with a `not_a_terminal` JSON error.
 
 | Key | Action |
 |---|---|
-| `v` | Visual select, then `enter` to comment on the range |
 | `e` | Edit your own comment |
 | `s` | Toggle the comment sidebar |
 | `R` | Show / hide resolved threads |
