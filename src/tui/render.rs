@@ -70,20 +70,21 @@ fn draw_file(app: &App, buf: &mut Buffer, area: Rect) {
         return;
     }
     let digits = app.digits();
+    let (first_selected, last_selected) = app.selection();
     for (screen_row, row) in app.screen_rows().into_iter().zip(area.rows()) {
         let ScreenRow {
             line,
             first,
             mut text,
         } = screen_row;
-        let on_cursor = line == app.cursor();
-        let style = if on_cursor {
+        let selected = (first_selected..=last_selected).contains(&line);
+        let style = if selected {
             Style::new().bg(Color::DarkGray)
         } else {
             Style::new()
         };
-        if on_cursor {
-            // Faint text on the cursor background is hard to read.
+        if selected {
+            // Faint text on the selection background is hard to read.
             for span in &mut text.spans {
                 span.style = span.style.remove_modifier(Modifier::DIM);
             }
@@ -133,6 +134,10 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
         app.cursor() + 1
     };
     parts.push(format!("L{position}/{}", app.lines().len()));
+    if let Mode::Visual { .. } = app.mode() {
+        let (first, last) = app.selection();
+        parts.push(format!("visual {}-{}", first + 1, last + 1));
+    }
     if app.outdated() > 0 {
         parts.push(format!("{} outdated", app.outdated()));
     }
@@ -141,7 +146,8 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
             "tab:next a:add r:reply o:reopen j/k:scroll esc:close"
         }
         Mode::Panel { .. } => "tab:next a:add r:reply x:resolve j/k:scroll esc:close",
-        _ => "enter:thread/comment ]/[:jump q:quit",
+        Mode::Visual { .. } => "j/k:extend enter:comment esc:cancel",
+        _ => "enter:thread/comment v:select ]/[:jump q:quit",
     };
     parts.push(hints.to_string());
     buf.set_stringn(
@@ -187,7 +193,17 @@ fn draw_input(
     }
     let title = match reply_to {
         Some(id) => format!("Reply to {id} as {}", app.author()),
-        None => format!("Comment on line {} as {}", app.cursor() + 1, app.author()),
+        None => match app.selection() {
+            (first, last) if first == last => {
+                format!("Comment on line {} as {}", first + 1, app.author())
+            }
+            (first, last) => format!(
+                "Comment on lines {}-{} as {}",
+                first + 1,
+                last + 1,
+                app.author()
+            ),
+        },
     };
     let block = Block::bordered().title(title);
     let inner = block.inner(area);
@@ -612,7 +628,7 @@ mod tests {
    5│line 5
    6│line 6
    7│line 7
-plan.md  L1/12  enter:thread/comment ]/[:jump q:quit"
+plan.md  L1/12  enter:thread/comment v:select ]/[:jump q:quit"
         );
     }
 
@@ -635,7 +651,7 @@ plan.md  L1/12  enter:thread/comment ]/[:jump q:quit"
    5│line 5
 ●  6│line 6
    7│line 7
-plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit"
+plan.md  L1/12  1 outdated  enter:thread/comment v:select ]/[:jump q:q"
         );
     }
 
@@ -730,7 +746,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit"
 
         let first = screen.lines().next().unwrap();
         assert_eq!(first, "  24│line 24");
-        assert!(screen.ends_with("L30/30  enter:thread/comment ]/[:jump q:quit"));
+        assert!(screen.ends_with("L30/30  enter:thread/comment v:select ]/[:jump q:quit"));
     }
 
     /// An app on a terminal `cols` wide, so wrapping matches the drawing.
@@ -910,7 +926,7 @@ plan.md  L1/5  enter:thread/co"
 
         assert_eq!(
             screen,
-            "(empty file)\n\n\nplan.md  L0/0  enter:thread/comment ]/[:jump q:quit"
+            "(empty file)\n\n\nplan.md  L0/0  enter:thread/comment v:select ]/[:jump q:quit"
         );
     }
 
@@ -998,5 +1014,124 @@ plan.md  L1/5  enter:thread/co"
             buffer[(4, 3)].modifier.contains(Modifier::DIM),
             "quote marker"
         );
+    }
+
+    // --- visual selection ---
+
+    /// Background of column 5 (file text) on each of the first `n` rows.
+    fn backgrounds(terminal: &Terminal<TestBackend>, n: u16) -> Vec<bool> {
+        let buffer = terminal.backend().buffer();
+        (0..n)
+            .map(|y| buffer[(5, y)].bg == Color::DarkGray)
+            .collect()
+    }
+
+    fn keys(app: &mut App, codes: &str) {
+        for c in codes.chars() {
+            key(app, KeyCode::Char(c));
+        }
+    }
+
+    #[test]
+    fn every_selected_line_is_highlighted_and_no_other() {
+        let mut app = app_with(lines(6), &[], 8);
+        keys(&mut app, "jvjj");
+
+        let terminal = draw(&app, W, 8);
+
+        assert_eq!(
+            backgrounds(&terminal, 6),
+            [false, true, true, true, false, false]
+        );
+    }
+
+    #[test]
+    fn a_selected_wrapped_line_is_highlighted_on_all_its_rows() {
+        let mut app = narrow(&["one", LONG, "three"], &[], (20, 6));
+        keys(&mut app, "vj");
+
+        let terminal = draw(&app, 20, 6);
+
+        assert_eq!(backgrounds(&terminal, 5), [true, true, true, true, false]);
+    }
+
+    #[test]
+    fn a_selected_wrapped_table_line_is_highlighted_on_all_its_rows() {
+        let mut app = narrow(&WIDE_TABLE, &[], (30, 8));
+        keys(&mut app, "jjvj");
+
+        let terminal = draw(&app, 30, 8);
+
+        assert_eq!(
+            backgrounds(&terminal, 7),
+            [false, false, true, true, true, true, false]
+        );
+    }
+
+    #[test]
+    fn after_a_resize_the_rewrapped_selection_is_still_exactly_highlighted() {
+        let mut app = narrow(&["one", LONG, "three", "four"], &[], (60, 8));
+        keys(&mut app, "jvk");
+        assert_eq!(
+            backgrounds(&draw(&app, 60, 8), 4),
+            [true, true, false, false]
+        );
+
+        update(&mut app, Event::Resize(20, 8));
+
+        assert_eq!(
+            backgrounds(&draw(&app, 20, 8), 6),
+            [true, true, true, true, false, false]
+        );
+    }
+
+    #[test]
+    fn the_visual_footer_shows_the_range_and_its_keys() {
+        let mut app = app_with(lines(12), &[], 8);
+        keys(&mut app, "jvjj");
+
+        let screen = screen(&draw(&app, W, 8));
+
+        assert!(
+            screen.ends_with("plan.md  L4/12  visual 2-4  j/k:extend enter:comment esc:cancel"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn the_visual_footer_orders_an_upward_range() {
+        let mut app = app_with(lines(12), &[], 8);
+        keys(&mut app, "jjjvkk");
+
+        let screen = screen(&draw(&app, W, 8));
+
+        assert!(screen.contains("L2/12  visual 2-4  "), "{screen}");
+    }
+
+    #[test]
+    fn a_box_from_visual_names_the_range_and_keeps_it_highlighted() {
+        let mut app = app_with(lines(12), &[], 8);
+        keys(&mut app, "jvjj");
+        key(&mut app, KeyCode::Enter);
+
+        let terminal = draw(&app, W, 8);
+
+        assert!(
+            screen(&terminal).contains("┌Comment on lines 2-4 as scott─"),
+            "{}",
+            screen(&terminal)
+        );
+        assert_eq!(backgrounds(&terminal, 5), [false, true, true, true, false]);
+    }
+
+    #[test]
+    fn a_one_line_selection_still_says_line() {
+        let mut app = app_with(lines(12), &[], 8);
+        keys(&mut app, "jjv");
+        key(&mut app, KeyCode::Enter);
+
+        let screen = screen(&draw(&app, W, 8));
+
+        assert!(screen.contains("┌Comment on line 3 as scott─"), "{screen}");
     }
 }

@@ -339,13 +339,18 @@ Its parts:
   still one number, glyph and highlight, over all of its rows. Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim),
   then the line number, then `│`; the glyph and number show on a line's first
   row only, continuation rows keep just the `│`. The cursor highlight covers
-  every row of the cursor line. A highlighted line's text is drawn with its
-  styles patched over the row's, so the cursor `bg` shows under markdown
-  styling; styling sets no backgrounds and never touches the gutter, and
-  `DIM` is dropped on the cursor row, where faint text on the cursor
-  background is hard to read.
+  every row of every selected line (`App::selection()`: the cursor line, or
+  the whole `Visual` range, also while its comment box is open), wrapped and
+  table rows included; the moving end gets no separate mark. A highlighted
+  line's text is drawn with its styles patched over the row's, so the cursor
+  `bg` shows under markdown styling; styling sets no backgrounds and never
+  touches the gutter, and `DIM` is dropped on highlighted rows, where faint
+  text on the cursor background is hard to read.
   Footer: path (or the last save message),
-  `L<line>/<total>`, `N outdated` (open threads only), key hints. In `Panel`
+  `L<line>/<total>`, `visual <a>-<b>` in `Visual` (1-based, ascending),
+  `N outdated` (open threads only), key hints. The input box is titled
+  `Comment on line N as <author>`, `Comment on lines A-B as <author>` for a
+  range, or `Reply to <id> as <author>`. In `Panel`
   a bordered box of half the terminal (at least 4 rows) sits above the
   footer and the view shrinks to stay above it. In `Input` the bordered 3-row
   box replaces the footer (and hides the panel it came from); the draft
