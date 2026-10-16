@@ -66,6 +66,12 @@ pub enum Back {
         /// The panel's scroll.
         scroll: usize,
     },
+    /// The selection from `anchor` to the cursor, kept as it was while
+    /// typing; a successful save goes to Normal.
+    Visual {
+        /// The selection's fixed end.
+        anchor: usize,
+    },
 }
 
 impl Back {
@@ -74,6 +80,7 @@ impl Back {
         match self {
             Back::Normal => Mode::Normal,
             Back::Panel { selected, scroll } => Mode::Panel { selected, scroll },
+            Back::Visual { anchor } => Mode::Visual { anchor },
         }
     }
 }
@@ -281,11 +288,15 @@ impl App {
     }
 
     /// The selected 0-based lines `(first, last)`, in file order: the range
-    /// between the anchor and the cursor in [`Mode::Visual`], else the
-    /// cursor line alone.
+    /// between the anchor and the cursor in [`Mode::Visual`] and in a
+    /// comment box opened from it, else the cursor line alone.
     pub fn selection(&self) -> (usize, usize) {
         match self.mode {
-            Mode::Visual { anchor } => (anchor.min(self.cursor), anchor.max(self.cursor)),
+            Mode::Visual { anchor }
+            | Mode::Input {
+                back: Back::Visual { anchor },
+                ..
+            } => (anchor.min(self.cursor), anchor.max(self.cursor)),
             _ => (self.cursor, self.cursor),
         }
     }
@@ -720,9 +731,12 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     None
 }
 
-/// Keys in [`Mode::Visual`]: movement extends the selection; nothing here
-/// quits or writes.
+/// Keys in [`Mode::Visual`]: movement extends the selection and `enter`
+/// opens a comment box for it; nothing here quits or writes.
 fn visual_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    let Mode::Visual { anchor } = app.mode else {
+        return None;
+    };
     if movement(app, key) {
         return None;
     }
@@ -731,6 +745,14 @@ fn visual_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Char('c') if ctrl => app.mode = Mode::Normal,
         KeyCode::Esc => app.mode = Mode::Normal,
         KeyCode::Char('q' | 'v' | 'V') if !ctrl => app.mode = Mode::Normal,
+        KeyCode::Enter => {
+            app.mode = Mode::Input {
+                draft: String::new(),
+                cursor: 0,
+                back: Back::Visual { anchor },
+                reply_to: None,
+            };
+        }
         _ => {}
     }
     None
@@ -815,10 +837,11 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                     body,
                 },
                 None => {
-                    let line = u32::try_from(app.cursor + 1).unwrap_or(u32::MAX);
+                    let (first, last) = app.selection();
+                    let one_based = |line: usize| u32::try_from(line + 1).unwrap_or(u32::MAX);
                     Effect::Add {
-                        start: line,
-                        end: line,
+                        start: one_based(first),
+                        end: one_based(last),
                         body,
                     }
                 }
@@ -2684,5 +2707,99 @@ mod tests {
         send(&mut a, [ch('v')]);
 
         assert_eq!(a.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn enter_in_visual_opens_the_box_for_the_range_and_saves_it_either_way() {
+        for (moves, lines, (start, end)) in [("jj", (3, 5), (4, 6)), ("kk", (1, 3), (2, 4))] {
+            let mut a = visual_at(10, 12, 3);
+            typed(&mut a, moves);
+
+            send(&mut a, [press(KeyCode::Enter)]);
+            assert_eq!(draft(&a), ("", 0));
+            assert_eq!(a.selection(), lines, "kept in Input");
+            typed(&mut a, "why?");
+
+            assert_eq!(
+                update(&mut a, press(KeyCode::Enter)),
+                Some(Effect::Add {
+                    start,
+                    end,
+                    body: "why?".into()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn enter_in_visual_on_a_threaded_line_comments_and_never_opens_the_panel() {
+        let mut a = panel_app(&[chatty("c1", (2, 2), 1)], 20);
+        send(&mut a, [ch('j'), ch('v'), press(KeyCode::Enter)]);
+
+        assert!(matches!(
+            a.mode,
+            Mode::Input {
+                back: Back::Visual { anchor: 1 },
+                reply_to: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn esc_in_the_box_returns_to_the_same_selection_and_again_to_normal() {
+        for cancel in [press(KeyCode::Esc), ctrl('c')] {
+            let mut a = visual_at(10, 12, 3);
+            send(&mut a, [ch('j'), press(KeyCode::Enter)]);
+            typed(&mut a, "draft");
+
+            assert_eq!(update(&mut a, cancel.clone()), None);
+            assert_eq!(a.mode, Mode::Visual { anchor: 3 });
+            assert_eq!(a.selection(), (3, 4));
+
+            assert_eq!(update(&mut a, cancel), None);
+            assert_eq!((a.mode.clone(), a.cursor), (Mode::Normal, 4));
+        }
+    }
+
+    #[test]
+    fn a_saved_range_returns_to_normal_and_says_what_was_added() {
+        let mut a = visual_at(10, 12, 3);
+        send(&mut a, [ch('j'), press(KeyCode::Enter)]);
+        typed(&mut a, "x");
+        update(&mut a, press(KeyCode::Enter));
+        let threads = vec![chatty("c4", (4, 5), 1)];
+
+        update(
+            &mut a,
+            Event::Saved {
+                id: "c4".into(),
+                done: Done::Added,
+                threads,
+            },
+        );
+
+        assert_eq!((a.mode.clone(), a.cursor), (Mode::Normal, 4));
+        assert_eq!(a.status.as_deref(), Some("added c4"));
+    }
+
+    #[test]
+    fn a_failed_range_save_keeps_the_draft_and_the_selection() {
+        let mut a = visual_at(10, 12, 3);
+        send(&mut a, [ch('j'), press(KeyCode::Enter)]);
+        typed(&mut a, "x");
+        update(&mut a, press(KeyCode::Enter));
+
+        update(&mut a, Event::SaveFailed("locked".into()));
+
+        assert_eq!(draft(&a), ("x", 1));
+        assert_eq!(a.selection(), (3, 4));
+        assert!(matches!(
+            a.mode,
+            Mode::Input {
+                back: Back::Visual { anchor: 3 },
+                ..
+            }
+        ));
     }
 }

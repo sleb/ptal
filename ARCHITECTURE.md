@@ -262,10 +262,18 @@ Its parts:
   `tui::highlight`, computed once by `App::highlighted(true)` since the file
   never changes in a session, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
-  outdated ones, footer `status`), `Mode = Normal | Panel { selected, scroll }
-  | Input { draft, cursor, back, reply_to }` (`back` is the `Back` the box
-  returns to on `esc`: `Normal | Panel { selected, scroll }`), and
-  `update(&mut App, Event) -> Option<Effect>`. A thread covers its stored
+  outdated ones, footer `status`), `Mode = Normal | Visual { anchor } |
+  Panel { selected, scroll } | Input { draft, cursor, back, reply_to }`
+  (`back` is the `Back` the box returns to on `esc`: `Normal | Panel {
+  selected, scroll } | Visual { anchor }`), and
+  `update(&mut App, Event) -> Option<Effect>`. In `Visual` the cursor is the
+  selection's moving end and `anchor` its fixed one (0-based file lines), so
+  Normal and Visual share one movement helper and the view clamp keeps the
+  moving end on screen; `selection()` is the ordered `(first, last)` of the
+  two in `Visual` and in a box opened from it (the range stays fixed while
+  typing), else the cursor line alone. `enter` in `Visual` always opens a
+  box for a new thread on the selection, never the panel; a save from it
+  goes to Normal. A thread covers its stored
   range whatever its `state`; `Marker = Waiting | Open | Resolved` is derived
   per line (waiting > open > resolved). Waiting means open and last comment
   not by `author`. The panel's thread set is recomputed from the threads and
