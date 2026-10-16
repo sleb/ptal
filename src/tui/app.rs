@@ -19,6 +19,14 @@ use super::{table, wrap};
 pub enum Mode {
     /// Scrolling the file.
     Normal,
+    /// Selecting a range of whole lines, from `anchor` to the cursor.
+    ///
+    /// The cursor is the selection's moving end, so every movement key
+    /// extends the selection and the view keeps that end on screen.
+    Visual {
+        /// The 0-based file line where the selection started.
+        anchor: usize,
+    },
     /// Reading the threads on the cursor line.
     ///
     /// Which threads those are is recomputed from the app's threads and the
@@ -272,6 +280,16 @@ impl App {
         &self.mode
     }
 
+    /// The selected 0-based lines `(first, last)`, in file order: the range
+    /// between the anchor and the cursor in [`Mode::Visual`], else the
+    /// cursor line alone.
+    pub fn selection(&self) -> (usize, usize) {
+        match self.mode {
+            Mode::Visual { anchor } => (anchor.min(self.cursor), anchor.max(self.cursor)),
+            _ => (self.cursor, self.cursor),
+        }
+    }
+
     /// A one-line message for the footer (a save result), if any.
     pub fn status(&self) -> Option<&str> {
         self.status.as_deref()
@@ -329,7 +347,7 @@ impl App {
     /// Terminal rows below the file view in the current mode.
     pub(super) fn chrome_rows(&self) -> usize {
         match self.mode {
-            Mode::Normal => FOOTER_ROWS,
+            Mode::Normal | Mode::Visual { .. } => FOOTER_ROWS,
             Mode::Input { .. } => INPUT_BOX_ROWS,
             Mode::Panel { .. } => self.panel_rows() + FOOTER_ROWS,
         }
@@ -647,6 +665,7 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.status = None;
             match app.mode {
                 Mode::Normal => normal_key(app, key),
+                Mode::Visual { .. } => visual_key(app, key),
                 Mode::Panel { .. } => panel_key(app, key),
                 Mode::Input { .. } => input_key(app, key),
             }
@@ -655,13 +674,14 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
     }
 }
 
-fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+/// Apply a key that moves the cursor; `false` if `key` is not one.
+///
+/// Normal and Visual share it, so the two modes move alike.
+fn movement(app: &mut App, key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Char('c') if ctrl => return Some(Effect::Quit),
         KeyCode::Char('d') if ctrl => app.scroll_half_page(true),
         KeyCode::Char('u') if ctrl => app.scroll_half_page(false),
-        KeyCode::Char('q') if !ctrl => return Some(Effect::Quit),
         KeyCode::Char('j') | KeyCode::Down => app.move_to(app.cursor + 1),
         KeyCode::Char('k') | KeyCode::Up => app.move_to(app.cursor.saturating_sub(1)),
         KeyCode::Char('g') | KeyCode::Home => app.move_to(0),
@@ -670,6 +690,22 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Char('[') => app.jump_to_covered(false),
         KeyCode::PageDown => app.scroll_half_page(true),
         KeyCode::PageUp => app.scroll_half_page(false),
+        _ => return false,
+    }
+    true
+}
+
+fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    if movement(app, key) {
+        return None;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char('c') if ctrl => return Some(Effect::Quit),
+        KeyCode::Char('q') if !ctrl => return Some(Effect::Quit),
+        KeyCode::Char('v' | 'V') if !ctrl && !app.lines.is_empty() => {
+            app.mode = Mode::Visual { anchor: app.cursor };
+        }
         KeyCode::Enter if !app.threads_on(app.cursor).is_empty() => app.open_panel(),
         KeyCode::Enter if !app.lines.is_empty() => {
             app.mode = Mode::Input {
@@ -679,6 +715,22 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 reply_to: None,
             };
         }
+        _ => {}
+    }
+    None
+}
+
+/// Keys in [`Mode::Visual`]: movement extends the selection; nothing here
+/// quits or writes.
+fn visual_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    if movement(app, key) {
+        return None;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char('c') if ctrl => app.mode = Mode::Normal,
+        KeyCode::Esc => app.mode = Mode::Normal,
+        KeyCode::Char('q' | 'v' | 'V') if !ctrl => app.mode = Mode::Normal,
         _ => {}
     }
     None
@@ -2510,5 +2562,127 @@ mod tests {
 
         assert_eq!(a.mode, before);
         assert_eq!(a.status.as_deref(), Some("locked"));
+    }
+
+    // --- visual selection ---
+
+    /// `n` lines with the cursor on 0-based `line`, then `v`.
+    fn visual_at(n: usize, rows: u16, line: usize) -> App {
+        let mut a = app(n, rows);
+        send(&mut a, (0..line).map(|_| ch('j')));
+        send(&mut a, [ch('v')]);
+        a
+    }
+
+    #[test]
+    fn v_starts_a_selection_of_the_cursor_line() {
+        let a = visual_at(10, 12, 3);
+
+        assert_eq!(a.mode, Mode::Visual { anchor: 3 });
+        assert_eq!(a.selection(), (3, 3));
+    }
+
+    #[test]
+    fn outside_visual_the_selection_is_the_cursor_line() {
+        let mut a = app(10, 12);
+        send(&mut a, [ch('j'), ch('j')]);
+
+        assert_eq!(a.selection(), (2, 2));
+    }
+
+    #[test]
+    fn j_and_k_extend_the_selection_either_way_and_across_the_anchor() {
+        let mut down = visual_at(10, 12, 3);
+        send(&mut down, [ch('j'), ch('j')]);
+        assert_eq!(down.selection(), (3, 5));
+        assert_eq!(down.cursor, 5, "the cursor is the moving end");
+
+        let mut up = visual_at(10, 12, 3);
+        send(&mut up, [ch('k'), ch('k')]);
+        assert_eq!(up.selection(), (1, 3));
+
+        send(&mut up, (0..4).map(|_| press(KeyCode::Down)));
+        assert_eq!(up.selection(), (3, 5), "crossed the anchor");
+        send(&mut up, [press(KeyCode::Up)]);
+        assert_eq!(up.selection(), (3, 4));
+        assert_eq!(up.mode, Mode::Visual { anchor: 3 });
+    }
+
+    #[test]
+    fn every_movement_key_moves_the_end_and_the_view_follows_it() {
+        let mut a = visual_at(20, 6, 2); // view height 5
+
+        send(&mut a, [ch('G')]);
+        assert_eq!((a.selection(), at(&a)), ((2, 19), (19, 15)));
+        send(&mut a, [ch('g')]);
+        assert_eq!((a.selection(), at(&a)), ((0, 2), (0, 0)));
+        send(&mut a, [press(KeyCode::End), press(KeyCode::Home)]);
+        assert_eq!(a.selection(), (0, 2));
+        send(&mut a, [ctrl('d')]);
+        assert_eq!(a.selection(), (2, 2));
+        send(&mut a, [press(KeyCode::PageDown), press(KeyCode::PageUp)]);
+        assert_eq!(a.selection(), (2, 2));
+        send(&mut a, [ctrl('d'), ctrl('d'), ctrl('u')]);
+        assert_eq!(a.selection(), (2, 4));
+        assert_eq!(a.mode, Mode::Visual { anchor: 2 });
+        assert!(a.top <= a.cursor && a.cursor < a.top + 5);
+    }
+
+    #[test]
+    fn brackets_move_the_end_to_the_next_and_previous_threaded_line() {
+        let lines = (1..=10).map(|i| format!("line {i}")).collect();
+        let threads = [view("c1", (7, 8), Status::Open, State::Current)];
+        let mut a = App::open(lines, &threads, "scott", (40, 12));
+        send(&mut a, [ch('j'), ch('v')]);
+
+        send(&mut a, [ch(']')]);
+        assert_eq!(a.selection(), (1, 6));
+        send(&mut a, [ch('G'), ch('[')]);
+        assert_eq!(a.selection(), (1, 7));
+    }
+
+    #[test]
+    fn capital_v_selects_exactly_as_v_does() {
+        let mut a = app(10, 12);
+        send(&mut a, [ch('j'), ch('V'), ch('j')]);
+
+        assert_eq!(a.mode, Mode::Visual { anchor: 1 });
+        assert_eq!(a.selection(), (1, 2));
+    }
+
+    #[test]
+    fn leaving_visual_keeps_the_cursor_and_never_quits() {
+        for leave in [press(KeyCode::Esc), ch('q'), ctrl('c'), ch('v'), ch('V')] {
+            let mut a = visual_at(10, 12, 3);
+            send(&mut a, [ch('j')]);
+
+            assert_eq!(update(&mut a, leave.clone()), None, "{leave:?}");
+
+            assert_eq!(a.mode, Mode::Normal, "{leave:?}");
+            assert_eq!(a.cursor, 4);
+        }
+    }
+
+    #[test]
+    fn other_keys_do_nothing_in_visual() {
+        let mut a = visual_at(10, 12, 3);
+
+        for key in [ch('a'), ch('x'), ch('r'), press(KeyCode::Tab)] {
+            assert_eq!(update(&mut a, key), None);
+        }
+
+        assert_eq!(
+            (a.mode.clone(), a.selection()),
+            (Mode::Visual { anchor: 3 }, (3, 3))
+        );
+    }
+
+    #[test]
+    fn v_on_an_empty_file_stays_normal() {
+        let mut a = App::open(vec![], &[], "scott", (40, 10));
+
+        send(&mut a, [ch('v')]);
+
+        assert_eq!(a.mode, Mode::Normal);
     }
 }

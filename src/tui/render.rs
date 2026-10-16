@@ -30,7 +30,7 @@ pub fn render(app: &App, frame: &mut Frame) {
 
     draw_file(app, buf, view);
     match app.mode() {
-        Mode::Normal => draw_footer(app, buf, bottom),
+        Mode::Normal | Mode::Visual { .. } => draw_footer(app, buf, bottom),
         Mode::Panel { scroll, .. } => {
             // The footer is the panel's last row; the box takes the rest.
             let rows = bottom.height.saturating_sub(1);
