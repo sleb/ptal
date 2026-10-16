@@ -35,15 +35,39 @@ pub enum Mode {
         draft: String,
         /// Insertion point as a `char` index into `draft`.
         cursor: usize,
-        /// The panel's `(selected, scroll)` this box was opened from, which
-        /// `esc` and a successful save return to.
-        from_panel: Option<(usize, usize)>,
+        /// The mode this box was opened from, which `esc` returns to.
+        back: Back,
         /// The id of the thread being replied to; `None` adds a new thread.
         ///
         /// Captured when `r` is pressed, so a re-read between the keypress
         /// and the write cannot retarget the reply.
         reply_to: Option<String>,
     },
+}
+
+/// Where a comment box returns to on `esc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Back {
+    /// Normal mode; a successful save stays there too.
+    Normal,
+    /// The panel at this view; a successful save returns to it, on the
+    /// written thread.
+    Panel {
+        /// The selected thread's index.
+        selected: usize,
+        /// The panel's scroll.
+        scroll: usize,
+    },
+}
+
+impl Back {
+    /// The mode `esc` returns to.
+    fn mode(self) -> Mode {
+        match self {
+            Back::Normal => Mode::Normal,
+            Back::Panel { selected, scroll } => Mode::Panel { selected, scroll },
+        }
+    }
 }
 
 /// An input to [`update`].
@@ -92,9 +116,10 @@ impl Done {
 /// Something `update` wants the driver to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
-    /// Add a thread on `line` (1-based) with `body`, then answer with
-    /// [`Event::Saved`] or [`Event::SaveFailed`].
-    Add { line: u32, body: String },
+    /// Add a thread on lines `start..=end` (1-based, `start <= end`; equal
+    /// for one line) with `body`, then answer with [`Event::Saved`] or
+    /// [`Event::SaveFailed`].
+    Add { start: u32, end: u32, body: String },
     /// Append `body` to thread `id`; answered like [`Effect::Add`].
     Reply { id: String, body: String },
     /// Resolve thread `id` with no note; answered like [`Effect::Add`].
@@ -603,7 +628,7 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
                 app.mode,
                 Mode::Panel { .. }
                     | Mode::Input {
-                        from_panel: Some(_),
+                        back: Back::Panel { .. },
                         ..
                     }
             );
@@ -650,7 +675,7 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             app.mode = Mode::Input {
                 draft: String::new(),
                 cursor: 0,
-                from_panel: None,
+                back: Back::Normal,
                 reply_to: None,
             };
         }
@@ -674,7 +699,7 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             app.mode = Mode::Input {
                 draft: String::new(),
                 cursor: 0,
-                from_panel: Some((selected, scroll)),
+                back: Back::Panel { selected, scroll },
                 reply_to: None,
             };
         }
@@ -687,7 +712,7 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 app.mode = Mode::Input {
                     draft: String::new(),
                     cursor: 0,
-                    from_panel: Some((selected, scroll)),
+                    back: Back::Panel { selected, scroll },
                     reply_to: Some(id),
                 };
             }
@@ -717,16 +742,13 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let Mode::Input {
         draft,
         cursor,
-        from_panel,
+        back,
         reply_to,
     } = &mut app.mode
     else {
         return None;
     };
-    let back = from_panel.map_or(Mode::Normal, |(selected, scroll)| Mode::Panel {
-        selected,
-        scroll,
-    });
+    let back = back.mode();
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let len = draft.chars().count();
     match key.code {
@@ -740,10 +762,14 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                     id: id.clone(),
                     body,
                 },
-                None => Effect::Add {
-                    line: u32::try_from(app.cursor + 1).unwrap_or(u32::MAX),
-                    body,
-                },
+                None => {
+                    let line = u32::try_from(app.cursor + 1).unwrap_or(u32::MAX);
+                    Effect::Add {
+                        start: line,
+                        end: line,
+                        body,
+                    }
+                }
             });
         }
         KeyCode::Char(c) if !ctrl => {
@@ -1285,7 +1311,8 @@ mod tests {
         assert_eq!(
             update(&mut a, press(KeyCode::Enter)),
             Some(Effect::Add {
-                line: 3,
+                start: 3,
+                end: 3,
                 body: "why?".into()
             })
         );
@@ -1316,7 +1343,8 @@ mod tests {
         assert_eq!(
             update(&mut a, press(KeyCode::Enter)),
             Some(Effect::Add {
-                line: 4,
+                start: 4,
+                end: 4,
                 body: "why?".into()
             })
         );
@@ -1547,7 +1575,8 @@ mod tests {
         assert_eq!(
             effect,
             Some(Effect::Add {
-                line: 3,
+                start: 3,
+                end: 3,
                 body: "why?".into()
             })
         );
@@ -2152,7 +2181,8 @@ mod tests {
         assert_eq!(
             effect,
             Some(Effect::Add {
-                line: 2,
+                start: 2,
+                end: 2,
                 body: "new".into()
             })
         );
@@ -2200,9 +2230,9 @@ mod tests {
     fn panel_after_cancel(a: &App) -> (usize, usize) {
         match &a.mode {
             Mode::Input {
-                from_panel: Some(p),
+                back: Back::Panel { selected, scroll },
                 ..
-            } => *p,
+            } => (*selected, *scroll),
             other => panic!("{other:?}"),
         }
     }
@@ -2219,7 +2249,7 @@ mod tests {
         assert!(matches!(
             a.mode,
             Mode::Input {
-                from_panel: Some(_),
+                back: Back::Panel { .. },
                 ..
             }
         ));
@@ -2281,7 +2311,7 @@ mod tests {
         assert!(matches!(
             a.mode,
             Mode::Input {
-                from_panel: Some((1, _)),
+                back: Back::Panel { selected: 1, .. },
                 ..
             }
         ));
@@ -2375,7 +2405,7 @@ mod tests {
         assert!(matches!(
             a.mode,
             Mode::Input {
-                from_panel: Some(_),
+                back: Back::Panel { .. },
                 ..
             }
         ));

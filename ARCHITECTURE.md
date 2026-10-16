@@ -263,7 +263,8 @@ Its parts:
   never changes in a session, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
   outdated ones, footer `status`), `Mode = Normal | Panel { selected, scroll }
-  | Input { draft, cursor, from_panel, reply_to }`, and
+  | Input { draft, cursor, back, reply_to }` (`back` is the `Back` the box
+  returns to on `esc`: `Normal | Panel { selected, scroll }`), and
   `update(&mut App, Event) -> Option<Effect>`. A thread covers its stored
   range whatever its `state`; `Marker = Waiting | Open | Resolved` is derived
   per line (waiting > open > resolved). Waiting means open and last comment
@@ -279,8 +280,9 @@ Its parts:
   same rows; `lines()` stays the raw file.
   `Event` is `Key | Resize | Saved { id, done, threads } | SaveFailed`, where
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
-  always the thread id; `Effect` is `Add { line, body } | Reply { id, body }
-  | Resolve { id } | Reopen { id } | Quit`. The target thread id is captured when `r`, `x` or `o` is pressed, never
+  always the thread id; `Effect` is `Add { start, end, body } | Reply { id,
+  body } | Resolve { id } | Reopen { id } | Quit`, where `start..=end` is
+  1-based (`start == end` for one line). The target thread id is captured when `r`, `x` or `o` is pressed, never
   an index; `x` on a resolved thread and `o` on an open one are refused in
   `update` with a footer message. `update` does no I/O and reads no clock.
 - `tui::panel`: `layout(threads, selected, width) -> Layout { lines,

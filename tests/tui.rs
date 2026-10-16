@@ -8,7 +8,7 @@ use std::process::Command;
 
 use ptal::review::{Reviews, SystemClock};
 use ptal::store::Store;
-use ptal::tui::app::{App, Event, Mode};
+use ptal::tui::app::{App, Back, Event, Mode};
 use ptal::tui::render::render;
 use ptal::tui::{load, step};
 use ratatui::Terminal;
@@ -189,7 +189,7 @@ fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
         &Mode::Input {
             draft: "ok".into(),
             cursor: 2,
-            from_panel: None,
+            back: Back::Normal,
             reply_to: None,
         }
     );
