@@ -706,14 +706,28 @@ fn movement(app: &mut App, key: KeyEvent) -> bool {
     true
 }
 
+/// `q` or `ctrl+c`: quit in Normal mode. Every sub-mode that is not typing
+/// leaves on these or `esc` instead, so one stray `q` cannot quit.
+fn is_quit(key: KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    matches!(key.code, KeyCode::Char('c') if ctrl)
+        || matches!(key.code, KeyCode::Char('q') if !ctrl)
+}
+
+/// [`is_quit`] or `esc`: back to Normal from Visual or the panel.
+fn is_leave(key: KeyEvent) -> bool {
+    key.code == KeyCode::Esc || is_quit(key)
+}
+
 fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    if is_quit(key) {
+        return Some(Effect::Quit);
+    }
     if movement(app, key) {
         return None;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Char('c') if ctrl => return Some(Effect::Quit),
-        KeyCode::Char('q') if !ctrl => return Some(Effect::Quit),
         KeyCode::Char('v' | 'V') if !ctrl && !app.lines.is_empty() => {
             app.mode = Mode::Visual { anchor: app.cursor };
         }
@@ -737,14 +751,16 @@ fn visual_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let Mode::Visual { anchor } = app.mode else {
         return None;
     };
+    if is_leave(key) {
+        app.mode = Mode::Normal;
+        return None;
+    }
     if movement(app, key) {
         return None;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Char('c') if ctrl => app.mode = Mode::Normal,
-        KeyCode::Esc => app.mode = Mode::Normal,
-        KeyCode::Char('q' | 'v' | 'V') if !ctrl => app.mode = Mode::Normal,
+        KeyCode::Char('v' | 'V') if !ctrl => app.mode = Mode::Normal,
         KeyCode::Enter => {
             app.mode = Mode::Input {
                 draft: String::new(),
@@ -762,13 +778,14 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let Mode::Panel { selected, scroll } = app.mode else {
         return None;
     };
+    if is_leave(key) {
+        app.mode = Mode::Normal;
+        return None;
+    }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let count = app.threads_on(app.cursor).len().max(1);
     match key.code {
-        KeyCode::Char('c') if ctrl => app.mode = Mode::Normal,
-        KeyCode::Esc => app.mode = Mode::Normal,
-        KeyCode::Char('q') if !ctrl => app.mode = Mode::Normal,
         KeyCode::Char('a') if !ctrl => {
             app.mode = Mode::Input {
                 draft: String::new(),
