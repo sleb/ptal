@@ -147,7 +147,7 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
         }
         Mode::Panel { .. } => "tab:next a:add r:reply x:resolve j/k:scroll esc:close",
         Mode::Visual { .. } => "j/k:extend enter:comment esc:cancel",
-        _ => "enter:thread/comment v:select ]/[:jump q:quit",
+        _ => "enter:thread/comment ]/[:jump q:quit v:select",
     };
     parts.push(hints.to_string());
     buf.set_stringn(
@@ -628,7 +628,7 @@ mod tests {
    5│line 5
    6│line 6
    7│line 7
-plan.md  L1/12  enter:thread/comment v:select ]/[:jump q:quit"
+plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select"
         );
     }
 
@@ -651,7 +651,7 @@ plan.md  L1/12  enter:thread/comment v:select ]/[:jump q:quit"
    5│line 5
 ●  6│line 6
    7│line 7
-plan.md  L1/12  1 outdated  enter:thread/comment v:select ]/[:jump q:q"
+plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
         );
     }
 
@@ -746,7 +746,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment v:select ]/[:jump q:q"
 
         let first = screen.lines().next().unwrap();
         assert_eq!(first, "  24│line 24");
-        assert!(screen.ends_with("L30/30  enter:thread/comment v:select ]/[:jump q:quit"));
+        assert!(screen.ends_with("L30/30  enter:thread/comment ]/[:jump q:quit v:select"));
     }
 
     /// An app on a terminal `cols` wide, so wrapping matches the drawing.
@@ -926,7 +926,7 @@ plan.md  L1/5  enter:thread/co"
 
         assert_eq!(
             screen,
-            "(empty file)\n\n\nplan.md  L0/0  enter:thread/comment v:select ]/[:jump q:quit"
+            "(empty file)\n\n\nplan.md  L0/0  enter:thread/comment ]/[:jump q:quit v:select"
         );
     }
 
@@ -1122,6 +1122,18 @@ plan.md  L1/5  enter:thread/co"
             screen(&terminal)
         );
         assert_eq!(backgrounds(&terminal, 5), [false, true, true, true, false]);
+    }
+
+    #[test]
+    fn quit_stays_in_the_normal_footer_on_a_70_column_terminal() {
+        let threads = [open_thread("c1", (1, 1), State::Outdated)];
+        let app = app_with(lines(12), &threads, 8);
+
+        let screen = screen(&draw(&app, 70, 8));
+
+        let footer = screen.lines().last().unwrap();
+        assert!(footer.contains("1 outdated"), "{footer}");
+        assert!(footer.contains("q:quit"), "{footer}");
     }
 
     #[test]
