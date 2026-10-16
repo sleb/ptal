@@ -53,6 +53,19 @@ pub enum Mode {
     },
 }
 
+impl Mode {
+    /// An empty comment box that returns to `back`, adding a thread or, with
+    /// `reply_to`, replying to that thread.
+    fn input(back: Back, reply_to: Option<String>) -> Self {
+        Mode::Input {
+            draft: String::new(),
+            cursor: 0,
+            back,
+            reply_to,
+        }
+    }
+}
+
 /// Where a comment box returns to on `esc`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Back {
@@ -733,12 +746,7 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         }
         KeyCode::Enter if !app.threads_on(app.cursor).is_empty() => app.open_panel(),
         KeyCode::Enter if !app.lines.is_empty() => {
-            app.mode = Mode::Input {
-                draft: String::new(),
-                cursor: 0,
-                back: Back::Normal,
-                reply_to: None,
-            };
+            app.mode = Mode::input(Back::Normal, None);
         }
         _ => {}
     }
@@ -762,12 +770,7 @@ fn visual_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     match key.code {
         KeyCode::Char('v' | 'V') if !ctrl => app.mode = Mode::Normal,
         KeyCode::Enter => {
-            app.mode = Mode::Input {
-                draft: String::new(),
-                cursor: 0,
-                back: Back::Visual { anchor },
-                reply_to: None,
-            };
+            app.mode = Mode::input(Back::Visual { anchor }, None);
         }
         _ => {}
     }
@@ -787,12 +790,7 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let count = app.threads_on(app.cursor).len().max(1);
     match key.code {
         KeyCode::Char('a') if !ctrl => {
-            app.mode = Mode::Input {
-                draft: String::new(),
-                cursor: 0,
-                back: Back::Panel { selected, scroll },
-                reply_to: None,
-            };
+            app.mode = Mode::input(Back::Panel { selected, scroll }, None);
         }
         KeyCode::Char('r') if !ctrl => {
             let id = app
@@ -800,12 +798,7 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 .get(selected)
                 .map(|view| view.thread.id.clone());
             if let Some(id) = id {
-                app.mode = Mode::Input {
-                    draft: String::new(),
-                    cursor: 0,
-                    back: Back::Panel { selected, scroll },
-                    reply_to: Some(id),
-                };
+                app.mode = Mode::input(Back::Panel { selected, scroll }, Some(id));
             }
         }
         KeyCode::Char('x') if !ctrl => return app.change_status(selected, true),
