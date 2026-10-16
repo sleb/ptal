@@ -1,7 +1,13 @@
 name: Code review
 
-# Runs Claude Code's `/code-review high` on each PR and posts the findings as
-# inline review comments.
+# Runs Claude Code's code-review skill at high effort on each PR and posts the
+# findings as inline review comments.
+#
+# The prompt is a plain instruction, not `/code-review high --comment N`: the
+# skill runs as a fork whose output contract is a findings list, so with
+# `--comment` it ended without posting, and a slash-command prompt gives the
+# main session no turn afterwards. Here the main session invokes the skill,
+# gets the findings back, and posts them itself.
 
 on:
   pull_request:
@@ -28,8 +34,21 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # Temporary: log Claude's turns to see why reviews post nothing.
+          # Temporary: log Claude's turns until a review is seen posting.
           show_full_output: true
-          prompt: /code-review high --comment ${{ github.event.pull_request.number }}
+          prompt: |
+            Review pull request #${{ github.event.pull_request.number }} in this repository.
+
+            1. Invoke the `code-review` skill with the arguments `high ${{ github.event.pull_request.number }}`.
+               Do not pass `--comment`; you post the findings yourself in step 2.
+            2. When the skill returns its findings, post each one as an inline comment on
+               the PR with `mcp__github_inline_comment__create_inline_comment`, one call per
+               finding, on its file and line. Put the one-sentence summary first, then the
+               failure scenario. Include a suggestion block only when it fully fixes the issue.
+               If a finding's line is not part of the PR diff, post it on the nearest changed
+               line of that file and name the original line in the comment.
+            3. If there are no findings, post nothing.
+
+            Your job is not done until every finding has been posted.
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr:*),Bash(gh api:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
+            --allowedTools "Skill,mcp__github_inline_comment__create_inline_comment,Bash(gh pr:*),Bash(gh api:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(grep:*),Bash(sed:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(cat:*)"
