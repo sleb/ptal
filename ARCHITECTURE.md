@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built: `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built: `Normal`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a one-line comment, reply, resolve, reopen |
+| `tui` | Built: `Normal`/`Visual`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor`, `diffview` | Deferred |
 
@@ -262,9 +262,18 @@ Its parts:
   `tui::highlight`, computed once by `App::highlighted(true)` since the file
   never changes in a session, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
-  outdated ones, footer `status`), `Mode = Normal | Panel { selected, scroll }
-  | Input { draft, cursor, from_panel, reply_to }`, and
-  `update(&mut App, Event) -> Option<Effect>`. A thread covers its stored
+  outdated ones, footer `status`), `Mode = Normal | Visual { anchor } |
+  Panel { selected, scroll } | Input { draft, cursor, back, reply_to }`
+  (`back` is the `Back` the box returns to on `esc`: `Normal | Panel {
+  selected, scroll } | Visual { anchor }`), and
+  `update(&mut App, Event) -> Option<Effect>`. In `Visual` the cursor is the
+  selection's moving end and `anchor` its fixed one (0-based file lines), so
+  Normal and Visual share one movement helper and the view clamp keeps the
+  moving end on screen; `selection()` is the ordered `(first, last)` of the
+  two in `Visual` and in a box opened from it (the range stays fixed while
+  typing), else the cursor line alone. `enter` in `Visual` always opens a
+  box for a new thread on the selection, never the panel; a save from it
+  goes to Normal. A thread covers its stored
   range whatever its `state`; `Marker = Waiting | Open | Resolved` is derived
   per line (waiting > open > resolved). Waiting means open and last comment
   not by `author`. The panel's thread set is recomputed from the threads and
@@ -279,8 +288,9 @@ Its parts:
   same rows; `lines()` stays the raw file.
   `Event` is `Key | Resize | Saved { id, done, threads } | SaveFailed`, where
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
-  always the thread id; `Effect` is `Add { line, body } | Reply { id, body }
-  | Resolve { id } | Reopen { id } | Quit`. The target thread id is captured when `r`, `x` or `o` is pressed, never
+  always the thread id; `Effect` is `Add { start, end, body } | Reply { id,
+  body } | Resolve { id } | Reopen { id } | Quit`, where `start..=end` is
+  1-based (`start == end` for one line). The target thread id is captured when `r`, `x` or `o` is pressed, never
   an index; `x` on a resolved thread and `o` on an open one are refused in
   `update` with a footer message. `update` does no I/O and reads no clock.
 - `tui::panel`: `layout(threads, selected, width) -> Layout { lines,
@@ -329,13 +339,18 @@ Its parts:
   still one number, glyph and highlight, over all of its rows. Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim),
   then the line number, then `│`; the glyph and number show on a line's first
   row only, continuation rows keep just the `│`. The cursor highlight covers
-  every row of the cursor line. A highlighted line's text is drawn with its
-  styles patched over the row's, so the cursor `bg` shows under markdown
-  styling; styling sets no backgrounds and never touches the gutter, and
-  `DIM` is dropped on the cursor row, where faint text on the cursor
-  background is hard to read.
+  every row of every selected line (`App::selection()`: the cursor line, or
+  the whole `Visual` range, also while its comment box is open), wrapped and
+  table rows included; the moving end gets no separate mark. A highlighted
+  line's text is drawn with its styles patched over the row's, so the cursor
+  `bg` shows under markdown styling; styling sets no backgrounds and never
+  touches the gutter, and `DIM` is dropped on highlighted rows, where faint
+  text on the cursor background is hard to read.
   Footer: path (or the last save message),
-  `L<line>/<total>`, `N outdated` (open threads only), key hints. In `Panel`
+  `L<line>/<total>`, `visual <a>-<b>` in `Visual` (1-based, ascending),
+  `N outdated` (open threads only), key hints. The input box is titled
+  `Comment on line N as <author>`, `Comment on lines A-B as <author>` for a
+  range, or `Reply to <id> as <author>`. In `Panel`
   a bordered box of half the terminal (at least 4 rows) sits above the
   footer and the view shrinks to stay above it. In `Input` the bordered 3-row
   box replaces the footer (and hides the panel it came from); the draft
@@ -371,7 +386,7 @@ Its parts:
   handled.
 - Display only; never mutates the reviewed file (it is read once on open).
 
-*Deferred within `tui`:* `Visual` and `Help` modes; sub-line scrolling of a
+*Deferred within `tui`:* the `Help` mode; character or column selection; sub-line scrolling of a
 line taller than the view; a hanging indent for wrapped list items; real tab
 stops; inline markup in laid-out table cells (a laid-out table gets only its
 header line's bold); `NO_COLOR` for the TUI's chrome as well;
@@ -466,8 +481,9 @@ state or `review`.
   `src/cli.rs`; process tests in `tests/cli.rs` for streams, exit status, and
   env. Schema conformance is deferred with `ptal schema`.
 - `tui`: scripted key events through `update` assert on state; `TestBackend`
-  snapshots (inline expected strings) cover Normal, Panel and Input rendering,
-  gutter glyphs and styles; `tui::wrap` has examples plus a property test
+  snapshots (inline expected strings) cover Normal, Visual, Panel and Input
+  rendering, gutter glyphs and styles (including the selection highlight on
+  wrapped and table rows, before and after a resize); `tui::wrap` has examples plus a property test
   over a fixed corpus (ASCII, CJK, emoji, tabs, long words) and widths
   1..=12: rows join back to the line and each fits the width; `tui::panel`
   has examples plus a property over a fixed corpus (ASCII, CJK, emoji ZWJ,
@@ -486,7 +502,8 @@ state or `review`.
   styled line's text is the raw line; `tui::app` checks that screen rows,
   the clamp and key effects are identical with highlighting on and off;
   `tests/tui.rs` runs scripted rounds through `step` against a real
-  `Reviews`; the terminal guard and panic hook are tested with injected
+  `Reviews` (single-line and Visual range comments checked through the real
+  `ptal comments`); the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the
   panic hook is global). A real-terminal check (pty) is manual.
 

@@ -8,7 +8,7 @@ use std::process::Command;
 
 use ptal::review::{Reviews, SystemClock};
 use ptal::store::Store;
-use ptal::tui::app::{App, Event, Mode};
+use ptal::tui::app::{App, Back, Event, Mode};
 use ptal::tui::render::render;
 use ptal::tui::{load, step};
 use ratatui::Terminal;
@@ -189,7 +189,7 @@ fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
         &Mode::Input {
             draft: "ok".into(),
             cursor: 2,
-            from_panel: None,
+            back: Back::Normal,
             reply_to: None,
         }
     );
@@ -639,4 +639,75 @@ fn a_text_file_or_no_color_shows_markdown_plain() {
     let app = no_color.open_with(false);
     assert!(screen(&app).starts_with("  1│# Title"));
     assert_eq!(looks_highlighted(&app), (false, false));
+}
+
+/// The first thread's `(start_line, end_line, quote)` from `ptal comments`.
+fn first_anchor(sb: &Sandbox) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
+    let json = cli_comments(sb);
+    let anchor = &json["threads"][0]["anchor"];
+    (
+        anchor["start_line"].clone(),
+        anchor["end_line"].clone(),
+        anchor["quote"].clone(),
+    )
+}
+
+#[test]
+fn a_visual_selection_downward_or_upward_saves_one_thread_on_the_range() {
+    for select in [&["j", "v", "j", "j"], &["j", "j", "j", "v", "k", "k"][..]] {
+        let sb = sandbox(PLAN);
+        let mut app = sb.open();
+
+        let mut keys = select.to_vec();
+        keys.extend(["enter", "h", "i", "enter"]);
+        let flow = sb.press(&mut app, &keys);
+
+        assert_eq!(flow, ControlFlow::Continue(()), "{select:?}");
+        assert_eq!(app.mode(), &Mode::Normal);
+        let json = cli_comments(&sb);
+        assert_eq!(json["threads"].as_array().unwrap().len(), 1);
+        assert_eq!(json["threads"][0]["comments"][0]["body"], "hi");
+        assert_eq!(
+            first_anchor(&sb),
+            (2.into(), 4.into(), "two\nthree\nfour".into()),
+            "{select:?}"
+        );
+    }
+}
+
+#[test]
+fn esc_cancels_a_selection_and_nothing_is_written() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+
+    assert_eq!(
+        sb.press(&mut app, &["v", "j", "esc"]),
+        ControlFlow::Continue(())
+    );
+    assert_eq!(app.mode(), &Mode::Normal);
+    assert_eq!(sb.press(&mut app, &["q"]), ControlFlow::Break(()));
+
+    assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
+    assert!(!sb.data.exists(), "no review data was written");
+}
+
+#[test]
+fn a_range_overlapping_a_thread_adds_a_second_one_and_both_mark_the_shared_line() {
+    let sb = sandbox(PLAN);
+    sb.reviews
+        .add_thread(&sb.file, 3, 3, "first", "claude")
+        .unwrap();
+    let mut app = sb.open();
+
+    let flow = sb.press(&mut app, &["j", "v", "j", "j", "enter", "o", "k", "enter"]);
+
+    assert_eq!(flow, ControlFlow::Continue(()));
+    let json = cli_comments(&sb);
+    let threads = json["threads"].as_array().unwrap();
+    assert_eq!(threads.len(), 2);
+    assert_eq!(threads[1]["anchor"]["start_line"], 2);
+    assert_eq!(threads[1]["anchor"]["end_line"], 4);
+    assert_eq!(app.threads_on(2).len(), 2, "line 3 carries both");
+    let marked: Vec<bool> = (0..5).map(|i| app.marker(i).is_some()).collect();
+    assert_eq!(marked, [false, true, true, true, false]);
 }

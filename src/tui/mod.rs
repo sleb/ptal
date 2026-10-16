@@ -172,8 +172,8 @@ pub fn step<C: Clock>(
     match update(app, event) {
         None => ControlFlow::Continue(()),
         Some(Effect::Quit) => ControlFlow::Break(()),
-        Some(Effect::Add { line, body }) => {
-            let written = reviews.add_thread(file, line, line, &body, author);
+        Some(Effect::Add { start, end, body }) => {
+            let written = reviews.add_thread(file, start, end, &body, author);
             answer(app, reviews, file, Done::Added, written)
         }
         Some(Effect::Reply { id, body }) => {
