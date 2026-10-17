@@ -68,13 +68,9 @@ fn draw_file(app: &App, buf: &mut Buffer, area: Rect) {
         return;
     }
     if app.lines().is_empty() {
-        buf.set_stringn(
-            area.x,
-            area.y,
-            "(empty file)",
-            usize::from(area.width),
-            Style::new(),
-        );
+        let width = usize::from(area.width);
+        let empty = wrap::cut("(empty file)", width);
+        buf.set_stringn(area.x, area.y, empty, width, Style::new());
         return;
     }
     let digits = app.digits();
@@ -133,7 +129,7 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
         return;
     }
     let mut parts = vec![match app.status() {
-        Some(status) => status.to_string(),
+        Some(status) => one_line(status),
         None => app.file().to_string(),
     }];
     let position = if app.lines().is_empty() {
@@ -158,10 +154,12 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
         _ => "enter:thread/comment ]/[:jump q:quit v:select",
     };
     parts.push(hints.to_string());
+    let footer = parts.join("  ");
+    let footer = wrap::cut(&footer, usize::from(area.width));
     buf.set_stringn(
         area.x,
         area.y,
-        parts.join("  "),
+        footer,
         usize::from(area.width),
         Style::new(),
     );
@@ -171,7 +169,8 @@ fn draw_panel(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
     if area.is_empty() {
         return;
     }
-    let block = Block::bordered().title(format!("Threads on line {}", app.cursor() + 1));
+    let title = format!("Threads on line {}", app.cursor() + 1);
+    let block = Block::bordered().title(fit_title(&title, area.width));
     let inner = block.inner(area);
     block.render(area, buf);
     let Some(layout) = app.panel_layout() else {
@@ -188,6 +187,18 @@ fn draw_panel(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
     }
 }
 
+/// A box `width` cells wide's top-border `title`, [`wrap::cut`] to fit
+/// between the corners.
+fn fit_title(title: &str, width: u16) -> Cow<'_, str> {
+    wrap::cut(title, border_room(width))
+}
+
+/// The cells between the corners of a box `width` cells wide: the room for
+/// its border titles, top and bottom.
+fn border_room(width: u16) -> usize {
+    usize::from(width.saturating_sub(2))
+}
+
 /// The key hint on the comment box's bottom border.
 const INPUT_HINT: &str = "ctrl+s:save enter:newline esc:cancel";
 /// [`INPUT_HINT`] for a box too narrow for it: how to save and cancel.
@@ -202,15 +213,22 @@ const DISCARD_HINT_TINY: &str = "esc:discard?";
 /// The text on the comment box's bottom border and its style, for a box
 /// `width` cells wide. A pending [`App::status`] (a failed save's error) wins,
 /// red and bold, unless [`one_line`] leaves it empty; then the discard prompt
-/// while `discard_asked`; else the key hint. Hints pick the longest form that fits inside the corners, falling
-/// back to the shortest. The error is put on one row by [`one_line`] and
-/// clipped by the border, a wide character that would straddle the corner
-/// left out whole.
-fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'_, str>, Style) {
+/// while `discard_asked`; else the key hint. Hints pick the longest form that
+/// fits inside the corners, falling back to the shortest. The error is put on
+/// one row by [`one_line`]. Whatever is chosen is [`wrap::cut`] to fit
+/// between the corners, so text that does not fit ends in `…`.
+fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'static, str>, Style) {
+    let room = border_room(width);
     let error = app.status().map(one_line).filter(|error| !error.is_empty());
     if let Some(error) = error {
+        // `one_line` leaves no tabs or control characters, so an error that
+        // fits comes back borrowed and is kept as is.
+        let cut = match wrap::cut(&error, room) {
+            Cow::Owned(cut) => Some(cut),
+            Cow::Borrowed(_) => None,
+        };
         return (
-            Cow::Owned(error),
+            Cow::Owned(cut.unwrap_or(error)),
             Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
         );
     }
@@ -219,14 +237,13 @@ fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'_, str>, Styl
     } else {
         &[INPUT_HINT, INPUT_HINT_SHORT]
     };
-    let room = usize::from(width.saturating_sub(2));
     let hint = hints
         .iter()
         .find(|hint| wrap::width(hint) <= room)
         .or(hints.last())
         .copied()
         .unwrap_or_default();
-    (Cow::Borrowed(hint), Style::new())
+    (wrap::cut(hint, room), Style::new())
 }
 
 /// `text` on one row: each run of whitespace and control characters (a
@@ -271,7 +288,7 @@ fn draw_input(
         },
     };
     let block = Block::bordered()
-        .title(title)
+        .title(fit_title(&title, area.width))
         .title_bottom(Line::styled(hint, hint_style));
     let inner = block.inner(area);
     block.render(area, buf);
@@ -723,7 +740,7 @@ plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select"
    5│line 5
 ●  6│line 6
    7│line 7
-plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
+plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
         );
     }
 
@@ -1076,13 +1093,37 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
     }
 
     #[test]
-    fn a_long_error_is_cut_at_the_narrow_box_s_inner_width() {
+    fn a_long_error_is_cut_with_an_ellipsis_at_the_narrow_box_s_inner_width() {
         let mut app = box_with("hi", (20, 8));
         update(&mut app, Event::SaveFailed(LOCKED.into()));
 
-        let rows = box_rows(&draw(&app, 20, 8), 3);
+        let terminal = draw(&app, 20, 8);
 
-        assert_eq!(rows[2], format!("└{}┘", &LOCKED[..18]));
+        let cut = format!("{}…", &LOCKED[..17]);
+        assert_eq!(box_rows(&terminal, 3)[2], format!("└{cut}┘"));
+        assert_error_styled(&terminal, &cut);
+    }
+
+    #[test]
+    fn a_box_with_no_room_between_its_corners_shows_no_error() {
+        let mut app = box_with("hi", (2, 8));
+        update(&mut app, Event::SaveFailed(LOCKED.into()));
+
+        let (text, _) = box_border(&app, false, 2);
+
+        assert_eq!(text, "");
+    }
+
+    #[test]
+    fn a_hint_too_wide_even_in_its_shortest_form_ends_in_an_ellipsis() {
+        let app = box_with("hi", (20, 8));
+        let rows = box_rows(&draw(&app, 20, 8), 3);
+        assert_eq!(rows[2], "└ctrl+s:save esc:c…┘");
+
+        let mut app = box_with("hi", (10, 8));
+        key(&mut app, KeyCode::Esc);
+        let rows = box_rows(&draw(&app, 10, 8), 3);
+        assert_eq!(rows[2], "└esc:dis…┘");
     }
 
     /// The last row of `terminal` as text, skipping the blank cells that
@@ -1105,7 +1146,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
     }
 
     #[test]
-    fn a_wide_character_error_is_styled_by_cell_and_clipped_whole() {
+    fn a_wide_character_error_is_styled_by_cell_and_cut_whole() {
         // 24 cells: eight wide characters and a space, then eight more.
         let message = "鎖定されています レビューが使用中";
         let mut app = box_with("hi", (W, 8));
@@ -1119,13 +1160,15 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
         assert_error_styled(&wide, message);
 
         // 18 inner cells: the first eight characters and the space fill 17;
-        // the next wide character does not fit, and the corner stays.
+        // the next wide character would straddle the cut, so the ellipsis
+        // takes its place, and the corner stays.
         let mut app = box_with("hi", (20, 8));
         update(&mut app, Event::SaveFailed(message.into()));
-        let row = last_row(&draw(&app, 20, 8));
-        assert!(row.starts_with("└鎖定されています "), "{row}");
-        assert!(row.ends_with('┘'), "{row}");
+        let narrow = draw(&app, 20, 8);
+        let row = last_row(&narrow);
+        assert_eq!(row, "└鎖定されています …┘");
         assert_eq!(wrap::width(&row), 20, "{row}");
+        assert_error_styled(&narrow, "鎖定されています …");
     }
 
     #[test]
@@ -1242,7 +1285,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
    │charlie delta
    │echo foxtrot
   2│short
-plan.md  L1/2  enter"
+plan.md  L1/2  ente…"
         );
     }
 
@@ -1347,7 +1390,7 @@ plan.md  L1/2  enter"
    │   │ filling rule for
    │   │ widths
   5│after
-plan.md  L1/5  enter:thread/co"
+plan.md  L1/5  enter:thread/c…"
         );
     }
 
@@ -1387,6 +1430,7 @@ plan.md  L1/5  enter:thread/co"
                 key(&mut app, KeyCode::Char('a'));
                 type_text(&mut app, "hello");
                 draw(&app, width, rows);
+                draw(&app_with(Vec::new(), &[], rows), width, rows);
             }
         }
     }
@@ -1401,6 +1445,22 @@ plan.md  L1/5  enter:thread/co"
             screen,
             "(empty file)\n\n\nplan.md  L0/0  enter:thread/comment ]/[:jump q:quit v:select"
         );
+    }
+
+    #[test]
+    fn an_empty_file_in_a_narrow_view_says_so_with_an_ellipsis() {
+        let app = app_with(Vec::new(), &[], 4);
+
+        let first = |width| {
+            screen(&draw(&app, width, 4))
+                .lines()
+                .next()
+                .unwrap()
+                .to_string()
+        };
+
+        assert_eq!(first(6), "(empt…");
+        assert_eq!(first(12), "(empty file)");
     }
 
     #[test]
@@ -1620,6 +1680,125 @@ plan.md  L1/5  enter:thread/co"
         let footer = screen.lines().last().unwrap();
         assert!(footer.contains("visual 1-3  1 outdated"), "{footer}");
         assert!(footer.contains("esc:cancel"), "{footer}");
+    }
+
+    /// The last row of a `width`-column, 8-row terminal showing `app`.
+    fn footer(app: &App, width: u16) -> String {
+        screen(&draw(app, width, 8))
+            .lines()
+            .last()
+            .unwrap()
+            .to_string()
+    }
+
+    const NORMAL_FOOTER: &str = "plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select";
+
+    #[test]
+    fn a_footer_that_fits_exactly_is_drawn_unchanged() {
+        let app = app_with(lines(12), &[], 8);
+        let width = u16::try_from(NORMAL_FOOTER.len()).unwrap();
+
+        assert_eq!(footer(&app, width), NORMAL_FOOTER);
+        assert_eq!(footer(&app, W), NORMAL_FOOTER);
+    }
+
+    #[test]
+    fn a_normal_footer_too_wide_for_the_terminal_ends_in_an_ellipsis() {
+        let app = app_with(lines(12), &[], 8);
+
+        assert_eq!(footer(&app, 30), "plan.md  L1/12  enter:thread/…");
+    }
+
+    #[test]
+    fn a_visual_footer_too_wide_for_the_terminal_ends_in_an_ellipsis() {
+        let mut app = app_with(lines(12), &[], 8);
+        keys(&mut app, "vj");
+
+        assert_eq!(footer(&app, 30), "plan.md  L2/12  visual 1-2  e…");
+    }
+
+    #[test]
+    fn a_panel_footer_too_wide_for_the_terminal_ends_in_an_ellipsis() {
+        let app = panel_app(&[open_thread("c1", (1, 1), State::Current)]);
+
+        let screen = screen(&draw(&app, 30, 16));
+
+        assert_eq!(
+            screen.lines().last().unwrap(),
+            "plan.md  L1/12  tab:next a:ad…"
+        );
+    }
+
+    #[test]
+    fn a_multi_line_error_in_the_footer_is_on_one_row() {
+        let mut app = app_with(lines(12), &[], 8);
+        update(
+            &mut app,
+            Event::SaveFailed("cannot write\nx.json:\tdenied".into()),
+        );
+
+        assert!(
+            footer(&app, W).starts_with("cannot write x.json: denied  L1/12  "),
+            "{}",
+            footer(&app, W)
+        );
+    }
+
+    #[test]
+    fn a_long_error_in_the_footer_ends_in_an_ellipsis() {
+        let mut app = app_with(lines(12), &[], 8);
+        update(
+            &mut app,
+            Event::SaveFailed(
+                "cannot write /home/u/.local/share/ptal/reviews/0123abcd.json: permission denied"
+                    .into(),
+            ),
+        );
+
+        let footer = footer(&app, 40);
+
+        assert_eq!(footer, "cannot write /home/u/.local/share/ptal/…");
+    }
+
+    #[test]
+    fn a_long_author_cuts_the_box_title_with_an_ellipsis_before_the_corner() {
+        let author = "x".repeat(60);
+        let mut app = App::open(lines(3), &[], &author, (W, 8)).labeled("plan.md");
+        key(&mut app, KeyCode::Enter);
+
+        let rows = box_rows(&draw(&app, W, 8), 3);
+
+        let title = format!("Comment on line 1 as {}…", "x".repeat(46));
+        assert_eq!(rows[0], format!("┌{title}┐"));
+    }
+
+    #[test]
+    fn box_titles_too_wide_for_a_narrow_box_end_in_an_ellipsis() {
+        let app = box_with("hi", (20, 8));
+        assert_eq!(box_rows(&draw(&app, 20, 8), 3)[0], "┌Comment on line 1…┐");
+
+        let mut app = narrow(&["one", "two"], &[], (20, 8));
+        keys(&mut app, "vj");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(box_rows(&draw(&app, 20, 8), 3)[0], "┌Comment on lines …┐");
+
+        let threads = [open_thread("c1", (1, 1), State::Current)];
+        let mut app = narrow(&["one", "two"], &threads, (20, 16));
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('r'));
+        let screen = screen(&draw(&app, 20, 16));
+        assert!(screen.contains("┌Reply to c1 as sc…┐"), "{screen}");
+    }
+
+    #[test]
+    fn a_panel_title_too_wide_for_a_narrow_panel_ends_in_an_ellipsis() {
+        let threads = [open_thread("c1", (1, 1), State::Current)];
+        let mut app = narrow(&["one", "two"], &threads, (15, 16));
+        key(&mut app, KeyCode::Enter);
+
+        let screen = screen(&draw(&app, 15, 16));
+
+        assert!(screen.contains("┌Threads on l…┐"), "{screen}");
     }
 
     #[test]

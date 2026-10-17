@@ -17,7 +17,13 @@
 //! - Every cluster keeps its style (a straddling one takes the style of its
 //!   first byte): wrapping never restyles text, and a styled line wraps into
 //!   exactly the rows its plain text does.
+//!
+//! One-row text that is not wrapped (the footer, border titles and hints)
+//! is shortened by `cut` instead, by the same measure: it ends in `…` where
+//! text was cut off, and a wide cluster that would straddle the cut is
+//! dropped whole.
 
+use std::borrow::Cow;
 use std::mem;
 use std::ops::Range;
 
@@ -153,10 +159,63 @@ fn offset_in(text: &str, part: &str) -> usize {
 /// Cells `text` takes on one unbounded row, by the same measure as [`rows`]:
 /// a tab is four cells, control characters take none.
 pub(super) fn width(text: &str) -> usize {
-    Span::raw(expand_tabs(text).as_str())
-        .styled_graphemes(Style::new())
-        .map(|g| usize::from(g.symbol.cell_width()))
-        .sum()
+    let text = expand_tabs(text);
+    let mut cells = 0;
+    each_cluster(&text, |cluster| {
+        cells += usize::from(text[cluster].cell_width())
+    });
+    cells
+}
+
+/// The mark [`cut`] puts where it cut text off.
+const ELLIPSIS: &str = "…";
+
+/// `text` on one row of `room` cells, as ratatui draws it (tabs as four
+/// spaces, control characters dropped): all of it if its [`width`] fits,
+/// else its longest prefix of whole clusters that leaves room for
+/// [`ELLIPSIS`], then the ellipsis. The result is borrowed exactly when it
+/// is `text` unchanged: text with no tabs or control characters that fits. A wide cluster that would straddle the cut
+/// is dropped whole, so the result may be a cell short of `room`, never over
+/// it. With one cell the result is the ellipsis alone, which still says
+/// text was cut; with none it is empty.
+pub(super) fn cut(text: &str, room: usize) -> Cow<'_, str> {
+    // A tab is a control character too.
+    let plain = !text.contains(char::is_control);
+    let shown = if plain {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(expand_tabs(text))
+    };
+    let keep = room.checked_sub(width(ELLIPSIS));
+    // Cells drawn so far, and where the clusters that leave room for the
+    // ellipsis end in `shown`.
+    let mut used = 0;
+    let mut mark = 0;
+    for grapheme in Span::raw(shown.as_ref()).styled_graphemes(Style::new()) {
+        used += usize::from(grapheme.symbol.cell_width());
+        if used > room {
+            return match keep {
+                Some(_) => Cow::Owned(drawn(&shown[..mark]) + ELLIPSIS),
+                None => Cow::Owned(String::new()),
+            };
+        }
+        if keep.is_some_and(|keep| used <= keep) {
+            mark = offset_in(&shown, grapheme.symbol) + grapheme.symbol.len();
+        }
+    }
+    if plain {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(drawn(&shown))
+    }
+}
+
+/// The clusters of `text` (tabs already expanded) that ratatui draws,
+/// joined: `text` without its control characters.
+fn drawn(text: &str) -> String {
+    let mut drawn = String::with_capacity(text.len());
+    each_cluster(text, |cluster| drawn.push_str(&text[cluster]));
+    drawn
 }
 
 fn expand_tabs(text: &str) -> String {
@@ -307,6 +366,65 @@ mod tests {
         assert_eq!(width("a\t漢"), 7);
         assert_eq!(width("e\u{301}"), 1);
         assert_eq!(width("a\u{7}b"), 2);
+    }
+
+    #[test]
+    fn text_that_fits_is_not_cut_and_is_borrowed() {
+        assert!(matches!(cut("exactly", 7), Cow::Borrowed("exactly")));
+        assert!(matches!(cut("", 0), Cow::Borrowed("")));
+    }
+
+    #[test]
+    fn a_cut_is_the_text_as_drawn_whether_or_not_it_fits() {
+        assert_eq!(cut("a\u{7}b\tc", 10), "ab    c");
+        assert_eq!(cut("a\u{7}b\tc", 4), "ab …");
+        assert_eq!(cut("\u{7}\u{1b}", 0), "");
+    }
+
+    #[test]
+    fn text_one_cell_too_wide_ends_in_an_ellipsis_at_the_width() {
+        assert_eq!(cut("exactly!", 7), "exactl…");
+        assert_eq!(width(&cut("exactly!", 7)), 7);
+    }
+
+    #[test]
+    fn a_wide_cluster_straddling_the_cut_is_dropped_whole() {
+        assert_eq!(cut("漢字漢", 4), "漢…");
+        assert_eq!(cut("漢字漢", 3), "漢…");
+        assert_eq!(cut("漢字漢", 2), "…");
+    }
+
+    #[test]
+    fn a_combining_mark_stays_with_its_base_and_a_tab_counts_four() {
+        assert_eq!(cut("e\u{301}e\u{301}e\u{301}", 2), "e\u{301}…");
+        assert_eq!(cut("\tab", 5), "    …");
+    }
+
+    #[test]
+    fn one_cell_is_just_the_ellipsis_and_zero_cells_is_nothing() {
+        assert_eq!(cut("abc", 1), "…");
+        assert!(matches!(cut("abc", 0), Cow::Owned(empty) if empty.is_empty()));
+        assert_eq!(cut("\u{301}", 0), "\u{301}", "zero cells wide, so it fits");
+    }
+
+    #[test]
+    fn a_cut_never_overflows_and_ends_in_an_ellipsis_unless_the_text_fit() {
+        for text in CORPUS {
+            for room in 0..=60 {
+                let result = cut(text, room);
+
+                assert!(width(&result) <= room, "{text:?} into {room}: {result:?}");
+                if width(text) <= room {
+                    assert_eq!(result, displayed(text));
+                } else if room > 0 {
+                    let kept = result.strip_suffix(ELLIPSIS);
+                    assert!(
+                        kept.is_some_and(|kept| displayed(text).starts_with(kept)),
+                        "{text:?} into {room}: {result:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -351,7 +351,14 @@ Its parts:
   grapheme cluster is never split, even across two spans. Every cluster
   keeps its style (a straddling one takes its first byte's), so a styled
   line wraps into exactly the rows of its plain text. `width(text)` is the
-  same measure on one unbounded row.
+  same measure on one unbounded row. `cut(text, room)` is the only place
+  one-row text is cut to fit. It returns the text as drawn (tabs as four
+  spaces, control characters dropped): all of it if its `width` fits, else
+  the longest prefix of whole clusters that leaves a cell for `…`, then `…`,
+  so a wide cluster that would straddle the cut is dropped whole and the
+  result is never wider than `room`. One cell is `…` alone; zero cells is
+  empty. The result is borrowed exactly when it is the text unchanged, so a
+  caller holding an owned copy can keep it.
 - `tui::table`: `align(lines, width) -> Vec<Option<Vec<String>>>`, pure, the
   only place tables are parsed: one entry per file line, that line's screen
   rows if it belongs to a well-formed table that lays out in `width`, else
@@ -382,13 +389,17 @@ Its parts:
   `bg` shows under markdown styling; styling sets no backgrounds and never
   touches the gutter, and `DIM` is dropped on highlighted rows, where faint
   text on the cursor background is hard to read.
-  Footer: path (or the last save message),
+  Footer: path (or the last save message, on one row as on the comment
+  box's border),
   `L<line>/<total>`, `visual <a>-<b>` in `Visual` (1-based, ascending),
-  `N outdated` (open threads only), key hints. The input box is titled
+  `N outdated` (open threads only), key hints, the whole row `wrap::cut` to
+  the terminal width, so a footer too wide ends in `…`. The input box is titled
   `Comment on line N as <author>`, `Comment on lines A-B as <author>` for a
   range, or `Reply to <id> as <author>`. In `Panel`
-  a bordered box of half the terminal (at least 4 rows) sits above the
-  footer and the view shrinks to stay above it. In `Input` the bordered box
+  a bordered box of half the terminal (at least 4 rows), titled
+  `Threads on line N`, sits above the footer and the view shrinks to stay
+  above it. A title too wide for its box is `wrap::cut` to end in `…`
+  before the corner. In `Input` the bordered box
   replaces the footer (and hides the panel it came from), as tall as
   `App` says; it draws the draft's `rows(draft_width())` from its `scroll`,
   so text wraps inside the border exactly as `update` counts it, the cursor
@@ -398,10 +409,11 @@ Its parts:
   other key:keep it` (`esc:discard other:keep`, then `esc:discard?`, when
   that does not fit; widths in cells), or, after a failed save, the error
   message (`status`, red and bold, each run of whitespace and control
-  characters drawn as one space, clipped at the inner width with a wide
-  character that would cross the corner left out; one that is left with
-  no text keeps the hint) until the next key clears it. `status` wins over
-  the discard prompt, which wins over the hint.
+  characters drawn as one space; one that is left with no text keeps the
+  hint) until the next key clears it. `status` wins over the discard
+  prompt, which wins over the hint. Border text (error or hint) that does
+  not fit between the corners is `wrap::cut`, so it ends in `…` and a wide
+  character that would cross the corner is left out whole.
 - `tui` (module root): the driver. `load` reads lines (`review::file_lines`)
   and all threads; `Loaded::into_app` highlights the file only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
