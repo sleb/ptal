@@ -129,7 +129,7 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
         return;
     }
     let mut parts = vec![match app.status() {
-        Some(status) => status.to_string(),
+        Some(status) => one_line(status),
         None => app.file().to_string(),
     }];
     let position = if app.lines().is_empty() {
@@ -190,7 +190,13 @@ fn draw_panel(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
 /// A box `width` cells wide's top-border `title`, [`wrap::cut`] to fit
 /// between the corners.
 fn fit_title(title: &str, width: u16) -> Cow<'_, str> {
-    wrap::cut(title, usize::from(width.saturating_sub(2)))
+    wrap::cut(title, border_room(width))
+}
+
+/// The cells between the corners of a box `width` cells wide: the room for
+/// its border titles, top and bottom.
+fn border_room(width: u16) -> usize {
+    usize::from(width.saturating_sub(2))
 }
 
 /// The key hint on the comment box's bottom border.
@@ -212,11 +218,17 @@ const DISCARD_HINT_TINY: &str = "esc:discard?";
 /// one row by [`one_line`]. Whatever is chosen is [`wrap::cut`] to fit
 /// between the corners, so text that does not fit ends in `…`.
 fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'static, str>, Style) {
-    let room = usize::from(width.saturating_sub(2));
+    let room = border_room(width);
     let error = app.status().map(one_line).filter(|error| !error.is_empty());
     if let Some(error) = error {
+        // `one_line` leaves no tabs or control characters, so an error that
+        // fits comes back borrowed and is kept as is.
+        let cut = match wrap::cut(&error, room) {
+            Cow::Owned(cut) => Some(cut),
+            Cow::Borrowed(_) => None,
+        };
         return (
-            Cow::Owned(wrap::cut(&error, room).into_owned()),
+            Cow::Owned(cut.unwrap_or(error)),
             Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
         );
     }
@@ -1704,6 +1716,21 @@ plan.md  L1/5  enter:thread/c…"
         assert_eq!(
             screen.lines().last().unwrap(),
             "plan.md  L1/12  tab:next a:ad…"
+        );
+    }
+
+    #[test]
+    fn a_multi_line_error_in_the_footer_is_on_one_row() {
+        let mut app = app_with(lines(12), &[], 8);
+        update(
+            &mut app,
+            Event::SaveFailed("cannot write\nx.json:\tdenied".into()),
+        );
+
+        assert!(
+            footer(&app, W).starts_with("cannot write x.json: denied  L1/12  "),
+            "{}",
+            footer(&app, W)
         );
     }
 

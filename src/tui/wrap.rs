@@ -170,35 +170,52 @@ pub(super) fn width(text: &str) -> usize {
 /// The mark [`cut`] puts where it cut text off.
 const ELLIPSIS: &str = "…";
 
-/// `text` on one row of `room` cells: unchanged (and borrowed) if its
-/// [`width`] fits, else its longest prefix of whole clusters that leaves
-/// room for [`ELLIPSIS`], then the ellipsis. A wide cluster that would
-/// straddle the cut is dropped whole, so the result may be a cell short of
-/// `room`, never over it. With one cell the result is the ellipsis alone,
-/// which still says text was cut; with none it is empty. Tabs in a cut
-/// result are expanded to four spaces, as [`width`] counts them.
+/// `text` on one row of `room` cells, as ratatui draws it (tabs as four
+/// spaces, control characters dropped): all of it if its [`width`] fits,
+/// else its longest prefix of whole clusters that leaves room for
+/// [`ELLIPSIS`], then the ellipsis. Text with no tabs or control characters
+/// that fits comes back borrowed. A wide cluster that would straddle the cut
+/// is dropped whole, so the result may be a cell short of `room`, never over
+/// it. With one cell the result is the ellipsis alone, which still says
+/// text was cut; with none it is empty.
 pub(super) fn cut(text: &str, room: usize) -> Cow<'_, str> {
-    if width(text) <= room {
-        return Cow::Borrowed(text);
-    }
-    let Some(room) = room.checked_sub(width(ELLIPSIS)) else {
-        return Cow::Borrowed("");
+    // A tab is a control character too.
+    let plain = !text.contains(char::is_control);
+    let shown = if plain {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(expand_tabs(text))
     };
-    let text = expand_tabs(text);
-    let mut kept = String::new();
+    let keep = room.checked_sub(width(ELLIPSIS));
+    // Cells drawn so far, and where the clusters that leave room for the
+    // ellipsis end in `shown`.
     let mut used = 0;
-    let mut full = false;
-    each_cluster(&text, |cluster| {
-        let symbol = &text[cluster];
-        let cells = usize::from(symbol.cell_width());
-        full |= used + cells > room;
-        if !full {
-            kept.push_str(symbol);
-            used += cells;
+    let mut mark = 0;
+    for grapheme in Span::raw(shown.as_ref()).styled_graphemes(Style::new()) {
+        used += usize::from(grapheme.symbol.cell_width());
+        if used > room {
+            return match keep {
+                Some(_) => Cow::Owned(drawn(&shown[..mark]) + ELLIPSIS),
+                None => Cow::Borrowed(""),
+            };
         }
-    });
-    kept.push_str(ELLIPSIS);
-    Cow::Owned(kept)
+        if keep.is_some_and(|keep| used <= keep) {
+            mark = offset_in(&shown, grapheme.symbol) + grapheme.symbol.len();
+        }
+    }
+    if plain {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(drawn(&shown))
+    }
+}
+
+/// The clusters of `text` (tabs already expanded) that ratatui draws,
+/// joined: `text` without its control characters.
+fn drawn(text: &str) -> String {
+    let mut drawn = String::with_capacity(text.len());
+    each_cluster(text, |cluster| drawn.push_str(&text[cluster]));
+    drawn
 }
 
 fn expand_tabs(text: &str) -> String {
@@ -355,7 +372,13 @@ mod tests {
     fn text_that_fits_is_not_cut_and_is_borrowed() {
         assert!(matches!(cut("exactly", 7), Cow::Borrowed("exactly")));
         assert!(matches!(cut("", 0), Cow::Borrowed("")));
-        assert!(matches!(cut("\u{7}\u{1b}", 0), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn a_cut_is_the_text_as_drawn_whether_or_not_it_fits() {
+        assert_eq!(cut("a\u{7}b\tc", 10), "ab    c");
+        assert_eq!(cut("a\u{7}b\tc", 4), "ab …");
+        assert_eq!(cut("\u{7}\u{1b}", 0), "");
     }
 
     #[test]
@@ -381,6 +404,7 @@ mod tests {
     fn one_cell_is_just_the_ellipsis_and_zero_cells_is_nothing() {
         assert_eq!(cut("abc", 1), "…");
         assert_eq!(cut("abc", 0), "");
+        assert_eq!(cut("\u{301}", 0), "\u{301}", "zero cells wide, so it fits");
     }
 
     #[test]
@@ -391,9 +415,13 @@ mod tests {
 
                 assert!(width(&result) <= room, "{text:?} into {room}: {result:?}");
                 if width(text) <= room {
-                    assert_eq!(result, *text);
+                    assert_eq!(result, displayed(text));
                 } else if room > 0 {
-                    assert!(result.ends_with(ELLIPSIS), "{text:?} into {room}");
+                    let kept = result.strip_suffix(ELLIPSIS);
+                    assert!(
+                        kept.is_some_and(|kept| displayed(text).starts_with(kept)),
+                        "{text:?} into {room}: {result:?}"
+                    );
                 }
             }
         }
