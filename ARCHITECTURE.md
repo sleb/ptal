@@ -380,9 +380,12 @@ Its parts:
   `Comment on line N as <author>`, `Comment on lines A-B as <author>` for a
   range, or `Reply to <id> as <author>`. In `Panel`
   a bordered box of half the terminal (at least 4 rows) sits above the
-  footer and the view shrinks to stay above it. In `Input` the bordered 3-row
-  box replaces the footer (and hides the panel it came from); the draft
-  scrolls sideways instead of wrapping, and the cursor is a reversed cell.
+  footer and the view shrinks to stay above it. In `Input` the bordered box
+  replaces the footer (and hides the panel it came from), as tall as
+  `App` says; it draws the draft's `rows(draft_width())` from its `scroll`,
+  so text wraps inside the border exactly as `update` counts it, the cursor
+  is a reversed cell at `cursor_at`, and the bottom border reads
+  `ctrl+s:save enter:newline esc:cancel`.
 - `tui` (module root): the driver. `load` reads lines (`review::file_lines`)
   and all threads; `Loaded::into_app` highlights the file only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
