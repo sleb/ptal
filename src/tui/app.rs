@@ -820,6 +820,9 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     None
 }
 
+/// A key in the comment box: `ctrl+s` saves a draft that is not blank (as
+/// typed, newlines kept), `enter` starts a new line, `esc` or `ctrl+c`
+/// returns to where the box came from, and the rest edit the draft.
 fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let Mode::Input {
         draft,
@@ -834,8 +837,8 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     match key.code {
         KeyCode::Char('c') if ctrl => app.mode = back,
         KeyCode::Esc => app.mode = back,
-        KeyCode::Enter if draft.text().trim().is_empty() => {}
-        KeyCode::Enter => {
+        KeyCode::Char('s') if ctrl && draft.text().trim().is_empty() => {}
+        KeyCode::Char('s') if ctrl => {
             let body = draft.text().to_owned();
             return Some(match reply_to {
                 Some(id) => Effect::Reply {
@@ -854,6 +857,7 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             });
         }
         KeyCode::Char(c) if !ctrl => draft.insert(c),
+        KeyCode::Enter => draft.newline(),
         KeyCode::Backspace => draft.backspace(),
         KeyCode::Delete => draft.delete(),
         KeyCode::Left => draft.left(),
@@ -1375,7 +1379,7 @@ mod tests {
         typed(&mut a, "why?");
 
         assert_eq!(
-            update(&mut a, press(KeyCode::Enter)),
+            update(&mut a, ctrl('s')),
             Some(Effect::Add {
                 start: 3,
                 end: 3,
@@ -1407,7 +1411,7 @@ mod tests {
         typed(&mut a, "why?");
 
         assert_eq!(
-            update(&mut a, press(KeyCode::Enter)),
+            update(&mut a, ctrl('s')),
             Some(Effect::Add {
                 start: 4,
                 end: 4,
@@ -1626,21 +1630,21 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_a_blank_draft_stays_in_input_with_no_effect() {
+    fn ctrl_s_on_a_blank_draft_stays_in_input_with_no_effect() {
         let mut a = input_app();
         typed(&mut a, "  ");
 
-        assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
+        assert_eq!(update(&mut a, ctrl('s')), None);
 
         assert_eq!(draft(&a), ("  ", 2));
     }
 
     #[test]
-    fn enter_with_text_asks_to_save_on_a_one_based_line_and_waits() {
+    fn ctrl_s_with_text_asks_to_save_on_a_one_based_line_and_waits() {
         let mut a = input_app();
         typed(&mut a, "why?");
 
-        let effect = update(&mut a, press(KeyCode::Enter));
+        let effect = update(&mut a, ctrl('s'));
 
         assert_eq!(
             effect,
@@ -1657,7 +1661,7 @@ mod tests {
     fn saved_returns_to_normal_and_says_what_was_added() {
         let mut a = input_app();
         typed(&mut a, "why?");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
 
         update(
             &mut a,
@@ -1678,7 +1682,7 @@ mod tests {
     fn save_failure_keeps_the_draft_and_shows_the_message() {
         let mut a = input_app();
         typed(&mut a, "why?");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
 
         update(&mut a, Event::SaveFailed("review is locked".into()));
 
@@ -1717,6 +1721,77 @@ mod tests {
         send(&mut a, [ctrl('d'), ctrl('u')]);
 
         assert_eq!(draft(&a), ("", 0));
+    }
+
+    #[test]
+    fn enter_starts_a_new_line_and_asks_for_nothing() {
+        let mut a = input_app();
+        typed(&mut a, "a");
+
+        assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
+        typed(&mut a, "b");
+
+        assert_eq!(draft(&a), ("a\nb", 3));
+    }
+
+    #[test]
+    fn ctrl_s_saves_every_line_as_typed() {
+        let lines = [ch('a'), press(KeyCode::Enter), ch('b')];
+        let mut one = input_app();
+        let mut range = visual_at(10, 12, 3);
+        send(&mut range, [ch('j'), press(KeyCode::Enter)]);
+        let mut reply = two_threads_panel();
+        send(&mut reply, [ch('r')]);
+        for a in [&mut one, &mut range, &mut reply] {
+            send(a, lines.clone());
+        }
+
+        let body = || "a\nb".to_string();
+        assert_eq!(
+            update(&mut one, ctrl('s')),
+            Some(Effect::Add {
+                start: 3,
+                end: 3,
+                body: body()
+            })
+        );
+        assert_eq!(
+            update(&mut range, ctrl('s')),
+            Some(Effect::Add {
+                start: 4,
+                end: 5,
+                body: body()
+            })
+        );
+        assert_eq!(
+            update(&mut reply, ctrl('s')),
+            Some(Effect::Reply {
+                id: "c2".into(),
+                body: body()
+            })
+        );
+    }
+
+    #[test]
+    fn ctrl_s_on_only_newlines_and_spaces_does_nothing() {
+        let mut a = input_app();
+        send(
+            &mut a,
+            [press(KeyCode::Enter), ch(' '), press(KeyCode::Enter)],
+        );
+
+        assert_eq!(update(&mut a, ctrl('s')), None);
+        assert_eq!(draft(&a), ("\n \n", 3));
+    }
+
+    #[test]
+    fn backspace_at_the_start_of_a_line_joins_it_to_the_one_above() {
+        let mut a = input_app();
+        send(&mut a, [ch('a'), press(KeyCode::Enter), ch('b')]);
+
+        send(&mut a, [press(KeyCode::Left), press(KeyCode::Backspace)]);
+
+        assert_eq!(draft(&a), ("ab", 1));
     }
 
     // --- markers ---
@@ -1908,7 +1983,7 @@ mod tests {
         let mut a = app(5, 10);
         send(&mut a, [press(KeyCode::Enter)]);
         typed(&mut a, "x");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
         let threads = vec![
             view("c1", (4, 5), Status::Open, State::Current),
             view("c2", (1, 1), Status::Open, State::Outdated),
@@ -2242,11 +2317,11 @@ mod tests {
     }
 
     #[test]
-    fn enter_in_a_panel_input_saves_on_the_cursor_line() {
+    fn ctrl_s_in_a_panel_input_saves_on_the_cursor_line() {
         let mut a = in_panel_input();
         typed(&mut a, "new");
 
-        let effect = update(&mut a, press(KeyCode::Enter));
+        let effect = update(&mut a, ctrl('s'));
 
         assert_eq!(
             effect,
@@ -2262,7 +2337,7 @@ mod tests {
     fn saved_returns_to_the_panel_with_the_new_thread_selected() {
         let mut a = in_panel_input();
         typed(&mut a, "new");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
         let threads = vec![
             chatty("c1", (2, 2), 5),
             said_by(view("c9", (2, 2), Status::Open, State::Current), &["scott"]),
@@ -2311,7 +2386,7 @@ mod tests {
     fn a_failed_save_keeps_the_panel_input_and_its_draft() {
         let mut a = in_panel_input();
         typed(&mut a, "x");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
 
         update(&mut a, Event::SaveFailed("locked".into()));
 
@@ -2330,7 +2405,7 @@ mod tests {
         let mut a = in_panel_input();
         typed(&mut a, "  ");
 
-        assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
+        assert_eq!(update(&mut a, ctrl('s')), None);
         assert_eq!(draft(&a), ("  ", 2));
     }
 
@@ -2400,12 +2475,12 @@ mod tests {
     }
 
     #[test]
-    fn enter_in_a_reply_asks_to_reply_to_that_thread_not_to_add() {
+    fn ctrl_s_in_a_reply_asks_to_reply_to_that_thread_not_to_add() {
         let mut a = two_threads_panel();
         send(&mut a, [ch('r')]);
         typed(&mut a, "ok");
 
-        let effect = update(&mut a, press(KeyCode::Enter));
+        let effect = update(&mut a, ctrl('s'));
 
         assert_eq!(
             effect,
@@ -2424,7 +2499,7 @@ mod tests {
             let before = panel(&a);
             send(&mut a, [ch('r')]);
             typed(&mut a, "  ");
-            assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
+            assert_eq!(update(&mut a, ctrl('s')), None);
             assert_eq!(draft(&a), ("  ", 2));
 
             update(&mut a, cancel);
@@ -2438,7 +2513,7 @@ mod tests {
         let mut a = two_threads_panel();
         send(&mut a, [ch('r')]);
         typed(&mut a, "ok");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
         let threads = vec![
             chatty("c1", (2, 2), 1),
             said_by(
@@ -2465,7 +2540,7 @@ mod tests {
         let mut a = two_threads_panel();
         send(&mut a, [ch('r')]);
         typed(&mut a, "ok");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
 
         update(&mut a, Event::SaveFailed("locked".into()));
 
@@ -2716,7 +2791,7 @@ mod tests {
             typed(&mut a, "why?");
 
             assert_eq!(
-                update(&mut a, press(KeyCode::Enter)),
+                update(&mut a, ctrl('s')),
                 Some(Effect::Add {
                     start,
                     end,
@@ -2762,7 +2837,7 @@ mod tests {
         let mut a = visual_at(10, 12, 3);
         send(&mut a, [ch('j'), press(KeyCode::Enter)]);
         typed(&mut a, "x");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
         let threads = vec![chatty("c4", (4, 5), 1)];
 
         update(
@@ -2783,7 +2858,7 @@ mod tests {
         let mut a = visual_at(10, 12, 3);
         send(&mut a, [ch('j'), press(KeyCode::Enter)]);
         typed(&mut a, "x");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
 
         update(&mut a, Event::SaveFailed("locked".into()));
 

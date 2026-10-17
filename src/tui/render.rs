@@ -221,7 +221,7 @@ fn draw_input(
         } else {
             Style::new()
         };
-        let symbol = shown.next().unwrap_or(' ');
+        let symbol = shown.next().filter(|&c| c != '\n').unwrap_or(' ');
         buf[(x, inner.y)].set_char(symbol).set_style(style);
     }
 }
@@ -735,6 +735,19 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
         assert!(reversed(&mid, 2), "on `b`");
         assert!(!reversed(&mid, 4));
         assert_eq!(mid.backend().buffer()[(2, 6)].symbol(), "b");
+    }
+
+    #[test]
+    fn a_newline_in_the_draft_draws_as_a_blank_cell() {
+        let mut app = app_with(lines(3), &[], 8);
+        key(&mut app, KeyCode::Enter);
+        type_text(&mut app, "a");
+        key(&mut app, KeyCode::Enter);
+        type_text(&mut app, "b");
+
+        let screen = screen(&draw(&app, W, 8));
+
+        assert!(screen.contains("│a b"), "{screen}");
     }
 
     #[test]

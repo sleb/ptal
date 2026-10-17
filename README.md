@@ -48,15 +48,15 @@ ptal plan.md            # open the TUI
 | `j` / `k` (or `↓` / `↑`) | Down / up |
 | `ctrl+d` / `ctrl+u` (or `PgDn` / `PgUp`) | Half page down / up |
 | `g` / `G` (or `Home` / `End`) | Top / bottom |
-| `enter` | On a threaded line: open the thread panel. Otherwise comment on the line; `enter` saves, `esc` cancels |
+| `enter` | On a threaded line: open the thread panel. Otherwise comment on the line; `ctrl+s` saves, `enter` starts a new line, `esc` cancels |
 | `]` / `[` | Next / previous threaded line |
 | `v` (or `V`) | Select lines from the cursor; the movement keys and `]` / `[` extend the selection either way |
-| `enter` | In a selection: comment on the selected lines; `enter` saves, `esc` returns to the selection |
+| `enter` | In a selection: comment on the selected lines; `ctrl+s` saves, `esc` returns to the selection |
 | `esc` (or `q`, `ctrl+c`, `v`, `V`) | In a selection: leave it without commenting (does not quit) |
 | `tab` / `shift+tab` | In the panel: next / previous thread on the line |
 | `j` / `k` | In the panel: scroll |
 | `a` | In the panel: add a thread on this line |
-| `r` | In the panel: reply to the selected thread; `enter` saves, `esc` cancels |
+| `r` | In the panel: reply to the selected thread; `ctrl+s` saves, `esc` cancels |
 | `x` / `o` | In the panel: resolve / reopen the selected thread (no note) |
 | `esc` (or `q`, `ctrl+c`) | In the panel: close it |
 | `q` (or `ctrl+c`) | Quit |

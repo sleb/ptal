@@ -46,6 +46,12 @@ impl Draft {
         }
     }
 
+    /// Start a new line at the cursor.
+    pub fn newline(&mut self) {
+        self.text.insert(self.cursor, '\n');
+        self.cursor += 1;
+    }
+
     /// Move back over one cluster; a no-op at the start.
     pub fn left(&mut self) {
         if let Some(before) = self.before() {

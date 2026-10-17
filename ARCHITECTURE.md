@@ -274,7 +274,9 @@ Its parts:
   two in `Visual` and in a box opened from it (the range stays fixed while
   typing), else the cursor line alone. `enter` in `Visual` always opens a
   box for a new thread on the selection, never the panel; a save from it
-  goes to Normal. A thread covers its stored
+  goes to Normal. In `Input`, `enter` inserts a newline and `ctrl+s`
+  saves the draft exactly as typed (one that is only whitespace and newlines
+  saves nothing); `esc` or `ctrl+c` returns to `back`. A thread covers its stored
   range whatever its `state`; `Marker = Waiting | Open | Resolved` is derived
   per line (waiting > open > resolved). Waiting means open and last comment
   not by `author`. The panel's thread set is recomputed from the threads and
