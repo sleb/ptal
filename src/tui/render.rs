@@ -68,13 +68,9 @@ fn draw_file(app: &App, buf: &mut Buffer, area: Rect) {
         return;
     }
     if app.lines().is_empty() {
-        buf.set_stringn(
-            area.x,
-            area.y,
-            "(empty file)",
-            usize::from(area.width),
-            Style::new(),
-        );
+        let width = usize::from(area.width);
+        let empty = wrap::cut("(empty file)", width);
+        buf.set_stringn(area.x, area.y, empty, width, Style::new());
         return;
     }
     let digits = app.digits();
@@ -1412,6 +1408,7 @@ plan.md  L1/5  enter:thread/c…"
                 key(&mut app, KeyCode::Char('a'));
                 type_text(&mut app, "hello");
                 draw(&app, width, rows);
+                draw(&app_with(Vec::new(), &[], rows), width, rows);
             }
         }
     }
@@ -1426,6 +1423,22 @@ plan.md  L1/5  enter:thread/c…"
             screen,
             "(empty file)\n\n\nplan.md  L0/0  enter:thread/comment ]/[:jump q:quit v:select"
         );
+    }
+
+    #[test]
+    fn an_empty_file_in_a_narrow_view_says_so_with_an_ellipsis() {
+        let app = app_with(Vec::new(), &[], 4);
+
+        let first = |width| {
+            screen(&draw(&app, width, 4))
+                .lines()
+                .next()
+                .unwrap()
+                .to_string()
+        };
+
+        assert_eq!(first(6), "(empt…");
+        assert_eq!(first(12), "(empty file)");
     }
 
     #[test]
