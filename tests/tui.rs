@@ -46,6 +46,21 @@ fn sandbox_named(name: &str, content: &str) -> Sandbox {
 }
 
 impl Sandbox {
+    /// [`Sandbox::press`] `before`, then type `text`, then `after`.
+    fn press_typing(
+        &self,
+        app: &mut App,
+        before: &[&str],
+        text: &str,
+        after: &[&str],
+    ) -> ControlFlow<()> {
+        let typed = typing(text);
+        let mut keys: Vec<&str> = before.to_vec();
+        keys.extend(typed.iter().map(String::as_str));
+        keys.extend(after);
+        self.press(app, &keys)
+    }
+
     fn open(&self) -> App {
         self.open_with(true)
     }
@@ -75,10 +90,27 @@ fn key(name: &str) -> KeyEvent {
         "enter" => KeyCode::Enter,
         "esc" => KeyCode::Esc,
         "tab" => KeyCode::Tab,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "backspace" => KeyCode::Backspace,
         n if n.chars().count() == 1 => KeyCode::Char(n.chars().next().unwrap()),
         n => panic!("unknown key {n}"),
     };
     KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+/// The keys that type `text` into a comment box, each `\n` as `enter`.
+fn typing(text: &str) -> Vec<String> {
+    text.chars()
+        .map(|c| match c {
+            '\n' => "enter".to_string(),
+            c => c.to_string(),
+        })
+        .collect()
 }
 
 fn drawn(app: &App) -> Buffer {
@@ -714,4 +746,86 @@ fn a_range_overlapping_a_thread_adds_a_second_one_and_both_mark_the_shared_line(
     assert_eq!(app.threads_on(2).len(), 2, "line 3 carries both");
     let marked: Vec<bool> = (0..5).map(|i| app.marker(i).is_some()).collect();
     assert_eq!(marked, [false, true, true, true, false]);
+}
+
+#[test]
+fn a_comment_of_two_paragraphs_reads_back_the_same_in_the_cli_and_the_panel() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let body = "First para.\n\nSecond para.";
+
+    let flow = sb.press_typing(&mut app, &["j", "j", "enter"], body, &["ctrl+s"]);
+
+    assert_eq!(flow, ControlFlow::Continue(()));
+    assert_eq!(cli_comments(&sb)["threads"][0]["comments"][0]["body"], body);
+    let mut reopened = sb.open();
+    let _ = sb.press(&mut reopened, &["j", "j", "enter"]);
+    let panel = screen(&reopened);
+    let rows: Vec<&str> = panel.lines().collect();
+    let first = rows
+        .iter()
+        .position(|row| row.contains("First para."))
+        .unwrap_or_else(|| panic!("{panel}"));
+    assert_eq!(rows[first + 1].replace(['│', ' '], ""), "", "{panel}");
+    assert!(rows[first + 2].contains("Second para."), "{panel}");
+}
+
+#[test]
+fn a_multi_line_reply_lands_last_with_its_newline() {
+    let sb = sandbox(PLAN);
+    sb.reviews
+        .add_thread(&sb.file, 3, 3, "rename?", "claude")
+        .unwrap();
+    let mut app = sb.open();
+
+    let _ = sb.press_typing(
+        &mut app,
+        &["j", "j", "enter", "r"],
+        "Done.\nSee c2.",
+        &["ctrl+s"],
+    );
+
+    let json = cli_comments(&sb);
+    let comments = json["threads"][0]["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 2);
+    assert_eq!(comments[1]["body"], "Done.\nSee c2.");
+}
+
+#[test]
+fn a_word_inserted_mid_draft_lands_on_its_line() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+
+    let _ = sb.press_typing(
+        &mut app,
+        &["enter"],
+        "one\ntwo\nthree",
+        &["up", "home", "n", "e", "w", " ", "ctrl+s"],
+    );
+
+    let json = cli_comments(&sb);
+    assert_eq!(
+        json["threads"][0]["comments"][0]["body"],
+        "one\nnew two\nthree"
+    );
+}
+
+#[test]
+fn a_failed_save_keeps_the_whole_multi_line_draft() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let text = "first line\n\nthird line";
+    let _ = sb.press_typing(&mut app, &["G", "enter"], text, &[]);
+    fs::write(&sb.file, "one\ntwo\n").unwrap();
+
+    let flow = sb.press(&mut app, &["ctrl+s"]);
+
+    assert_eq!(flow, ControlFlow::Continue(()));
+    assert!(
+        matches!(app.mode(), Mode::Input { draft, .. } if draft.text() == text),
+        "{:?}",
+        app.mode()
+    );
+    assert!(app.status().unwrap().contains("invalid line range"));
+    assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
 }
