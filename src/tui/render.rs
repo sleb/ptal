@@ -201,15 +201,16 @@ const DISCARD_HINT_TINY: &str = "esc:discard?";
 
 /// The text on the comment box's bottom border and its style, for a box
 /// `width` cells wide. A pending [`App::status`] (a failed save's error) wins,
-/// red and bold; then the discard prompt while `discard_asked`; else the key
-/// hint. Hints pick the longest form that fits inside the corners, falling
+/// red and bold, unless [`one_line`] leaves it empty; then the discard prompt
+/// while `discard_asked`; else the key hint. Hints pick the longest form that fits inside the corners, falling
 /// back to the shortest. The error is put on one row by [`one_line`] and
 /// clipped by the border, a wide character that would straddle the corner
 /// left out whole.
 fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'_, str>, Style) {
-    if let Some(status) = app.status() {
+    let error = app.status().map(one_line).filter(|error| !error.is_empty());
+    if let Some(error) = error {
         return (
-            Cow::Owned(one_line(status)),
+            Cow::Owned(error),
             Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
         );
     }
@@ -1158,6 +1159,20 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
 
         assert!(
             rows[2].starts_with("└failed: caused by: denied─"),
+            "{}",
+            rows[2]
+        );
+    }
+
+    #[test]
+    fn an_error_with_no_text_leaves_the_hint_on_the_border() {
+        let mut app = box_with("hi", (W, 8));
+        update(&mut app, Event::SaveFailed(" \n\t".into()));
+
+        let rows = box_rows(&draw(&app, W, 8), 3);
+
+        assert!(
+            rows[2].starts_with(&format!("└{INPUT_HINT}─")),
             "{}",
             rows[2]
         );
