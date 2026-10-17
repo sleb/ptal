@@ -78,7 +78,8 @@ new line and `ctrl+s` saves (leading and trailing blank lines are dropped). With
 the box, `esc` asks first; a second `esc` discards the draft and any other
 key keeps it. Text wraps inside the box, which grows with it
 up to 10 rows (and never past half the terminal), then scrolls to follow the
-cursor.
+cursor. If a save fails, the box stays open with your draft and shows the
+error on its bottom border.
 
 Comments are written as `$USER`. The gutter marks lines inside a thread: `●`
 open, `◆` open and waiting on you (its last comment is not yours), `○`

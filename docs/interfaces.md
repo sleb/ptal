@@ -41,7 +41,7 @@ acceptance criteria and link here instead of restating commands.
 |---|---|---|
 | Author | `--as <name>` or `PTAL_AUTHOR`; never invented | `$USER` |
 | Output | JSON when stdout is not a TTY or with `--json`; readable on a TTY | Rendered screen |
-| Errors | `{"error": {"code", "message"}}` on stderr when not a TTY or with `--json`; exit codes below | A failed write shows its message in the footer and keeps the draft; startup failures print as the CLI does, before the screen is taken over |
+| Errors | `{"error": {"code", "message"}}` on stderr when not a TTY or with `--json`; exit codes below | A failed write shows its message in the footer (on the comment box's bottom border while writing) and keeps the draft; startup failures print as the CLI does, before the screen is taken over |
 | Seeing the other side's writes | Every call reads from disk | Re-reads after its own writes; reopen to see the agent's |
 | Reviewed file | Read-only | Read-only |
 | Markdown highlighting | n/a (raw text) | `.md`, `.markdown` and `.mdx` files show headings, emphasis, code, lists, quotes and links highlighted; off when `NO_COLOR` is set and non-empty. No key toggles it |

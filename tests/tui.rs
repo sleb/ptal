@@ -230,6 +230,29 @@ fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
         app.mode()
     );
     assert!(app.status().unwrap().contains("invalid line range"));
+    let rendered = screen(&app);
+    assert!(rendered.contains("└invalid line range"), "{rendered}");
+    assert!(rendered.contains("│ok"), "{rendered}");
+    assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
+}
+
+#[test]
+fn a_failed_range_save_shows_the_error_under_the_range_title() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let _ = sb.press(&mut app, &["j", "j", "v", "j", "enter", "o", "k"]);
+    fs::write(&sb.file, "one\ntwo\n").unwrap();
+
+    let flow = sb.press(&mut app, &["ctrl+s"]);
+
+    assert_eq!(flow, ControlFlow::Continue(()));
+    let rendered = screen(&app);
+    assert!(
+        rendered.contains("┌Comment on lines 3-4 as scott"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("│ok"), "{rendered}");
+    assert!(rendered.contains("└invalid line range"), "{rendered}");
     assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
 }
 
@@ -481,6 +504,20 @@ fn a_failed_reply_keeps_the_draft_and_shows_the_error() {
     );
     let status = app.status().unwrap();
     assert!(status.to_lowercase().contains("permission"), "{status}");
+    // The message is on the box's bottom border, cut at the inner width: a
+    // long store path may push its tail past the corner. The OS message is
+    // one ASCII row, so a char is a cell.
+    let rendered = screen(&app);
+    assert!(rendered.contains("┌Reply to c1 as scott"), "{rendered}");
+    assert!(rendered.contains("│ok"), "{rendered}");
+    let inner = usize::from(COLS - 2);
+    let shown: String = status.chars().take(inner).collect();
+    let dashes = "─".repeat(inner - shown.chars().count());
+    let border = format!("└{shown}{dashes}┘");
+    assert!(
+        rendered.lines().any(|row| row == border),
+        "{border}\n{rendered}"
+    );
     assert_eq!(
         cli_comments(&sb)["threads"][0]["comments"]
             .as_array()

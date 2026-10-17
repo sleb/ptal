@@ -396,7 +396,12 @@ Its parts:
   `ctrl+s:save enter:newline esc:cancel` (`ctrl+s:save esc:cancel` when
   that does not fit), or, while `discard_asked`, `esc:discard the draft  any
   other key:keep it` (`esc:discard other:keep`, then `esc:discard?`, when
-  that does not fit; widths in cells).
+  that does not fit; widths in cells), or, after a failed save, the error
+  message (`status`, red and bold, each run of whitespace and control
+  characters drawn as one space, clipped at the inner width with a wide
+  character that would cross the corner left out; one that is left with
+  no text keeps the hint) until the next key clears it. `status` wins over
+  the discard prompt, which wins over the hint.
 - `tui` (module root): the driver. `load` reads lines (`review::file_lines`)
   and all threads; `Loaded::into_app` highlights the file only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
@@ -423,8 +428,9 @@ Its parts:
 - In `Input`, after every event (resizes included) the draft's `scroll`
   shows its cursor row among the box's rows and leaves no blank rows below
   the text, so the box follows the cursor as it grows, scrolls and rewraps.
-- A failed write keeps the draft and mode and shows the error; nothing is lost
-  silently.
+- A failed write keeps the draft and mode and shows the error (in `Input`,
+  on the comment box's bottom border in place of the key hint; elsewhere in
+  the footer); nothing is lost silently.
 - The terminal is restored on every exit path: `TerminalSession` restores on
   drop (normal return, `?`, unwinding), and a chained panic hook restores
   before the panic message prints. `SIGTERM`/`SIGHUP` skip both and are not
