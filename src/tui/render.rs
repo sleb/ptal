@@ -4,6 +4,7 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Widget};
 
 use super::app::{App, Marker, Mode, ScreenRow};
@@ -54,20 +55,8 @@ pub fn render(app: &App, frame: &mut Frame) {
             reply_to,
             ..
         } => {
-            let hints: &[&str] = if *discard_asked {
-                &[DISCARD_HINT, DISCARD_HINT_SHORT, DISCARD_HINT_TINY]
-            } else {
-                &[INPUT_HINT, INPUT_HINT_SHORT]
-            };
-            // The longest hint that fits inside the corners, else the shortest.
-            let room = usize::from(bottom.width.saturating_sub(2));
-            let hint = hints
-                .iter()
-                .find(|hint| wrap::width(hint) <= room)
-                .or(hints.last())
-                .copied()
-                .unwrap_or_default();
-            draw_input(app, draft, hint, reply_to.as_deref(), buf, bottom);
+            let border = box_border(app, *discard_asked, bottom.width);
+            draw_input(app, draft, border, reply_to.as_deref(), buf, bottom);
         }
     }
 }
@@ -208,13 +197,41 @@ const DISCARD_HINT_SHORT: &str = "esc:discard other:keep";
 /// The discard warning for a box too narrow even for [`DISCARD_HINT_SHORT`].
 const DISCARD_HINT_TINY: &str = "esc:discard?";
 
+/// The text on the comment box's bottom border and its style, for a box
+/// `width` cells wide. A pending [`App::status`] (a failed save's error) wins,
+/// red and bold; then the discard prompt while `discard_asked`; else the key
+/// hint. Hints pick the longest form that fits inside the corners, falling
+/// back to the shortest; the error is drawn as-is and clipped by the border.
+fn box_border(app: &App, discard_asked: bool, width: u16) -> (&str, Style) {
+    if let Some(status) = app.status() {
+        return (
+            status,
+            Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+        );
+    }
+    let hints: &[&str] = if discard_asked {
+        &[DISCARD_HINT, DISCARD_HINT_SHORT, DISCARD_HINT_TINY]
+    } else {
+        &[INPUT_HINT, INPUT_HINT_SHORT]
+    };
+    let room = usize::from(width.saturating_sub(2));
+    let hint = hints
+        .iter()
+        .find(|hint| wrap::width(hint) <= room)
+        .or(hints.last())
+        .copied()
+        .unwrap_or_default();
+    (hint, Style::new())
+}
+
 /// The comment box: the draft's rows from its scroll, wrapped at
 /// [`App::draft_width`] exactly as `update` counts them, and the cursor as a
-/// reversed cell, with `hint` on the bottom border.
+/// reversed cell, with `border` (text and style, from [`box_border`]) on the
+/// bottom border.
 fn draw_input(
     app: &App,
     draft: &Draft,
-    hint: &str,
+    (hint, hint_style): (&str, Style),
     reply_to: Option<&str>,
     buf: &mut Buffer,
     area: Rect,
@@ -236,7 +253,9 @@ fn draw_input(
             ),
         },
     };
-    let block = Block::bordered().title(title).title_bottom(hint);
+    let block = Block::bordered()
+        .title(title)
+        .title_bottom(Line::styled(hint, hint_style));
     let inner = block.inner(area);
     block.render(area, buf);
     if inner.is_empty() {
@@ -942,6 +961,116 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
         let rows = box_rows(&draw(&app, 20, 8), 3);
 
         assert_eq!(rows[2], format!("└esc:discard?{}┘", "─".repeat(6)));
+    }
+
+    const LOCKED: &str = "review is locked by another process";
+
+    /// The error message's cells on the last row are red and bold.
+    fn assert_error_styled(terminal: &Terminal<TestBackend>, message: &str) {
+        let buffer = terminal.backend().buffer();
+        let y = buffer.area.height - 1;
+        for x in 1..=u16::try_from(message.len()).unwrap() {
+            let cell = &buffer[(x, y)];
+            assert_eq!(cell.fg, Color::Red, "x {x}");
+            assert!(cell.modifier.contains(Modifier::BOLD), "x {x}");
+        }
+        assert_eq!(buffer[(0, y)].fg, Color::Reset, "the corner");
+    }
+
+    #[test]
+    fn a_failed_save_shows_its_error_on_the_bottom_border_with_the_draft() {
+        let mut app = box_with("hi", (W, 8));
+        update(&mut app, Event::SaveFailed(LOCKED.into()));
+
+        let terminal = draw(&app, W, 8);
+
+        let rows = box_rows(&terminal, 3);
+        assert!(
+            rows[0].starts_with("┌Comment on line 1 as scott─"),
+            "{}",
+            rows[0]
+        );
+        assert_eq!(rows[1], boxed("hi"));
+        assert_eq!(
+            rows[2],
+            format!(
+                "└{LOCKED}{}┘",
+                "─".repeat(usize::from(W) - 2 - LOCKED.len())
+            )
+        );
+        assert_error_styled(&terminal, LOCKED);
+    }
+
+    #[test]
+    fn a_failed_reply_shows_its_error_under_the_reply_title() {
+        let threads = [talk(
+            "c1",
+            (1, 1),
+            "line 1",
+            Status::Open,
+            State::Current,
+            &[("claude", "Why?")],
+        )];
+        let mut app = app_with(lines(3), &threads, 8);
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('r'));
+        type_text(&mut app, "ok");
+        update(&mut app, Event::SaveFailed(LOCKED.into()));
+
+        let terminal = draw(&app, W, 8);
+
+        let rows = box_rows(&terminal, 3);
+        assert!(rows[0].starts_with("┌Reply to c1 as scott─"), "{}", rows[0]);
+        assert_eq!(rows[1], boxed("ok"));
+        assert!(rows[2].starts_with(&format!("└{LOCKED}─")), "{}", rows[2]);
+        assert_error_styled(&terminal, LOCKED);
+    }
+
+    #[test]
+    fn a_failed_range_comment_shows_its_error_under_the_range_title() {
+        let mut app = app_with(lines(3), &[], 8);
+        keys(&mut app, "vj");
+        key(&mut app, KeyCode::Enter);
+        type_text(&mut app, "ok");
+        update(&mut app, Event::SaveFailed(LOCKED.into()));
+
+        let terminal = draw(&app, W, 8);
+
+        let rows = box_rows(&terminal, 3);
+        assert!(
+            rows[0].starts_with("┌Comment on lines 1-2 as scott─"),
+            "{}",
+            rows[0]
+        );
+        assert_eq!(rows[1], boxed("ok"));
+        assert!(rows[2].starts_with(&format!("└{LOCKED}─")), "{}", rows[2]);
+        assert_error_styled(&terminal, LOCKED);
+    }
+
+    #[test]
+    fn a_long_error_is_cut_at_the_narrow_box_s_inner_width() {
+        let mut app = box_with("hi", (20, 8));
+        update(&mut app, Event::SaveFailed(LOCKED.into()));
+
+        let rows = box_rows(&draw(&app, 20, 8), 3);
+
+        assert_eq!(rows[2], format!("└{}┘", &LOCKED[..18]));
+    }
+
+    #[test]
+    fn the_next_key_clears_the_error_and_brings_the_hint_back() {
+        let mut app = box_with("hi", (W, 8));
+        update(&mut app, Event::SaveFailed(LOCKED.into()));
+        key(&mut app, KeyCode::Char('!'));
+
+        let rows = box_rows(&draw(&app, W, 8), 3);
+
+        assert_eq!(rows[1], boxed("hi!"));
+        assert!(
+            rows[2].starts_with(&format!("└{INPUT_HINT}─")),
+            "{}",
+            rows[2]
+        );
     }
 
     #[test]
