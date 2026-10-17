@@ -69,6 +69,18 @@ pub enum Mode {
         /// and the write cannot retarget the reply.
         reply_to: Option<String>,
     },
+    /// The help overlay: the keys that work in [`Mode::Normal`] and the
+    /// panel, over the whole screen.
+    ///
+    /// `back` is the mode the overlay returns to on `?`, `esc`, `q` or
+    /// `ctrl+c` (only ever `Normal` or `Panel`, so closing restores the same
+    /// selection and scroll); `scroll` is the first content row shown.
+    Help {
+        /// Where closing the overlay returns to.
+        back: Back,
+        /// First visible content row.
+        scroll: usize,
+    },
 }
 
 impl Mode {
@@ -404,6 +416,8 @@ impl App {
             Mode::Normal | Mode::Visual { .. } | Mode::Search { .. } => FOOTER_ROWS,
             Mode::Input { .. } => self.box_text_rows() + BOX_BORDER_ROWS,
             Mode::Panel { .. } => self.panel_rows() + FOOTER_ROWS,
+            // Help replaces the whole screen (the footer is its last row).
+            Mode::Help { .. } => self.rows,
         }
     }
 
@@ -566,12 +580,17 @@ impl App {
             self.mode = Mode::Normal;
         }
         let height = self.height();
-        self.cursor = self.cursor.min(self.last_line());
-        self.top = self
-            .top
-            .min(self.fit_back(self.last_line(), height))
-            .clamp(self.fit_back(self.cursor, height), self.cursor);
+        // Help replaces the whole screen, so leave the file view untouched:
+        // closing must restore the exact cursor and scroll.
+        if !matches!(self.mode, Mode::Help { .. }) {
+            self.cursor = self.cursor.min(self.last_line());
+            self.top = self
+                .top
+                .min(self.fit_back(self.last_line(), height))
+                .clamp(self.fit_back(self.cursor, height), self.cursor);
+        }
         self.clamp_panel();
+        self.clamp_help();
         let (width, rows) = (self.draft_width(), self.box_text_rows());
         if let Mode::Input { draft, .. } = &mut self.mode {
             draft.clamp_scroll(width, rows);
@@ -589,6 +608,17 @@ impl App {
             *selected = (*selected).min(last);
             *scroll = (*scroll).min(max_scroll);
         }
+    }
+
+    /// Keep the help overlay's scroll inside its content: the content rows
+    /// above the footer, never past the last one.
+    fn clamp_help(&mut self) {
+        let Mode::Help { scroll, .. } = &mut self.mode else {
+            return;
+        };
+        let body = self.rows.saturating_sub(1);
+        let total = super::keys::help_rows(self.cols).len();
+        *scroll = (*scroll).min(total.saturating_sub(body));
     }
 
     /// Open the panel on the cursor line's threads, selecting the first one
@@ -855,6 +885,7 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
                 Mode::Search { .. } => search_key(app, key),
                 Mode::Panel { .. } => panel_key(app, key),
                 Mode::Input { .. } => input_key(app, key),
+                Mode::Help { .. } => help_key(app, key),
             }
         }
         Event::Key(_) => None,
@@ -870,16 +901,16 @@ fn movement(app: &mut App, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Char('d') if ctrl => app.scroll_half_page(true),
         KeyCode::Char('u') if ctrl => app.scroll_half_page(false),
-        KeyCode::Char('j') | KeyCode::Down => app.move_to(app.cursor + 1),
-        KeyCode::Char('k') | KeyCode::Up => app.move_to(app.cursor.saturating_sub(1)),
-        KeyCode::Char('g') | KeyCode::Home => app.move_to(0),
-        KeyCode::Char('G') | KeyCode::End => app.move_to(app.last_line()),
-        KeyCode::Char(']') => app.jump_to_covered(true),
-        KeyCode::Char('[') => app.jump_to_covered(false),
+        KeyCode::Char('j') | KeyCode::Down if !chord => app.move_to(app.cursor + 1),
+        KeyCode::Char('k') | KeyCode::Up if !chord => app.move_to(app.cursor.saturating_sub(1)),
+        KeyCode::Char('g') | KeyCode::Home if !chord => app.move_to(0),
+        KeyCode::Char('G') | KeyCode::End if !chord => app.move_to(app.last_line()),
+        KeyCode::Char(']') if !chord => app.jump_to_covered(true),
+        KeyCode::Char('[') if !chord => app.jump_to_covered(false),
         KeyCode::Char('n') if !chord => app.repeat_search(true),
         KeyCode::Char('N') if !chord => app.repeat_search(false),
-        KeyCode::PageDown => app.scroll_half_page(true),
-        KeyCode::PageUp => app.scroll_half_page(false),
+        KeyCode::PageDown if !chord => app.scroll_half_page(true),
+        KeyCode::PageUp if !chord => app.scroll_half_page(false),
         _ => return false,
     }
     true
@@ -912,6 +943,12 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         }
         KeyCode::Char('/') if !ctrl => app.start_search(None),
         KeyCode::Esc => app.search = None,
+        KeyCode::Char('?') if !ctrl => {
+            app.mode = Mode::Help {
+                back: Back::Normal,
+                scroll: 0,
+            };
+        }
         KeyCode::Enter if !app.threads_on(app.cursor).is_empty() => app.open_panel(),
         KeyCode::Enter if !app.lines.is_empty() => {
             app.mode = Mode::input(Back::Normal, None);
@@ -1020,6 +1057,12 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         }
         KeyCode::Char('x') if !ctrl => return app.change_status(selected, true),
         KeyCode::Char('o') if !ctrl => return app.change_status(selected, false),
+        KeyCode::Char('?') if !ctrl => {
+            app.mode = Mode::Help {
+                back: Back::Panel { selected, scroll },
+                scroll: 0,
+            };
+        }
         KeyCode::Tab if !shift => app.select_thread((selected + 1) % count),
         KeyCode::Tab | KeyCode::BackTab => app.select_thread((selected + count - 1) % count),
         KeyCode::Char('j') | KeyCode::Down if !ctrl => {
@@ -1032,6 +1075,69 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             app.mode = Mode::Panel {
                 selected,
                 scroll: scroll.saturating_sub(1),
+            };
+        }
+        _ => {}
+    }
+    None
+}
+
+/// Keys in [`Mode::Help`]: `?`, `esc`, `q` or `ctrl+c` close the overlay
+/// (never quit, whatever the mode it was opened from); the rest scroll it.
+/// The scroll is clamped afterwards by [`App::clamp_help`] in `update`.
+fn help_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    let Mode::Help { back, scroll } = app.mode else {
+        return None;
+    };
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let chord = ctrl || key.modifiers.contains(KeyModifiers::ALT);
+    let half = |rows: usize| rows.saturating_sub(1).max(1) / 2;
+    match key.code {
+        KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') if !ctrl => app.mode = back.mode(),
+        KeyCode::Char('c') if ctrl => app.mode = back.mode(),
+        KeyCode::Char('j') | KeyCode::Down if !chord => {
+            app.mode = Mode::Help {
+                back,
+                scroll: scroll + 1,
+            };
+        }
+        KeyCode::Char('k') | KeyCode::Up if !chord => {
+            app.mode = Mode::Help {
+                back,
+                scroll: scroll.saturating_sub(1),
+            };
+        }
+        KeyCode::Char('d') if ctrl => {
+            app.mode = Mode::Help {
+                back,
+                scroll: scroll + half(app.rows),
+            };
+        }
+        KeyCode::PageDown => {
+            app.mode = Mode::Help {
+                back,
+                scroll: scroll + half(app.rows),
+            };
+        }
+        KeyCode::Char('u') if ctrl => {
+            app.mode = Mode::Help {
+                back,
+                scroll: scroll.saturating_sub(half(app.rows)),
+            };
+        }
+        KeyCode::PageUp => {
+            app.mode = Mode::Help {
+                back,
+                scroll: scroll.saturating_sub(half(app.rows)),
+            };
+        }
+        KeyCode::Char('g') | KeyCode::Home if !chord => {
+            app.mode = Mode::Help { back, scroll: 0 };
+        }
+        KeyCode::Char('G') | KeyCode::End if !chord => {
+            app.mode = Mode::Help {
+                back,
+                scroll: usize::MAX,
             };
         }
         _ => {}
@@ -3630,5 +3736,235 @@ mod tests {
             .map(|row| row.line)
             .collect::<Vec<_>>();
         assert!(marked.contains(&a.cursor), "{marked:?} vs {}", a.cursor);
+    }
+
+    // --- help overlay ---
+
+    /// `?` opens help from Normal (and closes back to it), with the cursor
+    /// and view untouched and never a `Quit`.
+    #[test]
+    fn help_opens_and_closes_from_normal_preserving_the_view() {
+        let mut a = app(12, 10);
+        send(&mut a, [ch('j'), ch('j'), ch('?')]);
+        assert!(matches!(
+            a.mode,
+            Mode::Help {
+                back: Back::Normal,
+                scroll: 0
+            }
+        ));
+        for close in [ch('?'), ch('q'), press(KeyCode::Esc), ctrl('c')] {
+            assert_eq!(update(&mut a, close), None, "no Quit from a close key");
+            assert_eq!(a.mode, Mode::Normal);
+            assert_eq!(at(&a), (2, 0));
+            assert_eq!(update(&mut a, ch('?')), None);
+            assert!(matches!(
+                a.mode,
+                Mode::Help {
+                    back: Back::Normal,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn help_opens_from_the_panel_and_returns_to_the_same_panel() {
+        let threads = [chatty("c1", (2, 2), 1), chatty("c2", (2, 2), 1)];
+        let mut a = panel_app(&threads, 20);
+        send(
+            &mut a,
+            [ch('j'), press(KeyCode::Enter), press(KeyCode::Tab), ch('j')],
+        );
+        let before = panel(&a);
+        send(&mut a, [ch('?')]);
+        assert!(matches!(
+            a.mode,
+            Mode::Help {
+                back: Back::Panel { .. },
+                ..
+            }
+        ));
+        for close in [ch('?'), ch('q'), press(KeyCode::Esc), ctrl('c')] {
+            assert_eq!(update(&mut a, close), None, "no Quit from a close key");
+            assert_eq!(panel(&a), before);
+            assert_eq!(update(&mut a, ch('?')), None);
+        }
+    }
+
+    #[test]
+    fn question_mark_is_text_in_visual_search_and_input() {
+        let mut a = app(12, 10);
+        send(&mut a, [ch('v'), ch('?')]);
+        assert!(matches!(a.mode, Mode::Visual { .. }));
+
+        let mut a = app(12, 10);
+        send(&mut a, [ch('/'), ch('?')]);
+        let Mode::Search { query, .. } = &a.mode else {
+            panic!("left the prompt");
+        };
+        assert_eq!(query, "?");
+
+        let mut a = input_app();
+        typed(&mut a, "?");
+        assert!(matches!(a.mode, Mode::Input { .. }));
+        assert_eq!(draft(&a), ("?", 1));
+    }
+
+    #[test]
+    fn help_scrolls_and_clamps_to_the_last_content_row() {
+        let mut a = app(6, 10);
+        send(&mut a, [ch('?')]);
+        let scroll_of = |a: &App| match a.mode {
+            Mode::Help { scroll, .. } => scroll,
+            _ => panic!("not in help"),
+        };
+        let total = super::super::keys::help_rows(80).len();
+        let body = 9;
+        let max = total.saturating_sub(body);
+        assert!(max > 0, "content fits: nothing to scroll");
+        send(&mut a, [ch('G'), ch('j'), ch('j')]);
+        assert_eq!(scroll_of(&a), max, "j never scrolls past the end");
+        send(&mut a, [ch('g')]);
+        assert_eq!(scroll_of(&a), 0, "g returns to the top");
+        send(&mut a, [press(KeyCode::PageDown), press(KeyCode::PageUp)]);
+        assert_eq!(scroll_of(&a), 0, "page down/up are opposite");
+        send(&mut a, [ch('G')]);
+        assert_eq!(scroll_of(&a), max);
+        send(&mut a, [Event::Resize(80, 3)]);
+        let body = 2;
+        let max = total.saturating_sub(body);
+        assert!(scroll_of(&a) <= max, "resize reclamps to the new body");
+    }
+
+    // --- help drift probe ---
+
+    fn normal_help_fixture() -> App {
+        let threads = [
+            view("a", (2, 2), Status::Open, State::Current),
+            view("b", (6, 6), Status::Open, State::Current),
+            view("c", (6, 6), resolved(), State::Current),
+            view("d", (9, 9), Status::Open, State::Current),
+        ];
+        let lines = (1..=12).map(|i| format!("line {i}")).collect();
+        let mut a = App::open(lines, &threads, "scott", (80, 10)).labeled("plan.md");
+        // Cursor on the threaded line 6 (index 5), an active search.
+        send(
+            &mut a,
+            [ch('j'), ch('j'), ch('j'), ch('j'), ch('j'), ch('/')],
+        );
+        type_query(&mut a, "line");
+        send(&mut a, [press(KeyCode::Enter), ch('k')]);
+        assert_eq!(a.cursor, 5);
+        assert_eq!(a.search.as_deref(), Some("line"));
+        a
+    }
+
+    fn panel_help_fixture() -> App {
+        let threads = [chatty("b", (6, 6), 4), chatty("c", (6, 6), 4)];
+        let lines = (1..=12).map(|i| format!("line {i}")).collect();
+        let mut a = App::open(lines, &threads, "scott", (80, 10)).labeled("plan.md");
+        // Cursor on the threaded line 6, panel open, and scrolled down part
+        // of the way so both `j` and `k` move it.
+        send(
+            &mut a,
+            [
+                ch('j'),
+                ch('j'),
+                ch('j'),
+                ch('j'),
+                ch('j'),
+                press(KeyCode::Enter),
+            ],
+        );
+        send(&mut a, [ch('j'), ch('j')]);
+        let (_, scroll) = panel(&a);
+        assert!(scroll > 0, "panel not scrolled: j/k would have no effect");
+        assert!(matches!(a.mode, Mode::Panel { .. }));
+        a
+    }
+
+    /// A key's effect on a fresh clone of `app`: the returned [`Effect`]
+    /// and whether any visible state changed.
+    fn probe(app: &App, key: KeyEvent) -> (Option<Effect>, bool) {
+        let mut probe = app.clone();
+        let effect = update(&mut probe, Event::Key(key));
+        let changed = effect.is_some()
+            || probe.mode != app.mode
+            || probe.cursor != app.cursor
+            || probe.top != app.top
+            || probe.search != app.search
+            || probe.status != app.status;
+        (effect, changed)
+    }
+
+    /// Every candidate key, keyed with no modifiers and with ctrl.
+    fn candidate_keys() -> Vec<KeyEvent> {
+        let mut out = Vec::new();
+        for c in 0x20..=0x7e {
+            if let Some(ch) = char::from_u32(c) {
+                out.push(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+                out.push(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL));
+            }
+        }
+        let special = [
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+        ];
+        for code in special {
+            out.push(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        out
+    }
+
+    fn listed_keys(section: usize) -> Vec<KeyEvent> {
+        super::super::keys::HELP[section]
+            .entries
+            .iter()
+            .flat_map(|e| super::super::keys::parse_keys(e.keys))
+            .collect()
+    }
+
+    #[test]
+    fn every_bound_key_is_listed() {
+        let fixtures = [normal_help_fixture(), panel_help_fixture()];
+        for (section, fixture) in fixtures.iter().enumerate() {
+            let listed = listed_keys(section);
+            for key in candidate_keys() {
+                let (_, changed) = probe(fixture, key);
+                if changed {
+                    assert!(
+                        listed.contains(&key),
+                        "bound in section {section} but not listed: {key:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_listed_key_is_bound() {
+        let fixtures = [normal_help_fixture(), panel_help_fixture()];
+        for (section, fixture) in fixtures.iter().enumerate() {
+            for key in listed_keys(section) {
+                let (_, changed) = probe(fixture, key);
+                assert!(
+                    changed,
+                    "listed in section {section} but not bound: {key:?}"
+                );
+            }
+        }
     }
 }

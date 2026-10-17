@@ -11,6 +11,7 @@ use ratatui::widgets::{Block, Widget};
 
 use super::app::{App, Marker, Mode, ScreenRow};
 use super::draft::Draft;
+use super::keys;
 use super::wrap;
 
 /// Draw `app` onto `frame`. Reads state only; never mutates it.
@@ -61,6 +62,7 @@ pub fn render(app: &App, frame: &mut Frame) {
             let border = box_border(app, *discard_asked, bottom.width);
             draw_input(app, draft, border, reply_to.as_deref(), buf, bottom);
         }
+        Mode::Help { scroll, .. } => draw_help(*scroll, buf, bottom),
     }
 }
 
@@ -171,11 +173,11 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
     }
     let hints = match app.mode() {
         Mode::Panel { .. } if app.selected_is_resolved() => {
-            "tab:next a:add r:reply o:reopen j/k:scroll esc:close"
+            "tab:next a:add r:reply o:reopen j/k:scroll esc:close ?:help"
         }
-        Mode::Panel { .. } => "tab:next a:add r:reply x:resolve j/k:scroll esc:close",
+        Mode::Panel { .. } => "tab:next a:add r:reply x:resolve j/k:scroll esc:close ?:help",
         Mode::Visual { .. } => "esc:cancel enter:comment j/k:extend",
-        _ => "enter:thread/comment ]/[:jump q:quit v:select /:search",
+        _ => "enter:thread/comment ]/[:jump q:quit v:select /:search ?:help",
     };
     parts.push(hints.to_string());
     let footer = parts.join("  ");
@@ -209,6 +211,33 @@ fn draw_panel(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
         };
         buf.set_stringn(row.x, row.y, &line.text, usize::from(row.width), style);
     }
+}
+
+/// The help overlay's last-row key hint; its own keys, not the listed ones.
+const HELP_FOOTER: &str = "j/k:scroll  ?/esc:close";
+
+/// Draw the help overlay over the whole screen: the [`keys::HELP`] content
+/// scrolled by `scroll` above a last-row footer. The overlay replaces the
+/// file view (it is not a floating box), so it has the whole window to work
+/// with in narrow terminals; the footer is cut if the window is too narrow.
+fn draw_help(scroll: usize, buf: &mut Buffer, area: Rect) {
+    if area.is_empty() {
+        return;
+    }
+    let width = usize::from(area.width);
+    let body = usize::from(area.height.saturating_sub(1));
+    let rows = keys::help_rows(width);
+    for (screen_row, text) in area.rows().zip(rows.iter().skip(scroll).take(body)) {
+        buf.set_stringn(screen_row.x, screen_row.y, text, width, Style::new());
+    }
+    let footer_row = area.y + area.height.saturating_sub(1);
+    buf.set_stringn(
+        area.x,
+        footer_row,
+        wrap::cut(HELP_FOOTER, width).as_ref(),
+        width,
+        Style::new(),
+    );
 }
 
 /// A box `width` cells wide's top-border `title`, [`wrap::cut`] to fit
@@ -443,19 +472,19 @@ mod tests {
     }
 
     /// A panel row: border, `text` padded to the box's inner width, border.
-    fn boxed(text: &str) -> String {
-        format!("│{text:<inner$}│", inner = usize::from(W) - 2)
+    fn boxed(text: &str, width: u16) -> String {
+        format!("│{text:<inner$}│", inner = usize::from(width) - 2)
     }
 
-    fn box_top(title: &str) -> String {
+    fn box_top(title: &str, width: u16) -> String {
         format!(
             "┌{title}{}┐",
-            "─".repeat(usize::from(W) - 2 - title.chars().count())
+            "─".repeat(usize::from(width) - 2 - title.chars().count())
         )
     }
 
-    fn box_bottom() -> String {
-        format!("└{}┘", "─".repeat(usize::from(W) - 2))
+    fn box_bottom(width: u16) -> String {
+        format!("└{}┘", "─".repeat(usize::from(width) - 2))
     }
 
     fn panel_app(threads: &[ThreadView]) -> App {
@@ -465,7 +494,7 @@ mod tests {
     }
 
     const PANEL_FOOTER: &str =
-        "plan.md  L1/12  tab:next a:add r:reply x:resolve j/k:scroll esc:close";
+        "plan.md  L1/12  tab:next a:add r:reply x:resolve j/k:scroll esc:close ?:help";
 
     #[test]
     fn the_panel_shows_the_thread_in_a_box_above_the_footer() {
@@ -479,7 +508,7 @@ mod tests {
         )];
         let app = panel_app(&threads);
 
-        let screen = screen(&draw(&app, W, 16));
+        let screen = screen(&draw(&app, 80, 16));
 
         let expected = [
             "◆  1│line 1",
@@ -489,14 +518,14 @@ mod tests {
             "   5│line 5",
             "   6│line 6",
             "   7│line 7",
-            &box_top("Threads on line 1"),
-            &boxed("▶ c1 open"),
-            &boxed("  > line 1"),
-            &boxed("  scott · 2026-10-12 09:30Z"),
-            &boxed("    Why this?"),
-            &boxed("  claude · 2026-10-12 09:31Z"),
-            &boxed("    Because."),
-            &box_bottom(),
+            &box_top("Threads on line 1", 80),
+            &boxed("▶ c1 open", 80),
+            &boxed("  > line 1", 80),
+            &boxed("  scott · 2026-10-12 09:30Z", 80),
+            &boxed("    Why this?", 80),
+            &boxed("  claude · 2026-10-12 09:31Z", 80),
+            &boxed("    Because.", 80),
+            &box_bottom(80),
             PANEL_FOOTER,
         ]
         .join("\n");
@@ -599,7 +628,7 @@ mod tests {
         let text = screen(&draw(&app, W, 16));
 
         let rows: Vec<&str> = text.lines().collect();
-        assert_eq!(rows[8], boxed("  scott · 2026-10-12 09:30Z"));
+        assert_eq!(rows[8], boxed("  scott · 2026-10-12 09:30Z", W));
         assert!(!text.contains("▶ c1 open"));
     }
 
@@ -670,15 +699,15 @@ mod tests {
             &[("claude", "hi")],
         )];
 
-        let open = screen(&draw(&panel_app(&open), W, 16));
-        let done = screen(&draw(&panel_app(&done), W, 16));
+        let open = screen(&draw(&panel_app(&open), 80, 16));
+        let done = screen(&draw(&panel_app(&done), 80, 16));
 
         assert!(
-            open.ends_with("a:add r:reply x:resolve j/k:scroll esc:close"),
+            open.ends_with("a:add r:reply x:resolve j/k:scroll esc:close ?:help"),
             "{open}"
         );
         assert!(
-            done.ends_with("a:add r:reply o:reopen j/k:scroll esc:close"),
+            done.ends_with("a:add r:reply o:reopen j/k:scroll esc:close ?:help"),
             "{done}"
         );
     }
@@ -730,7 +759,7 @@ mod tests {
     fn normal_mode_shows_gutter_text_and_a_footer() {
         let app = app_with(lines(12), &[], 8);
 
-        let screen = screen(&draw(&app, W, 8));
+        let screen = screen(&draw(&app, 80, 8));
 
         assert_eq!(
             screen,
@@ -741,7 +770,7 @@ mod tests {
    5│line 5
    6│line 6
    7│line 7
-plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search"
+plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help"
         );
     }
 
@@ -1059,7 +1088,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
             "{}",
             rows[0]
         );
-        assert_eq!(rows[1], boxed("hi"));
+        assert_eq!(rows[1], boxed("hi", W));
         assert_eq!(
             rows[2],
             format!(
@@ -1090,7 +1119,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
 
         let rows = box_rows(&terminal, 3);
         assert!(rows[0].starts_with("┌Reply to c1 as scott─"), "{}", rows[0]);
-        assert_eq!(rows[1], boxed("ok"));
+        assert_eq!(rows[1], boxed("ok", W));
         assert!(rows[2].starts_with(&format!("└{LOCKED}─")), "{}", rows[2]);
         assert_error_styled(&terminal, LOCKED);
     }
@@ -1111,7 +1140,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
             "{}",
             rows[0]
         );
-        assert_eq!(rows[1], boxed("ok"));
+        assert_eq!(rows[1], boxed("ok", W));
         assert!(rows[2].starts_with(&format!("└{LOCKED}─")), "{}", rows[2]);
         assert_error_styled(&terminal, LOCKED);
     }
@@ -1253,7 +1282,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
 
         let rows = box_rows(&draw(&app, W, 8), 3);
 
-        assert_eq!(rows[1], boxed("hi!"));
+        assert_eq!(rows[1], boxed("hi!", W));
         assert!(
             rows[2].starts_with(&format!("└{INPUT_HINT}─")),
             "{}",
@@ -1289,7 +1318,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
         assert!(
             screen
                 .trim_end()
-                .ends_with("L30/30  enter:thread/comment ]/[:jump q:quit v:select /:search")
+                .ends_with("L30/30  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help")
         );
     }
 
@@ -1467,11 +1496,12 @@ plan.md  L1/5  enter:thread/c…"
     fn an_empty_file_says_so() {
         let app = app_with(Vec::new(), &[], 4);
 
-        let screen = screen(&draw(&app, W, 4));
+        // 80 columns so the whole footer (with its `?:help` hint) fits.
+        let screen = screen(&draw(&app, 80, 4));
 
         assert_eq!(
             screen,
-            "(empty file)\n\n\nplan.md  L0/0  enter:thread/comment ]/[:jump q:quit v:select /:search"
+            "(empty file)\n\n\nplan.md  L0/0  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help"
         );
     }
 
@@ -1720,7 +1750,7 @@ plan.md  L1/5  enter:thread/c…"
     }
 
     const NORMAL_FOOTER: &str =
-        "plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search";
+        "plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help";
 
     #[test]
     fn a_footer_that_fits_exactly_is_drawn_unchanged() {
@@ -1728,7 +1758,11 @@ plan.md  L1/5  enter:thread/c…"
         let width = u16::try_from(NORMAL_FOOTER.len()).unwrap();
 
         assert_eq!(footer(&app, width), NORMAL_FOOTER);
-        assert_eq!(footer(&app, W), NORMAL_FOOTER);
+        // At the working 70 columns the `?:help` hint is what gets cut, but
+        // `q:quit` stays on screen.
+        let at_70 = footer(&app, W);
+        assert!(at_70.contains("q:quit"), "{at_70}");
+        assert!(!at_70.contains("?:help"), "hint cut at 70: {at_70}");
     }
 
     #[test]
@@ -1887,7 +1921,7 @@ plan.md  L1/5  enter:thread/c…"
     #[test]
     fn the_normal_footer_shows_the_active_search_and_the_hint() {
         let mut app = app_with(lines(12), &[], 8);
-        assert!(footer(&app, 200).ends_with("/:search"));
+        assert!(footer(&app, 200).ends_with("/:search ?:help"));
         keys(&mut app, "/line 3");
         key(&mut app, KeyCode::Enter);
         assert!(footer(&app, 200).contains("L3/12  /line 3  enter"));
@@ -1911,6 +1945,123 @@ plan.md  L1/5  enter:thread/c…"
             let mut app = app_with(lines(12), &[], h);
             keys(&mut app, "/line 1");
             draw(&app, w, h);
+        }
+    }
+
+    // --- help overlay ---
+
+    /// `app` with the help overlay open.
+    fn help_app(rows: u16) -> App {
+        let mut app = app_with(lines(12), &[], rows);
+        key(&mut app, KeyCode::Char('?'));
+        app
+    }
+
+    /// `app` with the help overlay open on a `width`-column terminal, so
+    /// its scroll clamp lays the overlay out at that width.
+    fn help_width_app(width: u16, rows: u16) -> App {
+        let lines = (1..=12).map(|i| format!("line {i}")).collect();
+        let mut app = App::open(lines, &[], "scott", (width, rows)).labeled("plan.md");
+        key(&mut app, KeyCode::Char('?'));
+        app
+    }
+
+    /// Every whitespace-word in the help table, so a wrapped overlay can be
+    /// checked for losing any of it.
+    fn help_words() -> Vec<&'static str> {
+        keys::HELP
+            .iter()
+            .flat_map(|s| {
+                s.entries
+                    .iter()
+                    .flat_map(|e| e.keys.split_whitespace().chain(e.what.split_whitespace()))
+            })
+            .filter(|w| !w.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn help_replaces_the_screen_with_the_listed_keys_and_a_footer() {
+        let app = help_app(24);
+
+        let text = screen(&draw(&app, W, 24));
+        let rows: Vec<&str> = text.lines().collect();
+
+        assert_eq!(rows[0], "Help");
+        assert!(rows.contains(&"Normal"), "{text}");
+        assert!(rows.contains(&"Thread panel"), "{text}");
+        assert!(text.contains("j/k, ↓/↑  Down / up"), "{text}");
+        assert!(text.ends_with("j/k:scroll  ?/esc:close"), "{text}");
+        assert!(!text.contains("line 1"), "file text is hidden: {text}");
+    }
+
+    #[test]
+    fn a_help_listing_taller_than_the_window_scrolls() {
+        let mut app = help_app(6); // body 5 rows; the table is taller
+
+        let top = screen(&draw(&app, W, 6));
+        assert!(top.starts_with("Help"), "{top}");
+
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+        let scrolled = screen(&draw(&app, W, 6));
+        assert!(
+            scrolled.starts_with("j/k, ↓/↑"),
+            "rows moved past Help and Normal\n{scrolled}"
+        );
+
+        key(&mut app, KeyCode::Char('G'));
+        let bottom = screen(&draw(&app, W, 6));
+        assert!(
+            bottom.contains("esc/q/ctrl+c  Close"),
+            "bottom shows the last entry\n{bottom}"
+        );
+
+        for s in [&top, &scrolled, &bottom] {
+            assert!(
+                s.lines().last().unwrap().contains("?/esc:close"),
+                "footer missing\n{s}"
+            );
+        }
+    }
+
+    #[test]
+    fn help_loses_no_words_at_narrow_widths() {
+        let words = help_words();
+        for width in [24u16, 40u16] {
+            // A wrapped overlay can be taller than one frame, so walk every
+            // scroll position and check the union keeps every word.
+            let body = 23usize;
+            let total = keys::help_rows(usize::from(width)).len();
+            let mut shown = String::new();
+            for scroll in 0..=total.saturating_sub(body) {
+                let mut app = help_width_app(width, 24);
+                for _ in 0..scroll {
+                    key(&mut app, KeyCode::Char('j'));
+                }
+                let terminal = draw(&app, width, 24);
+                let text = screen(&terminal);
+                assert!(
+                    text.lines().last().unwrap().contains("?/esc:close"),
+                    "footer at {width} columns, scroll {scroll}\n{text}"
+                );
+                shown.push_str(&text);
+                shown.push('\n');
+            }
+            for word in &words {
+                assert!(
+                    shown.contains(word),
+                    "missed {word:?} across scrolls at {width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn help_draws_in_tiny_windows_without_panicking() {
+        for (w, h) in [(1u16, 1u16), (2, 2), (1, 4), (3, 1), (4, 24), (24, 1)] {
+            let app = help_app(4);
+            let _ = draw(&app, w, h);
         }
     }
 }
