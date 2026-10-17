@@ -397,8 +397,9 @@ Its parts:
   that does not fit), or, while `discard_asked`, `esc:discard the draft  any
   other key:keep it` (`esc:discard other:keep`, then `esc:discard?`, when
   that does not fit; widths in cells), or, after a failed save, the error
-  message (`status`, red and bold, clipped at the inner width) until the
-  next key clears it. `status` wins over the discard prompt, which wins
+  message (`status`, red and bold, control characters such as newlines and
+  tabs drawn as spaces, clipped at the inner width with a wide character
+  that would cross the corner left out) until the next key clears it. `status` wins over the discard prompt, which wins
   over the hint.
 - `tui` (module root): the driver. `load` reads lines (`review::file_lines`)
   and all threads; `Loaded::into_app` highlights the file only when it is

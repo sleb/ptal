@@ -1,5 +1,7 @@
 //! Drawing: a pure function of [`App`] onto a ratatui frame.
 
+use std::borrow::Cow;
+
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -201,11 +203,13 @@ const DISCARD_HINT_TINY: &str = "esc:discard?";
 /// `width` cells wide. A pending [`App::status`] (a failed save's error) wins,
 /// red and bold; then the discard prompt while `discard_asked`; else the key
 /// hint. Hints pick the longest form that fits inside the corners, falling
-/// back to the shortest; the error is drawn as-is and clipped by the border.
-fn box_border(app: &App, discard_asked: bool, width: u16) -> (&str, Style) {
+/// back to the shortest. The error is put on one row by [`one_line`] and
+/// clipped by the border, a wide character that would straddle the corner
+/// left out whole.
+fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'_, str>, Style) {
     if let Some(status) = app.status() {
         return (
-            status,
+            one_line(status),
             Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
         );
     }
@@ -221,7 +225,19 @@ fn box_border(app: &App, discard_asked: bool, width: u16) -> (&str, Style) {
         .or(hints.last())
         .copied()
         .unwrap_or_default();
-    (hint, Style::new())
+    (Cow::Borrowed(hint), Style::new())
+}
+
+/// `text` with each control character (a newline, a tab) as a space, so a
+/// multi-line error reads as one row instead of having its words run
+/// together where ratatui drops the control characters. Borrows when there
+/// are none.
+fn one_line(text: &str) -> Cow<'_, str> {
+    if text.contains(char::is_control) {
+        Cow::Owned(text.replace(char::is_control, " "))
+    } else {
+        Cow::Borrowed(text)
+    }
 }
 
 /// The comment box: the draft's rows from its scroll, wrapped at
@@ -231,7 +247,7 @@ fn box_border(app: &App, discard_asked: bool, width: u16) -> (&str, Style) {
 fn draw_input(
     app: &App,
     draft: &Draft,
-    (hint, hint_style): (&str, Style),
+    (hint, hint_style): (Cow<'_, str>, Style),
     reply_to: Option<&str>,
     buf: &mut Buffer,
     area: Rect,
@@ -965,16 +981,27 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
 
     const LOCKED: &str = "review is locked by another process";
 
-    /// The error message's cells on the last row are red and bold.
+    /// The error message's cells on the last row are red and bold, and the
+    /// corner before it and the border after it are not. A wide character's
+    /// trailing cell is skipped: ratatui resets it and the terminal never
+    /// paints it.
     fn assert_error_styled(terminal: &Terminal<TestBackend>, message: &str) {
         let buffer = terminal.backend().buffer();
         let y = buffer.area.height - 1;
-        for x in 1..=u16::try_from(message.len()).unwrap() {
+        let plain = |x: u16| {
+            let cell = &buffer[(x, y)];
+            cell.fg == Color::Reset && !cell.modifier.contains(Modifier::BOLD)
+        };
+        let cells = u16::try_from(wrap::width(message)).unwrap();
+        let mut x = 1;
+        while x <= cells {
             let cell = &buffer[(x, y)];
             assert_eq!(cell.fg, Color::Red, "x {x}");
             assert!(cell.modifier.contains(Modifier::BOLD), "x {x}");
+            x += u16::try_from(wrap::width(cell.symbol()).max(1)).unwrap();
         }
-        assert_eq!(buffer[(0, y)].fg, Color::Reset, "the corner");
+        assert!(plain(0), "the corner");
+        assert!(plain(cells + 1), "the border after the message");
     }
 
     #[test]
@@ -1055,6 +1082,68 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
         let rows = box_rows(&draw(&app, 20, 8), 3);
 
         assert_eq!(rows[2], format!("└{}┘", &LOCKED[..18]));
+    }
+
+    /// The last row of `terminal` as text, skipping the blank cells that
+    /// follow a wide character.
+    fn last_row(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let y = buffer.area.height - 1;
+        let mut text = String::new();
+        let mut skip = 0;
+        for x in 0..buffer.area.width {
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
+            let symbol = buffer[(x, y)].symbol();
+            skip = wrap::width(symbol).saturating_sub(1);
+            text.push_str(symbol);
+        }
+        text
+    }
+
+    #[test]
+    fn a_wide_character_error_is_styled_by_cell_and_clipped_whole() {
+        // 24 cells: eight wide characters and a space, then eight more.
+        let message = "鎖定されています レビューが使用中";
+        let mut app = box_with("hi", (W, 8));
+        update(&mut app, Event::SaveFailed(message.into()));
+        let wide = draw(&app, W, 8);
+        assert!(
+            last_row(&wide).starts_with(&format!("└{message}─")),
+            "{}",
+            last_row(&wide)
+        );
+        assert_error_styled(&wide, message);
+
+        // 18 inner cells: the first eight characters and the space fill 17;
+        // the next wide character does not fit, and the corner stays.
+        let mut app = box_with("hi", (20, 8));
+        update(&mut app, Event::SaveFailed(message.into()));
+        let row = last_row(&draw(&app, 20, 8));
+        assert!(row.starts_with("└鎖定されています "), "{row}");
+        assert!(row.ends_with('┘'), "{row}");
+        assert_eq!(wrap::width(&row), 20, "{row}");
+    }
+
+    #[test]
+    fn an_error_s_newlines_and_tabs_show_as_spaces_on_one_border_row() {
+        let mut app = box_with("hi", (W, 8));
+        update(
+            &mut app,
+            Event::SaveFailed("cannot write\nx.json:\tdenied".into()),
+        );
+
+        let rows = box_rows(&draw(&app, W, 8), 3);
+
+        assert!(
+            rows[2].starts_with("└cannot write x.json: denied─"),
+            "{}",
+            rows[2]
+        );
+        assert!(rows[2].ends_with('┘'), "{}", rows[2]);
+        assert_error_styled(&draw(&app, W, 8), "cannot write x.json: denied");
     }
 
     #[test]
