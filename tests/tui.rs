@@ -504,23 +504,19 @@ fn a_failed_reply_keeps_the_draft_and_shows_the_error() {
     );
     let status = app.status().unwrap();
     assert!(status.to_lowercase().contains("permission"), "{status}");
-    // The message is on the box's bottom border; a long store path may push
-    // its tail past the corner, so the border must hold as much of the
-    // message as fits: a non-empty prefix of it.
+    // The message is on the box's bottom border, cut at the inner width: a
+    // long store path may push its tail past the corner. The OS message is
+    // one ASCII row, so a char is a cell.
     let rendered = screen(&app);
     assert!(rendered.contains("┌Reply to c1 as scott"), "{rendered}");
     assert!(rendered.contains("│ok"), "{rendered}");
-    let border = rendered
-        .lines()
-        .rfind(|row| row.starts_with('└'))
-        .expect("the box's bottom border");
-    let shown = border
-        .trim_start_matches('└')
-        .trim_end_matches('┘')
-        .trim_end_matches('─');
+    let inner = usize::from(COLS - 2);
+    let shown: String = status.chars().take(inner).collect();
+    let dashes = "─".repeat(inner - shown.chars().count());
+    let border = format!("└{shown}{dashes}┘");
     assert!(
-        !shown.is_empty() && status.starts_with(shown),
-        "{border} / {status}"
+        rendered.lines().any(|row| row == border),
+        "{border}\n{rendered}"
     );
     assert_eq!(
         cli_comments(&sb)["threads"][0]["comments"]
