@@ -1,7 +1,8 @@
 //! The human-facing terminal UI: a read-only file view with line comments and
 //! a panel for reading the threads on a line.
 //!
-//! Depends on [`crate::review`] and [`crate::model`] only, never on `store`.
+//! Depends on [`crate::review`] and [`crate::model`] (and the crate-wide
+//! [`crate::error`]), never on `store`.
 //! [`app`] is the pure state machine, [`draft`] the pure comment editor,
 //! [`panel`] the pure thread layout, [`keys`] the help listing,
 //! [`wrap`] the pure line wrapping, [`table`] the pure table layout,
