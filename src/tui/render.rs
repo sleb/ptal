@@ -7,6 +7,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Widget};
 
 use super::app::{App, Marker, Mode, ScreenRow};
+use super::draft::Draft;
+use super::wrap;
 
 /// Draw `app` onto `frame`. Reads state only; never mutates it.
 pub fn render(app: &App, frame: &mut Frame) {
@@ -48,10 +50,25 @@ pub fn render(app: &App, frame: &mut Frame) {
         }
         Mode::Input {
             draft,
-            cursor,
+            discard_asked,
             reply_to,
             ..
-        } => draw_input(app, draft, *cursor, reply_to.as_deref(), buf, bottom),
+        } => {
+            let hints: &[&str] = if *discard_asked {
+                &[DISCARD_HINT, DISCARD_HINT_SHORT, DISCARD_HINT_TINY]
+            } else {
+                &[INPUT_HINT, INPUT_HINT_SHORT]
+            };
+            // The longest hint that fits inside the corners, else the shortest.
+            let room = usize::from(bottom.width.saturating_sub(2));
+            let hint = hints
+                .iter()
+                .find(|hint| wrap::width(hint) <= room)
+                .or(hints.last())
+                .copied()
+                .unwrap_or_default();
+            draw_input(app, draft, hint, reply_to.as_deref(), buf, bottom);
+        }
     }
 }
 
@@ -180,10 +197,24 @@ fn draw_panel(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
     }
 }
 
+/// The key hint on the comment box's bottom border.
+const INPUT_HINT: &str = "ctrl+s:save enter:newline esc:cancel";
+/// [`INPUT_HINT`] for a box too narrow for it: how to save and cancel.
+const INPUT_HINT_SHORT: &str = "ctrl+s:save esc:cancel";
+/// The bottom border while an `esc` waits to discard a draft.
+const DISCARD_HINT: &str = "esc:discard the draft  any other key:keep it";
+/// [`DISCARD_HINT`] for a box too narrow for it.
+const DISCARD_HINT_SHORT: &str = "esc:discard other:keep";
+/// The discard warning for a box too narrow even for [`DISCARD_HINT_SHORT`].
+const DISCARD_HINT_TINY: &str = "esc:discard?";
+
+/// The comment box: the draft's rows from its scroll, wrapped at
+/// [`App::draft_width`] exactly as `update` counts them, and the cursor as a
+/// reversed cell, with `hint` on the bottom border.
 fn draw_input(
     app: &App,
-    draft: &str,
-    cursor: usize,
+    draft: &Draft,
+    hint: &str,
     reply_to: Option<&str>,
     buf: &mut Buffer,
     area: Rect,
@@ -205,24 +236,29 @@ fn draw_input(
             ),
         },
     };
-    let block = Block::bordered().title(title);
+    let block = Block::bordered().title(title).title_bottom(hint);
     let inner = block.inner(area);
     block.render(area, buf);
     if inner.is_empty() {
         return;
     }
-    // One row, so scroll sideways to keep the cursor cell in view.
-    let width = usize::from(inner.width);
-    let first = (cursor + 1).saturating_sub(width);
-    let mut shown = draft.chars().skip(first).take(width);
-    for (offset, x) in (inner.left()..inner.right()).enumerate() {
-        let style = if first + offset == cursor {
-            Style::new().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::new()
-        };
-        let symbol = shown.next().unwrap_or(' ');
-        buf[(x, inner.y)].set_char(symbol).set_style(style);
+    let width = app.draft_width();
+    let rows = draft.rows(width);
+    for (y, row) in (inner.top()..inner.bottom()).zip(rows.into_iter().skip(draft.scroll())) {
+        let text = &draft.text()[row];
+        buf.set_stringn(inner.x, y, text, usize::from(inner.width), Style::new());
+    }
+    let (row, col) = draft.cursor_at(width);
+    let y = row
+        .checked_sub(draft.scroll())
+        .and_then(|row| u16::try_from(row).ok())
+        .map(|row| inner.y.saturating_add(row));
+    let x = u16::try_from(col).map(|col| inner.x.saturating_add(col));
+    if let (Some(y), Ok(x)) = (y, x)
+        && y < inner.bottom()
+        && x < inner.right()
+    {
+        buf[(x, y)].set_style(Style::new().add_modifier(Modifier::REVERSED));
     }
 }
 
@@ -703,7 +739,10 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
 
         let title = "Comment on line 3 as scott";
         let top = format!("┌{title}{}┐", "─".repeat(usize::from(W) - 2 - title.len()));
-        let bottom = format!("└{}┘", "─".repeat(usize::from(W) - 2));
+        let bottom = format!(
+            "└{INPUT_HINT}{}┘",
+            "─".repeat(usize::from(W) - 2 - INPUT_HINT.len())
+        );
         assert_eq!(
             screen,
             format!(
@@ -735,6 +774,190 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
         assert!(reversed(&mid, 2), "on `b`");
         assert!(!reversed(&mid, 4));
         assert_eq!(mid.backend().buffer()[(2, 6)].symbol(), "b");
+    }
+
+    /// The last `n` rows of `terminal`'s screen: the comment box.
+    fn box_rows(terminal: &Terminal<TestBackend>, n: usize) -> Vec<String> {
+        let screen = screen(terminal);
+        let rows: Vec<String> = screen.lines().map(str::to_string).collect();
+        rows[rows.len() - n..].to_vec()
+    }
+
+    /// Whether cell (`x`, `y`) of `terminal` is drawn reversed.
+    fn reversed_at(terminal: &Terminal<TestBackend>, x: u16, y: u16) -> bool {
+        terminal.backend().buffer()[(x, y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    }
+
+    /// A box on line 1 of a `cols` x `rows` terminal holding `text`, each
+    /// `\n` typed as `enter`.
+    fn box_with(text: &str, (cols, rows): (u16, u16)) -> App {
+        let mut app = narrow(&["one", "two"], &[], (cols, rows));
+        key(&mut app, KeyCode::Enter);
+        for c in text.chars() {
+            key(
+                &mut app,
+                if c == '\n' {
+                    KeyCode::Enter
+                } else {
+                    KeyCode::Char(c)
+                },
+            );
+        }
+        app
+    }
+
+    #[test]
+    fn a_long_draft_wraps_inside_the_box_with_the_cursor_after_it() {
+        let app = box_with("the quick brown fox jumps over", (20, 10));
+
+        let terminal = draw(&app, 20, 10);
+
+        assert_eq!(
+            box_rows(&terminal, 4)[1..3],
+            ["│the quick brown   │", "│fox jumps over    │"]
+        );
+        assert!(reversed_at(&terminal, 15, 8), "the cell after `over`");
+        assert!(!reversed_at(&terminal, 14, 8));
+    }
+
+    #[test]
+    fn a_full_row_still_has_a_cell_for_the_cursor() {
+        let app = box_with("abcdefghijklmnopq", (20, 10));
+
+        let terminal = draw(&app, 20, 10);
+
+        assert_eq!(box_rows(&terminal, 3)[1], "│abcdefghijklmnopq │");
+        assert!(reversed_at(&terminal, 18, 8));
+    }
+
+    #[test]
+    fn blank_lines_in_the_draft_draw_as_blank_rows() {
+        let app = box_with("one\n\ntwo", (20, 10));
+
+        let terminal = draw(&app, 20, 10);
+
+        assert_eq!(
+            box_rows(&terminal, 5)[1..4],
+            [
+                "│one               │",
+                "│                  │",
+                "│two               │"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_draft_past_the_cap_shows_the_rows_around_the_cursor() {
+        let text: Vec<String> = (1..=8).map(|i| format!("row {i}")).collect();
+        // 16 rows: at most 16 / 2 - 2 = 6 text rows.
+        let mut app = box_with(&text.join("\n"), (20, 16));
+
+        let bottom = draw(&app, 20, 16);
+        assert_eq!(
+            box_rows(&bottom, 8)[1..7],
+            text[2..8]
+                .iter()
+                .map(|r| format!("│{r:<18}│"))
+                .collect::<Vec<_>>()
+        );
+        assert!(reversed_at(&bottom, 6, 14), "after `row 8`");
+
+        for _ in 0..7 {
+            key(&mut app, KeyCode::Up);
+        }
+        let top = draw(&app, 20, 16);
+        assert_eq!(box_rows(&top, 8)[1], "│row 1             │");
+        assert!(
+            reversed_at(&top, 6, 9),
+            "after `row 1`, on the first text row"
+        );
+    }
+
+    #[test]
+    fn the_bottom_border_says_how_to_save_and_titles_are_unchanged() {
+        let app = box_with("hi", (W, 8));
+
+        let terminal = draw(&app, W, 8);
+
+        let rows = box_rows(&terminal, 3);
+        assert!(
+            rows[0].starts_with("┌Comment on line 1 as scott─"),
+            "{}",
+            rows[0]
+        );
+        assert!(
+            rows[2].starts_with("└ctrl+s:save enter:newline esc:cancel─"),
+            "{}",
+            rows[2]
+        );
+    }
+
+    #[test]
+    fn a_narrow_box_keeps_a_short_hint_that_still_says_save_and_cancel() {
+        let app = box_with("hi", (30, 8));
+
+        let rows = box_rows(&draw(&app, 30, 8), 3);
+
+        assert_eq!(
+            rows[2],
+            format!("└ctrl+s:save esc:cancel{}┘", "─".repeat(6))
+        );
+    }
+
+    #[test]
+    fn the_border_asks_before_esc_discards_a_draft() {
+        let mut app = box_with("hi", (W, 8));
+        key(&mut app, KeyCode::Esc);
+
+        let rows = box_rows(&draw(&app, W, 8), 3);
+
+        assert!(rows[1].starts_with("│hi"), "the draft is still shown");
+        assert!(
+            rows[2].starts_with("└esc:discard the draft  any other key:keep it─"),
+            "{}",
+            rows[2]
+        );
+    }
+
+    #[test]
+    fn a_narrow_box_asks_to_discard_in_a_short_hint() {
+        let mut app = box_with("hi", (30, 8));
+        key(&mut app, KeyCode::Esc);
+
+        let rows = box_rows(&draw(&app, 30, 8), 3);
+
+        assert_eq!(
+            rows[2],
+            format!("└esc:discard other:keep{}┘", "─".repeat(6))
+        );
+    }
+
+    #[test]
+    fn a_very_narrow_box_still_warns_before_discarding() {
+        let mut app = box_with("hi", (20, 8));
+        key(&mut app, KeyCode::Esc);
+
+        let rows = box_rows(&draw(&app, 20, 8), 3);
+
+        assert_eq!(rows[2], format!("└esc:discard?{}┘", "─".repeat(6)));
+    }
+
+    #[test]
+    fn a_resize_narrower_rewraps_the_draft() {
+        let mut app = box_with("aaaa bbbb cccc", (30, 10));
+        assert_eq!(
+            box_rows(&draw(&app, 30, 10), 3)[1].trim_end(),
+            "│aaaa bbbb cccc              │"
+        );
+
+        update(&mut app, Event::Resize(13, 10));
+
+        assert_eq!(
+            box_rows(&draw(&app, 13, 10), 4)[1..3],
+            ["│aaaa bbbb  │", "│cccc       │"]
+        );
     }
 
     #[test]

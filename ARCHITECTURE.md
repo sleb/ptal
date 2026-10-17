@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built: `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built: `Normal`/`Visual`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen |
+| `tui` | Built: `Normal`/`Visual`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls) |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor`, `diffview` | Deferred |
 
@@ -263,8 +263,9 @@ Its parts:
   never changes in a session, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
   outdated ones, footer `status`), `Mode = Normal | Visual { anchor } |
-  Panel { selected, scroll } | Input { draft, cursor, back, reply_to }`
-  (`back` is the `Back` the box returns to on `esc`: `Normal | Panel {
+  Panel { selected, scroll } | Input { draft, discard_asked, back, reply_to }`
+  (`draft` is a `tui::draft::Draft`;
+  `back` is the `Back` the box returns to on `esc`: `Normal | Panel {
   selected, scroll } | Visual { anchor }`), and
   `update(&mut App, Event) -> Option<Effect>`. In `Visual` the cursor is the
   selection's moving end and `anchor` its fixed one (0-based file lines), so
@@ -273,7 +274,15 @@ Its parts:
   two in `Visual` and in a box opened from it (the range stays fixed while
   typing), else the cursor line alone. `enter` in `Visual` always opens a
   box for a new thread on the selection, never the panel; a save from it
-  goes to Normal. A thread covers its stored
+  goes to Normal. In `Input`, `enter` inserts a newline and `ctrl+s`
+  (or `ctrl+S`) saves the draft as typed less trailing whitespace and leading blank lines (one that
+  is only whitespace and newlines saves nothing). `esc` or `ctrl+c` returns
+  to `back` at once on a blank draft; otherwise the first sets
+  `discard_asked` and only a second discards, any other key clearing it. The box is as tall as
+  its draft's rows at `draft_width()` (terminal columns less the border and
+  one cell for a cursor after a full row), at least 1, capped at
+  `min(10, rows / 2 - 2)` (at least 1), plus its 2 border rows; the view
+  shrinks to stay above it. A thread covers its stored
   range whatever its `state`; `Marker = Waiting | Open | Resolved` is derived
   per line (waiting > open > resolved). Waiting means open and last comment
   not by `author`. The panel's thread set is recomputed from the threads and
@@ -293,6 +302,31 @@ Its parts:
   1-based (`start == end` for one line). The target thread id is captured when `r`, `x` or `o` is pressed, never
   an index; `x` on a resolved thread and `o` on an open one are refused in
   `update` with a footer message. `update` does no I/O and reads no clock.
+- `tui::draft`: `Draft { text, cursor, goal, scroll }`, pure, no widgets:
+  the comment being typed. `text` holds printable characters and `\n` only
+  (control characters, tabs included, are never inserted), so `wrap` drops
+  none of it and rows are byte ranges of it; a zero-width cluster has a
+  range but no cell.
+  `cursor` is a byte offset that always sits on a grapheme cluster boundary
+  (`wrap::clusters`, plus each `\n` as its own cluster): `←`/`→`,
+  `backspace` and `delete` move over or remove one whole cluster, and an
+  edit that leaves the cursor inside a cluster (a typed joiner, or a removal
+  that lets two halves of a flag pair up) moves it to that cluster's end. `rows(width)` is each line (split on `\n`) wrapped by
+  `wrap::row_ranges`, as byte ranges of `text`, an empty line or trailing
+  `\n` giving one empty row; `cursor_at(width)` is the cursor's (row,
+  column in cells). An offset at a soft break shows at the start of the next
+  row, and one on hanging whitespace in cell `width`. The width is always
+  passed in, never cached, so `Draft` stays plain data (and `Mode` `Eq`).
+  `scroll` is the first row the box shows; `App` calls
+  `clamp_scroll(width, height)` after every event with the box's width and
+  text rows, so the draft holds where it is scrolled, not how it is laid
+  out.
+  `up(width)`/`down(width)` move by screen row (wrapped rows and lines
+  alike) to the last boundary at or before a sticky goal column (`goal`,
+  in cells, kept across consecutive `↑`/`↓` and cleared by any other edit or
+  move); on a soft-wrapped row that is at most the start of its last
+  cluster. `home`/`end` go to the ends of the cursor's whole line, not its
+  screen row.
 - `tui::panel`: `layout(threads, selected, width) -> Layout { lines,
   thread_starts }`, pure. Per thread: header (`c3 open`, `c3 open · outdated`,
   `c3 resolved by claude`), `> ` quote lines, then each comment's
@@ -306,7 +340,9 @@ Its parts:
   TUI wraps text; `plain_rows(text, width) -> Vec<String>` and
   `row_count(text, width)` run the same algorithm on unstyled text (table
   cells, thread panel rows, and the view clamp, which counts rows without
-  building them).
+  building them); `row_ranges(text, width)` gives each row's byte range and
+  `clusters(text)` each drawn cluster's, for the comment draft, whose text
+  has no tabs or control characters.
   Breaks after the last whitespace that fits, hard-breaks a word wider than
   a row, and leaves whitespace at a break hanging on the end of its row, so
   the rows join back to the displayed line. Tabs are four spaces and control
@@ -352,9 +388,15 @@ Its parts:
   `Comment on line N as <author>`, `Comment on lines A-B as <author>` for a
   range, or `Reply to <id> as <author>`. In `Panel`
   a bordered box of half the terminal (at least 4 rows) sits above the
-  footer and the view shrinks to stay above it. In `Input` the bordered 3-row
-  box replaces the footer (and hides the panel it came from); the draft
-  scrolls sideways instead of wrapping, and the cursor is a reversed cell.
+  footer and the view shrinks to stay above it. In `Input` the bordered box
+  replaces the footer (and hides the panel it came from), as tall as
+  `App` says; it draws the draft's `rows(draft_width())` from its `scroll`,
+  so text wraps inside the border exactly as `update` counts it, the cursor
+  is a reversed cell at `cursor_at`, and the bottom border reads
+  `ctrl+s:save enter:newline esc:cancel` (`ctrl+s:save esc:cancel` when
+  that does not fit), or, while `discard_asked`, `esc:discard the draft  any
+  other key:keep it` (`esc:discard other:keep`, then `esc:discard?`, when
+  that does not fit; widths in cells).
 - `tui` (module root): the driver. `load` reads lines (`review::file_lines`)
   and all threads; `Loaded::into_app` highlights the file only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
@@ -378,6 +420,9 @@ Its parts:
   them. Each clamp walks back at most `height` lines. The panel never moves
   the cursor, so the listed threads are always those of the line shown
   selected.
+- In `Input`, after every event (resizes included) the draft's `scroll`
+  shows its cursor row among the box's rows and leaves no blank rows below
+  the text, so the box follows the cursor as it grows, scrolls and rewraps.
 - A failed write keeps the draft and mode and shows the error; nothing is lost
   silently.
 - The terminal is restored on every exit path: `TerminalSession` restores on
@@ -483,7 +528,11 @@ state or `review`.
 - `tui`: scripted key events through `update` assert on state; `TestBackend`
   snapshots (inline expected strings) cover Normal, Visual, Panel and Input
   rendering, gutter glyphs and styles (including the selection highlight on
-  wrapped and table rows, before and after a resize); `tui::wrap` has examples plus a property test
+  wrapped and table rows, before and after a resize, and the comment box
+  wrapping, growing and scrolling its draft); `tui::draft` has examples of
+  its rows and cursor cell by width and of cluster and row moves, plus a
+  property over a fixed three-paragraph draft that every cluster boundary is
+  reachable by `↓` then `→` and editable there; `tui::wrap` has examples plus a property test
   over a fixed corpus (ASCII, CJK, emoji, tabs, long words) and widths
   1..=12: rows join back to the line and each fits the width; `tui::panel`
   has examples plus a property over a fixed corpus (ASCII, CJK, emoji ZWJ,

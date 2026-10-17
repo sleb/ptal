@@ -46,6 +46,21 @@ fn sandbox_named(name: &str, content: &str) -> Sandbox {
 }
 
 impl Sandbox {
+    /// [`Sandbox::press`] `before`, then type `text`, then `after`.
+    fn press_typing(
+        &self,
+        app: &mut App,
+        before: &[&str],
+        text: &str,
+        after: &[&str],
+    ) -> ControlFlow<()> {
+        let typed = typing(text);
+        let mut keys: Vec<&str> = before.to_vec();
+        keys.extend(typed.iter().map(String::as_str));
+        keys.extend(after);
+        self.press(app, &keys)
+    }
+
     fn open(&self) -> App {
         self.open_with(true)
     }
@@ -67,14 +82,35 @@ impl Sandbox {
 }
 
 fn key(name: &str) -> KeyEvent {
+    if let Some(c) = name.strip_prefix("ctrl+") {
+        let c = c.chars().next().unwrap();
+        return KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+    }
     let code = match name {
         "enter" => KeyCode::Enter,
         "esc" => KeyCode::Esc,
         "tab" => KeyCode::Tab,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "backspace" => KeyCode::Backspace,
         n if n.chars().count() == 1 => KeyCode::Char(n.chars().next().unwrap()),
         n => panic!("unknown key {n}"),
     };
     KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+/// The keys that type `text` into a comment box, each `\n` as `enter`.
+fn typing(text: &str) -> Vec<String> {
+    text.chars()
+        .map(|c| match c {
+            '\n' => "enter".to_string(),
+            c => c.to_string(),
+        })
+        .collect()
 }
 
 fn drawn(app: &App) -> Buffer {
@@ -100,7 +136,7 @@ fn commenting_on_a_line_and_quitting_leaves_a_thread_for_the_cli() {
     let sb = sandbox(PLAN);
     let mut app = sb.open();
 
-    let flow = sb.press(&mut app, &["j", "j", "enter", "h", "i", "enter", "q"]);
+    let flow = sb.press(&mut app, &["j", "j", "enter", "h", "i", "ctrl+s", "q"]);
 
     assert_eq!(flow, ControlFlow::Break(()));
     let threads = sb.reviews.view(&sb.file, false).unwrap();
@@ -131,7 +167,7 @@ fn a_saved_comment_shows_in_the_gutter_and_after_reopening() {
     let sb = sandbox(PLAN);
     let mut app = sb.open();
 
-    let flow = sb.press(&mut app, &["j", "j", "enter", "x", "enter"]);
+    let flow = sb.press(&mut app, &["j", "j", "enter", "x", "ctrl+s"]);
 
     assert_eq!(flow, ControlFlow::Continue(()));
     assert!(app.marker(2).is_some());
@@ -181,17 +217,17 @@ fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
     assert_eq!(typing, ControlFlow::Continue(()));
     fs::write(&sb.file, "one\ntwo\n").unwrap();
 
-    let flow = sb.press(&mut app, &["enter"]);
+    let flow = sb.press(&mut app, &["ctrl+s"]);
 
     assert_eq!(flow, ControlFlow::Continue(()));
-    assert_eq!(
-        app.mode(),
-        &Mode::Input {
-            draft: "ok".into(),
-            cursor: 2,
-            back: Back::Normal,
-            reply_to: None,
-        }
+    assert!(
+        matches!(
+            app.mode(),
+            Mode::Input { draft, back: Back::Normal, reply_to: None, .. }
+                if draft.text() == "ok" && draft.cursor() == 2
+        ),
+        "{:?}",
+        app.mode()
     );
     assert!(app.status().unwrap().contains("invalid line range"));
     assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
@@ -206,7 +242,7 @@ fn the_reviewed_file_is_not_modified_by_a_comment_round() {
     );
     let mut app = sb.open();
 
-    let _ = sb.press(&mut app, &["j", "enter", "n", "o", "enter", "q"]);
+    let _ = sb.press(&mut app, &["j", "enter", "n", "o", "ctrl+s", "q"]);
 
     let after = (
         fs::read(&sb.file).unwrap(),
@@ -239,7 +275,7 @@ fn a_table_shows_aligned_and_a_comment_on_a_row_anchors_to_its_raw_line() {
         assert!(text.contains(row), "{row:?} missing from\n{text}");
     }
 
-    let flow = sb.press(&mut app, &["j", "j", "j", "enter", "h", "i", "enter"]);
+    let flow = sb.press(&mut app, &["j", "j", "j", "enter", "h", "i", "ctrl+s"]);
 
     assert_eq!(flow, ControlFlow::Continue(()));
     let json = cli_comments(&sb);
@@ -274,7 +310,7 @@ fn a_wide_tables_long_cell_wraps_in_its_column_and_a_comment_quotes_the_raw_line
         assert!(text.contains(word.as_str()), "{word} missing from\n{text}");
     }
 
-    let flow = sb.press(&mut app, &["j", "j", "j", "enter", "h", "i", "enter"]);
+    let flow = sb.press(&mut app, &["j", "j", "j", "enter", "h", "i", "ctrl+s"]);
 
     assert_eq!(flow, ControlFlow::Continue(()));
     let json = cli_comments(&sb);
@@ -333,7 +369,7 @@ fn a_from_the_panel_adds_a_second_thread_beside_the_first() {
     );
     let mut app = sb.open();
 
-    let flow = sb.press(&mut app, &["j", "j", "enter", "a", "s", "e", "c", "enter"]);
+    let flow = sb.press(&mut app, &["j", "j", "enter", "a", "s", "e", "c", "ctrl+s"]);
 
     assert_eq!(flow, ControlFlow::Continue(()));
     let panel = screen(&app);
@@ -389,7 +425,7 @@ fn r_replies_to_the_selected_thread_and_the_comment_lands_last() {
     let mut app = sb.open();
     assert!(screen(&app).contains("◆ 3│three"), "{}", screen(&app));
 
-    let flow = sb.press(&mut app, &["j", "j", "enter", "r", "t", "h", "x", "enter"]);
+    let flow = sb.press(&mut app, &["j", "j", "enter", "r", "t", "h", "x", "ctrl+s"]);
 
     assert_eq!(flow, ControlFlow::Continue(()));
     let json = cli_comments(&sb);
@@ -432,14 +468,14 @@ fn a_failed_reply_keeps_the_draft_and_shows_the_error() {
         fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).unwrap();
     }
 
-    let flow = sb.press(&mut app, &["enter"]);
+    let flow = sb.press(&mut app, &["ctrl+s"]);
 
     for dir in &all {
         fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
     }
     assert_eq!(flow, ControlFlow::Continue(()));
     assert!(
-        matches!(app.mode(), Mode::Input { draft, reply_to: Some(id), .. } if draft == "ok" && id == "c1"),
+        matches!(app.mode(), Mode::Input { draft, reply_to: Some(id), .. } if draft.text() == "ok" && id == "c1"),
         "{:?}",
         app.mode()
     );
@@ -498,7 +534,7 @@ fn o_reopens_a_thread_the_agent_resolved_and_a_reply_reopens_too() {
     let _ = sb.press(&mut app, &["esc"]);
     assert!(screen(&app).contains("● 2│"), "{}", screen(&app));
     // r on line 4 (resolved) reopens
-    let _ = sb.press(&mut app, &["j", "j", "enter", "r", "y", "enter"]);
+    let _ = sb.press(&mut app, &["j", "j", "enter", "r", "y", "ctrl+s"]);
 
     let json = cli_comments(&sb);
     let threads = json["threads"].as_array().unwrap();
@@ -537,7 +573,7 @@ fn with_two_threads_on_a_line_each_action_touches_only_the_selected_one() {
     let _ = sb.press(&mut app, &["j", "j", "enter"]);
     assert_eq!(shape(&sb), [(1, "open".into()), (1, "open".into())]);
 
-    let _ = sb.press(&mut app, &["tab", "r", "y", "enter"]);
+    let _ = sb.press(&mut app, &["tab", "r", "y", "ctrl+s"]);
     assert_eq!(shape(&sb), [(1, "open".into()), (2, "open".into())]);
 
     let _ = sb.press(&mut app, &["x"]);
@@ -579,13 +615,13 @@ fn a_second_round_with_the_agent_runs_end_to_end() {
 
     // Round 1: the human comments in the TUI, the agent answers.
     let mut app = sb.open();
-    let _ = sb.press(&mut app, &["j", "j", "enter", "w", "h", "y", "enter", "q"]);
+    let _ = sb.press(&mut app, &["j", "j", "enter", "w", "h", "y", "ctrl+s", "q"]);
     agent(&["reply", file, "c1", "Because.", "--as", "claude"]);
 
     // Round 2: the TUI shows the agent waiting; the human replies.
     let mut app = sb.open();
     assert!(screen(&app).contains("◆ 3│three"), "{}", screen(&app));
-    let _ = sb.press(&mut app, &["j", "j", "enter", "r", "o", "k", "enter"]);
+    let _ = sb.press(&mut app, &["j", "j", "enter", "r", "o", "k", "ctrl+s"]);
     assert_eq!(last_comment()["author"], "scott");
     assert_eq!(last_comment()["body"], "ok");
 
@@ -622,7 +658,7 @@ fn a_markdown_file_shows_highlighted_and_a_comment_still_quotes_the_raw_line() {
     assert!(screen(&app).starts_with("  1│# Title"));
     assert_eq!(looks_highlighted(&app), (true, true));
 
-    let flow = sb.press(&mut app, &["enter", "h", "i", "enter"]);
+    let flow = sb.press(&mut app, &["enter", "h", "i", "ctrl+s"]);
 
     assert_eq!(flow, ControlFlow::Continue(()));
     let threads = sb.reviews.view(&sb.file, false).unwrap();
@@ -659,7 +695,7 @@ fn a_visual_selection_downward_or_upward_saves_one_thread_on_the_range() {
         let mut app = sb.open();
 
         let mut keys = select.to_vec();
-        keys.extend(["enter", "h", "i", "enter"]);
+        keys.extend(["enter", "h", "i", "ctrl+s"]);
         let flow = sb.press(&mut app, &keys);
 
         assert_eq!(flow, ControlFlow::Continue(()), "{select:?}");
@@ -699,7 +735,7 @@ fn a_range_overlapping_a_thread_adds_a_second_one_and_both_mark_the_shared_line(
         .unwrap();
     let mut app = sb.open();
 
-    let flow = sb.press(&mut app, &["j", "v", "j", "j", "enter", "o", "k", "enter"]);
+    let flow = sb.press(&mut app, &["j", "v", "j", "j", "enter", "o", "k", "ctrl+s"]);
 
     assert_eq!(flow, ControlFlow::Continue(()));
     let json = cli_comments(&sb);
@@ -710,4 +746,86 @@ fn a_range_overlapping_a_thread_adds_a_second_one_and_both_mark_the_shared_line(
     assert_eq!(app.threads_on(2).len(), 2, "line 3 carries both");
     let marked: Vec<bool> = (0..5).map(|i| app.marker(i).is_some()).collect();
     assert_eq!(marked, [false, true, true, true, false]);
+}
+
+#[test]
+fn a_comment_of_two_paragraphs_reads_back_the_same_in_the_cli_and_the_panel() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let body = "First para.\n\nSecond para.";
+
+    let flow = sb.press_typing(&mut app, &["j", "j", "enter"], body, &["ctrl+s"]);
+
+    assert_eq!(flow, ControlFlow::Continue(()));
+    assert_eq!(cli_comments(&sb)["threads"][0]["comments"][0]["body"], body);
+    let mut reopened = sb.open();
+    let _ = sb.press(&mut reopened, &["j", "j", "enter"]);
+    let panel = screen(&reopened);
+    let rows: Vec<&str> = panel.lines().collect();
+    let first = rows
+        .iter()
+        .position(|row| row.contains("First para."))
+        .unwrap_or_else(|| panic!("{panel}"));
+    assert_eq!(rows[first + 1].replace(['│', ' '], ""), "", "{panel}");
+    assert!(rows[first + 2].contains("Second para."), "{panel}");
+}
+
+#[test]
+fn a_multi_line_reply_lands_last_with_its_newline() {
+    let sb = sandbox(PLAN);
+    sb.reviews
+        .add_thread(&sb.file, 3, 3, "rename?", "claude")
+        .unwrap();
+    let mut app = sb.open();
+
+    let _ = sb.press_typing(
+        &mut app,
+        &["j", "j", "enter", "r"],
+        "Done.\nSee c2.",
+        &["ctrl+s"],
+    );
+
+    let json = cli_comments(&sb);
+    let comments = json["threads"][0]["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 2);
+    assert_eq!(comments[1]["body"], "Done.\nSee c2.");
+}
+
+#[test]
+fn a_word_inserted_mid_draft_lands_on_its_line() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+
+    let _ = sb.press_typing(
+        &mut app,
+        &["enter"],
+        "one\ntwo\nthree",
+        &["up", "home", "n", "e", "w", " ", "ctrl+s"],
+    );
+
+    let json = cli_comments(&sb);
+    assert_eq!(
+        json["threads"][0]["comments"][0]["body"],
+        "one\nnew two\nthree"
+    );
+}
+
+#[test]
+fn a_failed_save_keeps_the_whole_multi_line_draft() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let text = "first line\n\nthird line";
+    let _ = sb.press_typing(&mut app, &["G", "enter"], text, &[]);
+    fs::write(&sb.file, "one\ntwo\n").unwrap();
+
+    let flow = sb.press(&mut app, &["ctrl+s"]);
+
+    assert_eq!(flow, ControlFlow::Continue(()));
+    assert!(
+        matches!(app.mode(), Mode::Input { draft, .. } if draft.text() == text),
+        "{:?}",
+        app.mode()
+    );
+    assert!(app.status().unwrap().contains("invalid line range"));
+    assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
 }

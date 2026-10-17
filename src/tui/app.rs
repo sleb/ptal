@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use crate::model::{State, Status};
 use crate::review::ThreadView;
 
+use super::draft::Draft;
 use super::highlight::{self, Styling};
 use super::panel::{self, Layout};
 use super::{table, wrap};
@@ -39,12 +40,13 @@ pub enum Mode {
     },
     /// Typing a comment: a new thread on the cursor line, or a reply.
     Input {
-        /// The comment so far.
-        draft: String,
-        /// Insertion point as a `char` index into `draft`.
-        cursor: usize,
+        /// The comment so far, and the cursor in it.
+        draft: Draft,
         /// The mode this box was opened from, which `esc` returns to.
         back: Back,
+        /// Whether an `esc` (or `ctrl+c`) on a draft that is not blank is
+        /// waiting for a second one to discard it.
+        discard_asked: bool,
         /// The id of the thread being replied to; `None` adds a new thread.
         ///
         /// Captured when `r` is pressed, so a re-read between the keypress
@@ -58,8 +60,8 @@ impl Mode {
     /// `reply_to`, replying to that thread.
     fn input(back: Back, reply_to: Option<String>) -> Self {
         Mode::Input {
-            draft: String::new(),
-            cursor: 0,
+            draft: Draft::default(),
+            discard_asked: false,
             back,
             reply_to,
         }
@@ -213,13 +215,17 @@ pub struct ScreenRow {
 
 /// Terminal rows taken by the footer in Normal mode.
 const FOOTER_ROWS: usize = 1;
-/// Terminal rows taken by the bordered input box (it replaces the footer).
-const INPUT_BOX_ROWS: usize = 3;
+/// Rows the comment box's border takes; the box replaces the footer.
+const BOX_BORDER_ROWS: usize = 2;
+/// The comment box shows at most this many rows of its draft.
+const BOX_MAX_TEXT_ROWS: usize = 10;
 /// The thread panel is half the terminal, but never fewer rows than this
 /// (border included).
 const PANEL_MIN_ROWS: usize = 4;
 /// Rows the panel's border takes from its content.
 const PANEL_BORDER_ROWS: usize = 2;
+/// Columns the comment box's border takes from its text.
+const BOX_BORDER_COLS: usize = 2;
 /// Gutter columns besides the line number: the glyph, a space, and `│`.
 const GUTTER_EXTRA: usize = 3;
 
@@ -372,9 +378,28 @@ impl App {
     pub(super) fn chrome_rows(&self) -> usize {
         match self.mode {
             Mode::Normal | Mode::Visual { .. } => FOOTER_ROWS,
-            Mode::Input { .. } => INPUT_BOX_ROWS,
+            Mode::Input { .. } => self.box_text_rows() + BOX_BORDER_ROWS,
             Mode::Panel { .. } => self.panel_rows() + FOOTER_ROWS,
         }
+    }
+
+    /// Cells the comment box wraps its draft at: the box's inner width less
+    /// one, so a cursor after a full row still has a cell to stand on.
+    pub(super) fn draft_width(&self) -> usize {
+        self.cols.saturating_sub(BOX_BORDER_COLS + 1)
+    }
+
+    /// Draft rows the comment box shows: all of them, at least 1, but at
+    /// most 10 and at most `rows / 2 - 2` (so the file view keeps at least
+    /// half the terminal), never fewer than 1. 0 outside `Input`.
+    pub(super) fn box_text_rows(&self) -> usize {
+        let Mode::Input { draft, .. } = &self.mode else {
+            return 0;
+        };
+        let cap = (self.rows / 2)
+            .saturating_sub(BOX_BORDER_ROWS)
+            .clamp(1, BOX_MAX_TEXT_ROWS);
+        draft.rows(self.draft_width()).len().clamp(1, cap)
     }
 
     /// Whether the panel's selected thread is resolved.
@@ -505,7 +530,8 @@ impl App {
     /// Keep the whole cursor line on screen (`top <= cursor` and lines
     /// `top..=cursor` fit in `height` rows; only a cursor line taller than
     /// the view is cut off, with `top == cursor`), and never leave blank rows
-    /// below the last line while earlier lines could fill them.
+    /// below the last line while earlier lines could fill them. In `Input`,
+    /// also keep the draft's cursor row inside the box.
     fn clamp_view(&mut self) {
         if matches!(self.mode, Mode::Panel { .. }) && self.threads_on(self.cursor).is_empty() {
             self.mode = Mode::Normal;
@@ -517,6 +543,10 @@ impl App {
             .min(self.fit_back(self.last_line(), height))
             .clamp(self.fit_back(self.cursor, height), self.cursor);
         self.clamp_panel();
+        let (width, rows) = (self.draft_width(), self.box_text_rows());
+        if let Mode::Input { draft, .. } = &mut self.mode {
+            draft.clamp_scroll(width, rows);
+        }
     }
 
     /// Keep the panel's selection and scroll inside its content.
@@ -822,10 +852,26 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     None
 }
 
+/// What a save stores of `draft`: the text less trailing whitespace and
+/// less leading blank lines, keeping the indent of its first line of text.
+fn saved_body(draft: &str) -> &str {
+    let text = draft.trim_end();
+    let first = text.find(|c: char| !c.is_whitespace()).unwrap_or(0);
+    let line = text[..first].rfind('\n').map_or(0, |at| at + 1);
+    &text[line..]
+}
+
+/// A key in the comment box: `ctrl+s` (either case, as some terminals
+/// report it with shift or caps lock) saves a draft that is not blank, as
+/// [`saved_body`] trims it; `enter` starts a new line; the rest edit the
+/// draft. `esc` or `ctrl+c` returns to where the box came from: at once for
+/// a blank draft, else on a second press, any other key in between keeping
+/// the draft.
 fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    let width = app.draft_width();
     let Mode::Input {
         draft,
-        cursor,
+        discard_asked,
         back,
         reply_to,
     } = &mut app.mode
@@ -834,13 +880,21 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     };
     let back = back.mode();
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let len = draft.chars().count();
+    let blank = draft.text().trim().is_empty();
+    let cancel = key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c'));
+    if cancel {
+        if blank || *discard_asked {
+            app.mode = back;
+        } else {
+            *discard_asked = true;
+        }
+        return None;
+    }
+    *discard_asked = false;
     match key.code {
-        KeyCode::Char('c') if ctrl => app.mode = back,
-        KeyCode::Esc => app.mode = back,
-        KeyCode::Enter if draft.trim().is_empty() => {}
-        KeyCode::Enter => {
-            let body = draft.clone();
+        KeyCode::Char('s' | 'S') if ctrl && blank => {}
+        KeyCode::Char('s' | 'S') if ctrl => {
+            let body = saved_body(draft.text()).to_owned();
             return Some(match reply_to {
                 Some(id) => Effect::Reply {
                     id: id.clone(),
@@ -857,31 +911,19 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 }
             });
         }
-        KeyCode::Char(c) if !ctrl => {
-            draft.insert(byte_index(draft, *cursor), c);
-            *cursor += 1;
-        }
-        KeyCode::Backspace if *cursor > 0 => {
-            *cursor -= 1;
-            draft.remove(byte_index(draft, *cursor));
-        }
-        KeyCode::Delete if *cursor < len => {
-            draft.remove(byte_index(draft, *cursor));
-        }
-        KeyCode::Left => *cursor = cursor.saturating_sub(1),
-        KeyCode::Right => *cursor = (*cursor + 1).min(len),
-        KeyCode::Home => *cursor = 0,
-        KeyCode::End => *cursor = len,
+        KeyCode::Char(c) if !ctrl => draft.insert(c),
+        KeyCode::Enter => draft.newline(),
+        KeyCode::Backspace => draft.backspace(),
+        KeyCode::Delete => draft.delete(),
+        KeyCode::Left => draft.left(),
+        KeyCode::Right => draft.right(),
+        KeyCode::Up => draft.up(width),
+        KeyCode::Down => draft.down(width),
+        KeyCode::Home => draft.home(),
+        KeyCode::End => draft.end(),
         _ => {}
     }
     None
-}
-
-/// Byte offset of the `index`th `char` of `text` (its length if past the end).
-fn byte_index(text: &str, index: usize) -> usize {
-    text.char_indices()
-        .nth(index)
-        .map_or(text.len(), |(i, _)| i)
 }
 
 #[cfg(test)]
@@ -1394,7 +1436,7 @@ mod tests {
         typed(&mut a, "why?");
 
         assert_eq!(
-            update(&mut a, press(KeyCode::Enter)),
+            update(&mut a, ctrl('s')),
             Some(Effect::Add {
                 start: 3,
                 end: 3,
@@ -1426,7 +1468,7 @@ mod tests {
         typed(&mut a, "why?");
 
         assert_eq!(
-            update(&mut a, press(KeyCode::Enter)),
+            update(&mut a, ctrl('s')),
             Some(Effect::Add {
                 start: 4,
                 end: 4,
@@ -1559,9 +1601,13 @@ mod tests {
         send(app, text.chars().map(ch));
     }
 
+    /// The draft's text and its cursor as a `char` index.
     fn draft(app: &App) -> (&str, usize) {
         match &app.mode {
-            Mode::Input { draft, cursor, .. } => (draft, *cursor),
+            Mode::Input { draft, .. } => {
+                let text = draft.text();
+                (text, text[..draft.cursor()].chars().count())
+            }
             _ => panic!("not in Input mode"),
         }
     }
@@ -1628,10 +1674,13 @@ mod tests {
     }
 
     #[test]
-    fn esc_discards_the_draft_and_keeps_the_cursor() {
+    fn esc_twice_discards_the_draft_and_keeps_the_cursor() {
         let mut a = input_app();
         typed(&mut a, "hello");
 
+        assert_eq!(update(&mut a, press(KeyCode::Esc)), None);
+        assert_eq!(draft(&a), ("hello", 5), "the first esc only asks");
+        assert!(discard_asked(&a));
         assert_eq!(update(&mut a, press(KeyCode::Esc)), None);
 
         assert_eq!(a.mode, Mode::Normal);
@@ -1641,21 +1690,21 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_a_blank_draft_stays_in_input_with_no_effect() {
+    fn ctrl_s_on_a_blank_draft_stays_in_input_with_no_effect() {
         let mut a = input_app();
         typed(&mut a, "  ");
 
-        assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
+        assert_eq!(update(&mut a, ctrl('s')), None);
 
         assert_eq!(draft(&a), ("  ", 2));
     }
 
     #[test]
-    fn enter_with_text_asks_to_save_on_a_one_based_line_and_waits() {
+    fn ctrl_s_with_text_asks_to_save_on_a_one_based_line_and_waits() {
         let mut a = input_app();
         typed(&mut a, "why?");
 
-        let effect = update(&mut a, press(KeyCode::Enter));
+        let effect = update(&mut a, ctrl('s'));
 
         assert_eq!(
             effect,
@@ -1672,7 +1721,7 @@ mod tests {
     fn saved_returns_to_normal_and_says_what_was_added() {
         let mut a = input_app();
         typed(&mut a, "why?");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
 
         update(
             &mut a,
@@ -1693,7 +1742,7 @@ mod tests {
     fn save_failure_keeps_the_draft_and_shows_the_message() {
         let mut a = input_app();
         typed(&mut a, "why?");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
 
         update(&mut a, Event::SaveFailed("review is locked".into()));
 
@@ -1715,11 +1764,76 @@ mod tests {
         assert_eq!(a.cursor, 2);
     }
 
+    /// Whether the box is asking before it discards its draft.
+    fn discard_asked(a: &App) -> bool {
+        matches!(
+            a.mode,
+            Mode::Input {
+                discard_asked: true,
+                ..
+            }
+        )
+    }
+
     #[test]
-    fn ctrl_c_cancels_input_and_a_second_one_quits() {
+    fn a_blank_draft_is_cancelled_by_one_esc() {
+        for cancel in [press(KeyCode::Esc), ctrl('c')] {
+            let mut a = input_app();
+            send(&mut a, [ch(' '), press(KeyCode::Enter)]);
+
+            assert_eq!(update(&mut a, cancel), None);
+
+            assert_eq!(a.mode, Mode::Normal);
+        }
+    }
+
+    #[test]
+    fn esc_or_ctrl_c_after_either_one_discards() {
+        for (first, second) in [
+            (press(KeyCode::Esc), ctrl('c')),
+            (ctrl('c'), press(KeyCode::Esc)),
+            (ctrl('c'), ctrl('c')),
+        ] {
+            let mut a = input_app();
+            typed(&mut a, "x");
+
+            send(&mut a, [first]);
+            assert!(discard_asked(&a));
+            send(&mut a, [second]);
+
+            assert_eq!(a.mode, Mode::Normal);
+        }
+    }
+
+    #[test]
+    fn any_other_key_keeps_the_draft_and_stops_asking() {
+        for key in [
+            ch('y'),
+            press(KeyCode::Left),
+            press(KeyCode::Enter),
+            ctrl('d'),
+        ] {
+            let mut a = input_app();
+            typed(&mut a, "x");
+            send(&mut a, [press(KeyCode::Esc), key.clone()]);
+            assert!(!discard_asked(&a), "{key:?}");
+
+            send(&mut a, [press(KeyCode::Esc)]);
+
+            assert!(
+                discard_asked(&a),
+                "{key:?}: asks again rather than discarding"
+            );
+            assert!(draft(&a).0.starts_with('x'), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn ctrl_c_twice_cancels_input_and_a_third_quits() {
         let mut a = input_app();
         typed(&mut a, "draft");
 
+        assert_eq!(update(&mut a, ctrl('c')), None);
         assert_eq!(update(&mut a, ctrl('c')), None);
         assert_eq!(a.mode, Mode::Normal);
         assert_eq!(update(&mut a, ctrl('c')), Some(Effect::Quit));
@@ -1732,6 +1846,145 @@ mod tests {
         send(&mut a, [ctrl('d'), ctrl('u')]);
 
         assert_eq!(draft(&a), ("", 0));
+    }
+
+    #[test]
+    fn enter_starts_a_new_line_and_asks_for_nothing() {
+        let mut a = input_app();
+        typed(&mut a, "a");
+
+        assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
+        typed(&mut a, "b");
+
+        assert_eq!(draft(&a), ("a\nb", 3));
+    }
+
+    #[test]
+    fn ctrl_s_saves_every_line_as_typed() {
+        let lines = [ch('a'), press(KeyCode::Enter), ch('b')];
+        let mut one = input_app();
+        let mut range = visual_at(10, 12, 3);
+        send(&mut range, [ch('j'), press(KeyCode::Enter)]);
+        let mut reply = two_threads_panel();
+        send(&mut reply, [ch('r')]);
+        for a in [&mut one, &mut range, &mut reply] {
+            send(a, lines.clone());
+        }
+
+        let body = || "a\nb".to_string();
+        assert_eq!(
+            update(&mut one, ctrl('s')),
+            Some(Effect::Add {
+                start: 3,
+                end: 3,
+                body: body()
+            })
+        );
+        assert_eq!(
+            update(&mut range, ctrl('s')),
+            Some(Effect::Add {
+                start: 4,
+                end: 5,
+                body: body()
+            })
+        );
+        assert_eq!(
+            update(&mut reply, ctrl('s')),
+            Some(Effect::Reply {
+                id: "c2".into(),
+                body: body()
+            })
+        );
+    }
+
+    #[test]
+    fn ctrl_s_drops_trailing_blank_lines_and_keeps_the_rest() {
+        let mut a = input_app();
+        typed(&mut a, "  fix this");
+        send(&mut a, [press(KeyCode::Enter), press(KeyCode::Enter)]);
+        typed(&mut a, "please ");
+        send(
+            &mut a,
+            [press(KeyCode::Enter), ch(' '), press(KeyCode::Enter)],
+        );
+
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::Add {
+                start: 3,
+                end: 3,
+                body: "  fix this\n\nplease".into()
+            })
+        );
+        assert_eq!(
+            draft(&a).0,
+            "  fix this\n\nplease \n \n",
+            "the draft is untouched"
+        );
+    }
+
+    #[test]
+    fn ctrl_s_drops_leading_blank_lines_but_keeps_the_first_lines_indent() {
+        let mut a = input_app();
+        send(
+            &mut a,
+            [press(KeyCode::Enter), ch(' '), press(KeyCode::Enter)],
+        );
+        typed(&mut a, "  indented");
+
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::Add {
+                start: 3,
+                end: 3,
+                body: "  indented".into()
+            })
+        );
+    }
+
+    #[test]
+    fn ctrl_with_a_capital_s_saves_too() {
+        let mut a = input_app();
+        typed(&mut a, "why?");
+
+        let effect = update(&mut a, ctrl('S'));
+
+        assert!(matches!(effect, Some(Effect::Add { .. })), "{effect:?}");
+    }
+
+    #[test]
+    fn ctrl_s_on_only_newlines_and_spaces_does_nothing() {
+        let mut a = input_app();
+        send(
+            &mut a,
+            [press(KeyCode::Enter), ch(' '), press(KeyCode::Enter)],
+        );
+
+        assert_eq!(update(&mut a, ctrl('s')), None);
+        assert_eq!(draft(&a), ("\n \n", 3));
+    }
+
+    #[test]
+    fn up_and_down_move_between_the_drafts_rows_at_the_box_width() {
+        // 13 columns: an 11-cell inner box, rows wrapped at 10.
+        let mut a = App::open(vec!["x".into()], &[], "scott", (13, 20));
+        send(&mut a, [press(KeyCode::Enter)]);
+        typed(&mut a, "aaaa bbbb cccc");
+
+        send(&mut a, [press(KeyCode::Up)]);
+        assert_eq!(draft(&a).1, 4, "from `cc|cc` up to `aaaa|`");
+        send(&mut a, [press(KeyCode::Down)]);
+        assert_eq!(draft(&a).1, 14);
+    }
+
+    #[test]
+    fn backspace_at_the_start_of_a_line_joins_it_to_the_one_above() {
+        let mut a = input_app();
+        send(&mut a, [ch('a'), press(KeyCode::Enter), ch('b')]);
+
+        send(&mut a, [press(KeyCode::Left), press(KeyCode::Backspace)]);
+
+        assert_eq!(draft(&a), ("ab", 1));
     }
 
     // --- markers ---
@@ -1923,7 +2176,7 @@ mod tests {
         let mut a = app(5, 10);
         send(&mut a, [press(KeyCode::Enter)]);
         typed(&mut a, "x");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
         let threads = vec![
             view("c1", (4, 5), Status::Open, State::Current),
             view("c2", (1, 1), Status::Open, State::Outdated),
@@ -2257,11 +2510,11 @@ mod tests {
     }
 
     #[test]
-    fn enter_in_a_panel_input_saves_on_the_cursor_line() {
+    fn ctrl_s_in_a_panel_input_saves_on_the_cursor_line() {
         let mut a = in_panel_input();
         typed(&mut a, "new");
 
-        let effect = update(&mut a, press(KeyCode::Enter));
+        let effect = update(&mut a, ctrl('s'));
 
         assert_eq!(
             effect,
@@ -2277,7 +2530,7 @@ mod tests {
     fn saved_returns_to_the_panel_with_the_new_thread_selected() {
         let mut a = in_panel_input();
         typed(&mut a, "new");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
         let threads = vec![
             chatty("c1", (2, 2), 5),
             said_by(view("c9", (2, 2), Status::Open, State::Current), &["scott"]),
@@ -2306,6 +2559,7 @@ mod tests {
             typed(&mut a, "draft");
             let before = (panel_after_cancel(&a), a.cursor);
 
+            update(&mut a, cancel.clone());
             update(&mut a, cancel);
 
             assert_eq!((panel(&a), a.cursor), (before.0, before.1));
@@ -2326,7 +2580,7 @@ mod tests {
     fn a_failed_save_keeps_the_panel_input_and_its_draft() {
         let mut a = in_panel_input();
         typed(&mut a, "x");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
 
         update(&mut a, Event::SaveFailed("locked".into()));
 
@@ -2345,7 +2599,7 @@ mod tests {
         let mut a = in_panel_input();
         typed(&mut a, "  ");
 
-        assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
+        assert_eq!(update(&mut a, ctrl('s')), None);
         assert_eq!(draft(&a), ("  ", 2));
     }
 
@@ -2362,6 +2616,89 @@ mod tests {
         send(&mut a, [press(KeyCode::Esc)]);
         assert_eq!(a.height(), 6);
         assert!(a.top <= a.cursor && a.cursor < a.top + 6, "{:?}", at(&a));
+    }
+
+    /// `a`'s draft scroll and its cursor's screen row.
+    fn box_scroll(a: &App) -> (usize, usize) {
+        match &a.mode {
+            Mode::Input { draft, .. } => (draft.scroll(), draft.cursor_at(a.draft_width()).0),
+            other => panic!("not in Input mode: {other:?}"),
+        }
+    }
+
+    /// `n` draft lines, `x` on each, in a box on line 1.
+    fn box_of(n: usize, rows: u16) -> App {
+        let mut a = app(30, rows);
+        send(&mut a, [press(KeyCode::Enter)]);
+        for i in 0..n {
+            if i > 0 {
+                send(&mut a, [press(KeyCode::Enter)]);
+            }
+            typed(&mut a, "x");
+        }
+        a
+    }
+
+    #[test]
+    fn the_box_grows_with_its_draft_up_to_a_cap() {
+        assert_eq!(box_of(0, 40).chrome_rows(), 3, "an empty draft is one row");
+        assert_eq!(box_of(1, 40).chrome_rows(), 3);
+        assert_eq!(box_of(4, 40).chrome_rows(), 6);
+        assert_eq!(box_of(10, 40).chrome_rows(), 12);
+        assert_eq!(box_of(14, 40).chrome_rows(), 12, "at most 10 text rows");
+        assert_eq!(box_of(14, 16).chrome_rows(), 8, "at most rows / 2 - 2");
+        assert_eq!(box_of(3, 4).chrome_rows(), 3, "at least one text row");
+    }
+
+    #[test]
+    fn a_draft_past_the_cap_scrolls_to_keep_the_cursor_row_shown() {
+        let mut a = box_of(14, 40);
+        assert_eq!(box_scroll(&a), (4, 13), "rows 4..14 shown");
+
+        send(&mut a, (0..13).map(|_| press(KeyCode::Up)));
+        assert_eq!(box_scroll(&a), (0, 0));
+        send(&mut a, (0..10).map(|_| press(KeyCode::Down)));
+        assert_eq!(box_scroll(&a), (1, 10), "scrolled just enough");
+    }
+
+    #[test]
+    fn a_resize_rewraps_the_draft_and_reclamps_its_scroll() {
+        let mut a = app(30, 40);
+        send(&mut a, [press(KeyCode::Enter)]);
+        typed(&mut a, &"word ".repeat(24));
+        send(&mut a, [press(KeyCode::Home)]);
+        assert_eq!(a.chrome_rows(), 4, "120 cells at 77 is two rows");
+
+        update(&mut a, Event::Resize(13, 40));
+        assert_eq!(a.chrome_rows(), 12, "two words a row, capped at 10");
+        assert_eq!(box_scroll(&a), (0, 0));
+        send(&mut a, [press(KeyCode::End)]);
+        assert_eq!(box_scroll(&a), (2, 11));
+
+        update(&mut a, Event::Resize(80, 40));
+        assert_eq!(box_scroll(&a), (0, 1), "no blank rows below the text");
+        update(&mut a, Event::Resize(80, 0));
+        update(&mut a, Event::Resize(0, 0));
+    }
+
+    #[test]
+    fn the_commented_lines_stay_shown_as_the_box_grows() {
+        let mut one = app(30, 24);
+        send(&mut one, (0..20).map(|_| ch('j')));
+        send(&mut one, [press(KeyCode::Enter)]);
+        let mut range = app(30, 24);
+        send(&mut range, (0..18).map(|_| ch('j')));
+        send(
+            &mut range,
+            [ch('v'), ch('j'), ch('j'), press(KeyCode::Enter)],
+        );
+        for a in [&mut one, &mut range] {
+            for _ in 0..12 {
+                send(a, [ch('x'), press(KeyCode::Enter)]);
+                assert!(cursor_line_shown(a), "{:?}", at(a));
+            }
+            assert_eq!(a.chrome_rows(), 12);
+        }
     }
 
     // --- replying from the panel ---
@@ -2415,12 +2752,12 @@ mod tests {
     }
 
     #[test]
-    fn enter_in_a_reply_asks_to_reply_to_that_thread_not_to_add() {
+    fn ctrl_s_in_a_reply_asks_to_reply_to_that_thread_not_to_add() {
         let mut a = two_threads_panel();
         send(&mut a, [ch('r')]);
         typed(&mut a, "ok");
 
-        let effect = update(&mut a, press(KeyCode::Enter));
+        let effect = update(&mut a, ctrl('s'));
 
         assert_eq!(
             effect,
@@ -2439,7 +2776,7 @@ mod tests {
             let before = panel(&a);
             send(&mut a, [ch('r')]);
             typed(&mut a, "  ");
-            assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
+            assert_eq!(update(&mut a, ctrl('s')), None);
             assert_eq!(draft(&a), ("  ", 2));
 
             update(&mut a, cancel);
@@ -2453,7 +2790,7 @@ mod tests {
         let mut a = two_threads_panel();
         send(&mut a, [ch('r')]);
         typed(&mut a, "ok");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
         let threads = vec![
             chatty("c1", (2, 2), 1),
             said_by(
@@ -2480,7 +2817,7 @@ mod tests {
         let mut a = two_threads_panel();
         send(&mut a, [ch('r')]);
         typed(&mut a, "ok");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
 
         update(&mut a, Event::SaveFailed("locked".into()));
 
@@ -2731,7 +3068,7 @@ mod tests {
             typed(&mut a, "why?");
 
             assert_eq!(
-                update(&mut a, press(KeyCode::Enter)),
+                update(&mut a, ctrl('s')),
                 Some(Effect::Add {
                     start,
                     end,
@@ -2764,6 +3101,7 @@ mod tests {
             typed(&mut a, "draft");
 
             assert_eq!(update(&mut a, cancel.clone()), None);
+            assert_eq!(update(&mut a, cancel.clone()), None);
             assert_eq!(a.mode, Mode::Visual { anchor: 3 });
             assert_eq!(a.selection(), (3, 4));
 
@@ -2777,7 +3115,7 @@ mod tests {
         let mut a = visual_at(10, 12, 3);
         send(&mut a, [ch('j'), press(KeyCode::Enter)]);
         typed(&mut a, "x");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
         let threads = vec![chatty("c4", (4, 5), 1)];
 
         update(
@@ -2798,7 +3136,7 @@ mod tests {
         let mut a = visual_at(10, 12, 3);
         send(&mut a, [ch('j'), press(KeyCode::Enter)]);
         typed(&mut a, "x");
-        update(&mut a, press(KeyCode::Enter));
+        update(&mut a, ctrl('s'));
 
         update(&mut a, Event::SaveFailed("locked".into()));
 
