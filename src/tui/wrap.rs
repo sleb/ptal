@@ -77,8 +77,8 @@ pub fn row_count(text: &str, width: usize) -> usize {
 }
 
 /// The byte range in `text` of each row of [`plain_rows`], for `text` with
-/// no tabs or control characters (so every byte is drawn where it is).
-/// An empty `text` is one empty row, `0..0`.
+/// no tabs or control characters (which [`plain_rows`] would expand or
+/// drop). An empty `text` is one empty row, `0..0`.
 pub(super) fn row_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
     split(text, width)
         .iter()
@@ -99,14 +99,14 @@ fn split(text: &str, width: usize) -> Vec<Vec<&str>> {
     // Index in `row` just after its last whitespace, and the cells used up
     // to there.
     let mut break_at: Option<(usize, usize)> = None;
-    for cluster in clusters(text) {
+    each_cluster(text, |cluster| {
         let symbol = &text[cluster];
         let cells = usize::from(symbol.cell_width());
         if symbol.chars().all(char::is_whitespace) {
             row.push(symbol);
             used += cells;
             break_at = Some((row.len(), used));
-            continue;
+            return;
         }
         if used + cells > width
             && let Some((at, used_at)) = break_at.take()
@@ -121,22 +121,28 @@ fn split(text: &str, width: usize) -> Vec<Vec<&str>> {
         }
         row.push(symbol);
         used += cells;
-    }
+    });
     rows.push(row);
     rows
 }
 
 /// The byte range in `text` of each grapheme cluster ratatui draws, in
-/// order: the one segmentation behind [`rows`] and the draft's cursor. Control characters are not drawn,
-/// so they are in no range.
+/// order, as [`each_cluster`] yields them. Control characters are not
+/// drawn, so they are in no range.
 pub(super) fn clusters(text: &str) -> Vec<Range<usize>> {
-    Span::raw(text)
-        .styled_graphemes(Style::new())
-        .map(|grapheme| {
-            let at = offset_in(text, grapheme.symbol);
-            at..at + grapheme.symbol.len()
-        })
-        .collect()
+    let mut clusters = Vec::new();
+    each_cluster(text, |cluster| clusters.push(cluster));
+    clusters
+}
+
+/// Call `f` with the byte range of each grapheme cluster of `text` that
+/// ratatui draws, in order, without collecting them: the one segmentation
+/// behind [`split`], [`clusters`] and so the draft's cursor.
+fn each_cluster(text: &str, mut f: impl FnMut(Range<usize>)) {
+    for grapheme in Span::raw(text).styled_graphemes(Style::new()) {
+        let at = offset_in(text, grapheme.symbol);
+        f(at..at + grapheme.symbol.len());
+    }
 }
 
 /// Byte offset of `part`, a slice of `text`, within `text`.

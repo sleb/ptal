@@ -302,9 +302,11 @@ Its parts:
   1-based (`start == end` for one line). The target thread id is captured when `r`, `x` or `o` is pressed, never
   an index; `x` on a resolved thread and `o` on an open one are refused in
   `update` with a footer message. `update` does no I/O and reads no clock.
-- `tui::draft`: `Draft { text, cursor, goal, scroll }`, pure, no widgets: the comment
-  being typed. `text` holds printable characters and `\n` only (control
-  characters, tabs included, are never inserted), so every byte is drawn.
+- `tui::draft`: `Draft { text, cursor, goal, scroll }`, pure, no widgets:
+  the comment being typed. `text` holds printable characters and `\n` only
+  (control characters, tabs included, are never inserted), so `wrap` drops
+  none of it and rows are byte ranges of it; a zero-width cluster has a
+  range but no cell.
   `cursor` is a byte offset that always sits on a grapheme cluster boundary
   (`wrap::clusters`, plus each `\n` as its own cluster): `←`/`→`,
   `backspace` and `delete` move over or remove one whole cluster, and an
@@ -393,7 +395,8 @@ Its parts:
   is a reversed cell at `cursor_at`, and the bottom border reads
   `ctrl+s:save enter:newline esc:cancel` (`ctrl+s:save esc:cancel` when
   that does not fit), or, while `discard_asked`, `esc:discard the draft  any
-  other key:keep it` (`esc:discard other:keep` when that does not fit).
+  other key:keep it` (`esc:discard other:keep`, then `esc:discard?`, when
+  that does not fit; widths in cells).
 - `tui` (module root): the driver. `load` reads lines (`review::file_lines`)
   and all threads; `Loaded::into_app` highlights the file only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes

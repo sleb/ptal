@@ -1,9 +1,11 @@
 //! The comment box's text being edited: a pure value, no widgets.
 //!
-//! The text holds printable characters and `\n` only, so every byte of it
-//! is drawn and its rows map 1:1 to byte ranges of it. The cursor is a byte
-//! offset that always sits on a grapheme cluster boundary, so it can never
-//! land inside a cluster that [`wrap`] refuses to split.
+//! The text holds printable characters and `\n` only, so none of it is
+//! dropped by [`wrap`] and its rows map 1:1 to byte ranges of it. (A
+//! zero-width cluster, such as a zero-width space, has a range but takes no
+//! cell, so the cursor seems to stay put as it steps over one.) The cursor
+//! is a byte offset that always sits on a grapheme cluster boundary, so it
+//! can never land inside a cluster that [`wrap`] refuses to split.
 
 use std::ops::Range;
 

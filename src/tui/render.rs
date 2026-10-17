@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, Widget};
 
 use super::app::{App, Marker, Mode, ScreenRow};
 use super::draft::Draft;
+use super::wrap;
 
 /// Draw `app` onto `frame`. Reads state only; never mutates it.
 pub fn render(app: &App, frame: &mut Frame) {
@@ -53,13 +54,19 @@ pub fn render(app: &App, frame: &mut Frame) {
             reply_to,
             ..
         } => {
-            let (full, short) = if *discard_asked {
-                (DISCARD_HINT, DISCARD_HINT_SHORT)
+            let hints: &[&str] = if *discard_asked {
+                &[DISCARD_HINT, DISCARD_HINT_SHORT, DISCARD_HINT_TINY]
             } else {
-                (INPUT_HINT, INPUT_HINT_SHORT)
+                &[INPUT_HINT, INPUT_HINT_SHORT]
             };
-            let fits = usize::from(bottom.width.saturating_sub(2)) >= full.len();
-            let hint = if fits { full } else { short };
+            // The longest hint that fits inside the corners, else the shortest.
+            let room = usize::from(bottom.width.saturating_sub(2));
+            let hint = hints
+                .iter()
+                .find(|hint| wrap::width(hint) <= room)
+                .or(hints.last())
+                .copied()
+                .unwrap_or_default();
             draw_input(app, draft, hint, reply_to.as_deref(), buf, bottom);
         }
     }
@@ -198,6 +205,8 @@ const INPUT_HINT_SHORT: &str = "ctrl+s:save esc:cancel";
 const DISCARD_HINT: &str = "esc:discard the draft  any other key:keep it";
 /// [`DISCARD_HINT`] for a box too narrow for it.
 const DISCARD_HINT_SHORT: &str = "esc:discard other:keep";
+/// The discard warning for a box too narrow even for [`DISCARD_HINT_SHORT`].
+const DISCARD_HINT_TINY: &str = "esc:discard?";
 
 /// The comment box: the draft's rows from its scroll, wrapped at
 /// [`App::draft_width`] exactly as `update` counts them, and the cursor as a
@@ -923,6 +932,16 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
             rows[2],
             format!("└esc:discard other:keep{}┘", "─".repeat(6))
         );
+    }
+
+    #[test]
+    fn a_very_narrow_box_still_warns_before_discarding() {
+        let mut app = box_with("hi", (20, 8));
+        key(&mut app, KeyCode::Esc);
+
+        let rows = box_rows(&draw(&app, 20, 8), 3);
+
+        assert_eq!(rows[2], format!("└esc:discard?{}┘", "─".repeat(6)));
     }
 
     #[test]
