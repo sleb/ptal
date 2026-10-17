@@ -913,7 +913,9 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
 fn movement(app: &mut App, key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let chord = ctrl || key.modifiers.contains(KeyModifiers::ALT);
-    // The letter aliases are plain keys only; ctrl+j is not `j`.
+    // The letter aliases are plain keys only; ctrl+j is not `j`. Terminals
+    // report AltGr as ctrl+alt, which still types `[` and `]`.
+    let ctrl_only = ctrl && !key.modifiers.contains(KeyModifiers::ALT);
     let code = match key.code {
         KeyCode::Char('j') if !ctrl => KeyCode::Down,
         KeyCode::Char('k') if !ctrl => KeyCode::Up,
@@ -928,8 +930,8 @@ fn movement(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Up => app.move_to(app.cursor.saturating_sub(1)),
         KeyCode::Home => app.move_to(0),
         KeyCode::End => app.move_to(app.last_line()),
-        KeyCode::Char(']') if !ctrl => app.jump_to_covered(true),
-        KeyCode::Char('[') if !ctrl => app.jump_to_covered(false),
+        KeyCode::Char(']') if !ctrl_only => app.jump_to_covered(true),
+        KeyCode::Char('[') if !ctrl_only => app.jump_to_covered(false),
         KeyCode::Char('n') if !chord => app.repeat_search(true),
         KeyCode::Char('N') if !chord => app.repeat_search(false),
         KeyCode::PageDown => app.scroll_half_page(true),
