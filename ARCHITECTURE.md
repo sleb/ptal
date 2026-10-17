@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built: `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input` modes, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls) |
+| `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Help` modes, a `?` help overlay (keys listed in one place, drift-checked against the handlers), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls) |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor`, `diffview` | Deferred |
 
@@ -264,10 +264,13 @@ Its parts:
   `rows`, `mode`, `author`, every thread of the file including resolved and
   outdated ones, footer `status`, the active `search` query), `Mode = Normal | Visual { anchor } |
   Search { query, anchor, origin } |
-  Panel { selected, scroll } | Input { draft, discard_asked, back, reply_to }`
+  Panel { selected, scroll } | Input { draft, discard_asked, back, reply_to } |
+  Help { back, scroll }`
   (`draft` is a `tui::draft::Draft`;
-  `back` is the `Back` the box returns to on `esc`: `Normal | Panel {
-  selected, scroll } | Visual { anchor }`), and
+  `back` is the `Back` the box returns to on `esc` (`Normal | Panel {
+  selected, scroll } | Visual { anchor }`), and also what the help overlay,
+  opened only from `Normal` or `Panel`, returns to on `?`/`esc`/`q`/`ctrl+c`
+  with `scroll` its first visible content row), and
   `update(&mut App, Event) -> Option<Effect>`. In `Visual` the cursor is the
   selection's moving end and `anchor` its fixed one (0-based file lines), so
   Normal and Visual share one movement helper and the view clamp keeps the
@@ -337,6 +340,18 @@ Its parts:
   cells; only hanging whitespace at a break is clipped, and a single cluster
   wider than the room after its indent overflows. `update` clamps scroll
   from `lines.len()`; `render` draws a slice.
+- `tui::keys`: the help overlay's one source of truth: a `const HELP` table
+  of `Section`s (`Normal`, `Thread panel`), each of `Entry { keys, what }`
+  rows, and `help_rows(width)` laying them out (`render` draws them, `App`
+  clamps the overlay's scroll from the count). `?` opens the overlay from
+  Normal or the panel; it replaces the whole screen with the sections and a
+  last-row footer (`j/k:scroll  ?/esc:close`). `?`, `esc`, `q` or `ctrl+c`
+  close back to where it was opened (`back`, never quitting), the movement
+  keys scroll it. A probe test drives every candidate key through `update`
+  in each mode and checks the table both ways (every bound key is listed,
+  every listed key is bound), and another checks every listed key name
+  appears in `docs/interfaces.md`, so the overlay cannot drift from the
+  handlers or the interface map.
 - `tui::wrap`: `rows(&Line, width) -> Vec<Line>`, pure, the only place the
   TUI wraps text; `plain_rows(text, width) -> Vec<String>` and
   `row_count(text, width)` run the same algorithm on unstyled text (table
@@ -563,9 +578,12 @@ state or `review`.
 - `cli`: in-process tests (golden JSON, TTY rendering, error table, help) in
   `src/cli.rs`; process tests in `tests/cli.rs` for streams, exit status, and
   env. Schema conformance is deferred with `ptal schema`.
-- `tui`: scripted key events through `update` assert on state (including the search prompt, `n`/`N` and Visual search); `TestBackend`
-  snapshots (inline expected strings) cover Normal, Visual, Panel and Input
-  rendering, gutter glyphs and styles (including the selection highlight on
+- `tui`: scripted key events through `update` assert on state (including the search prompt, `n`/`N` and Visual search); a probe drives every candidate key through `update` in
+  Normal and the panel and checks the help table both ways (every bound key
+  is listed, every listed key is bound), and a doc test checks every help key
+  name appears in `docs/interfaces.md`; `TestBackend`
+  snapshots (inline expected strings) cover Normal, Visual, Panel, Input and
+  Help rendering, gutter glyphs and styles (including the selection highlight on
   wrapped and table rows, before and after a resize, and the comment box
   wrapping, growing and scrolling its draft); `tui::draft` has examples of
   its rows and cursor cell by width and of cluster and row moves, plus a

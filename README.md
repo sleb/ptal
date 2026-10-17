@@ -13,7 +13,7 @@ state persist across rounds and revisions.
 
 > **Status:** core library, the agent CLI (`comments`, `add`, `resolve`, `reply`,
 > `reopen`), and a TUI (scroll a file, comment on a line or a range, read threads and the
-> agent's replies, jump between threads, reply, resolve, reopen) implemented. Live refresh is planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
+> agent's replies, jump between threads, reply, resolve, reopen, a `?` help overlay) implemented. Live refresh is planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why not a PR?
 
@@ -62,6 +62,7 @@ ptal plan.md            # open the TUI
 | `r` | In the panel: reply to the selected thread; `ctrl+s` saves, `esc` cancels (twice with text in the box) |
 | `x` / `o` | In the panel: resolve / reopen the selected thread (no note) |
 | `esc` (or `q`, `ctrl+c`) | In the panel: close it |
+| `?` | In Normal mode or the thread panel: show the help overlay (`?`, `esc`, `q`, `ctrl+c` close it; `j`/`k`, `PgDn`/`PgUp`, `g`/`G`, `Home`/`End`, `ctrl+d`/`ctrl+u` scroll it) |
 | `q` (or `ctrl+c`) | Quit |
 | `←` / `→`, `↑` / `↓`, `Home` / `End` | In a comment box: move by character, by screen row, to the line's start / end; `backspace` / `delete` remove (and join lines) |
 

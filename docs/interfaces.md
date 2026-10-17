@@ -34,7 +34,7 @@ acceptance criteria and link here instead of restating commands.
 | Reply to a thread | `ptal reply <file> <id> "text" --as <name>` (reopens a resolved thread) | `r` in the thread panel replies to the selected thread (the box says `Reply to <id>`); `ctrl+s` saves, `esc` (or `ctrl+c`) cancels as for a new comment | `reply` |
 | Reopen a thread | `ptal reopen <file> <id> --as <name> [--note "..."]` (`already_open` if open) | `o` in the thread panel reopens the selected resolved thread (no note; already open: footer says so) | `reopen` |
 | See whether a thread is stale | `state: "current" \| "outdated"` in `comments` | `outdated` in the thread panel; the footer counts open outdated threads (`N outdated`) | `view` |
-| Learn the tool | `ptal --help` (workflow, conversation model, JSON shape, exit codes); `ptal <command> --help` has an example | n/a | none |
+| Learn the tool | `ptal --help` (workflow, conversation model, JSON shape, exit codes); `ptal <command> --help` has an example | `?` in Normal mode or the thread panel opens a full-screen help overlay listing every key in each mode; `?`, `esc`, `q` or `ctrl+c` closes it (never quitting), `j`/`k`/`↓`/`↑`/`PgDn`/`PgUp`/`ctrl+d`/`ctrl+u`/`g`/`G`/`Home`/`End` scroll it | none |
 
 ## Cross-cutting
 
