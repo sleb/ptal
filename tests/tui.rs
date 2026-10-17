@@ -230,9 +230,9 @@ fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
         app.mode()
     );
     assert!(app.status().unwrap().contains("invalid line range"));
-    let screen = screen(&app);
-    assert!(screen.contains("└invalid line range"), "{screen}");
-    assert!(screen.contains("│ok"), "{screen}");
+    let rendered = screen(&app);
+    assert!(rendered.contains("└invalid line range"), "{rendered}");
+    assert!(rendered.contains("│ok"), "{rendered}");
     assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
 }
 
@@ -246,13 +246,13 @@ fn a_failed_range_save_shows_the_error_under_the_range_title() {
     let flow = sb.press(&mut app, &["ctrl+s"]);
 
     assert_eq!(flow, ControlFlow::Continue(()));
-    let screen = screen(&app);
+    let rendered = screen(&app);
     assert!(
-        screen.contains("┌Comment on lines 3-4 as scott"),
-        "{screen}"
+        rendered.contains("┌Comment on lines 3-4 as scott"),
+        "{rendered}"
     );
-    assert!(screen.contains("│ok"), "{screen}");
-    assert!(screen.contains("└invalid line range"), "{screen}");
+    assert!(rendered.contains("│ok"), "{rendered}");
+    assert!(rendered.contains("└invalid line range"), "{rendered}");
     assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
 }
 
@@ -505,11 +505,23 @@ fn a_failed_reply_keeps_the_draft_and_shows_the_error() {
     let status = app.status().unwrap();
     assert!(status.to_lowercase().contains("permission"), "{status}");
     // The message is on the box's bottom border; a long store path may push
-    // its tail past the border, so only its head is checked.
-    let screen = screen(&app);
-    assert!(screen.contains("┌Reply to c1 as scott"), "{screen}");
-    assert!(screen.contains("│ok"), "{screen}");
-    assert!(screen.contains(&format!("└{}", &status[..10])), "{screen}");
+    // its tail past the corner, so the border must hold as much of the
+    // message as fits: a non-empty prefix of it.
+    let rendered = screen(&app);
+    assert!(rendered.contains("┌Reply to c1 as scott"), "{rendered}");
+    assert!(rendered.contains("│ok"), "{rendered}");
+    let border = rendered
+        .lines()
+        .rfind(|row| row.starts_with('└'))
+        .expect("the box's bottom border");
+    let shown = border
+        .trim_start_matches('└')
+        .trim_end_matches('┘')
+        .trim_end_matches('─');
+    assert!(
+        !shown.is_empty() && status.starts_with(shown),
+        "{border} / {status}"
+    );
     assert_eq!(
         cli_comments(&sb)["threads"][0]["comments"]
             .as_array()
