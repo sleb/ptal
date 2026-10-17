@@ -276,7 +276,11 @@ Its parts:
   box for a new thread on the selection, never the panel; a save from it
   goes to Normal. In `Input`, `enter` inserts a newline and `ctrl+s`
   saves the draft exactly as typed (one that is only whitespace and newlines
-  saves nothing); `esc` or `ctrl+c` returns to `back`. A thread covers its stored
+  saves nothing); `esc` or `ctrl+c` returns to `back`. The box is as tall as
+  its draft's rows at `draft_width()` (terminal columns less the border and
+  one cell for a cursor after a full row), at least 1, capped at
+  `min(10, rows / 2 - 2)` (at least 1), plus its 2 border rows; the view
+  shrinks to stay above it. A thread covers its stored
   range whatever its `state`; `Marker = Waiting | Open | Resolved` is derived
   per line (waiting > open > resolved). Waiting means open and last comment
   not by `author`. The panel's thread set is recomputed from the threads and
@@ -402,6 +406,9 @@ Its parts:
   them. Each clamp walks back at most `height` lines. The panel never moves
   the cursor, so the listed threads are always those of the line shown
   selected.
+- In `Input`, after every event (resizes included) the draft's `scroll`
+  shows its cursor row among the box's rows and leaves no blank rows below
+  the text, so the box follows the cursor as it grows, scrolls and rewraps.
 - A failed write keeps the draft and mode and shows the error; nothing is lost
   silently.
 - The terminal is restored on every exit path: `TerminalSession` restores on

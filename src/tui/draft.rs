@@ -17,6 +17,8 @@ pub struct Draft {
     /// The column, in cells, that consecutive [`Draft::up`] and
     /// [`Draft::down`] aim for; every other edit or move clears it.
     goal: Option<usize>,
+    /// The first screen row the box shows; see [`Draft::clamp_scroll`].
+    scroll: usize,
 }
 
 impl Draft {
@@ -28,6 +30,23 @@ impl Draft {
     /// The cursor as a byte offset into [`Draft::text`].
     pub fn cursor(&self) -> usize {
         self.cursor
+    }
+
+    /// The first of [`Draft::rows`] the box shows.
+    pub fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    /// Scroll just enough that the cursor's row is among the `height` rows
+    /// shown at `width`, and no blank rows sit below the text.
+    pub fn clamp_scroll(&mut self, width: usize, height: usize) {
+        let rows = self.rows(width).len();
+        let row = self.cursor_at(width).0;
+        let height = height.max(1);
+        self.scroll = self
+            .scroll
+            .clamp((row + 1).saturating_sub(height), row)
+            .min(rows.saturating_sub(height));
     }
 
     /// Insert `c` at the cursor and move past it. A control character is

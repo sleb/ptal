@@ -211,8 +211,10 @@ pub struct ScreenRow {
 
 /// Terminal rows taken by the footer in Normal mode.
 const FOOTER_ROWS: usize = 1;
-/// Terminal rows taken by the bordered input box (it replaces the footer).
-const INPUT_BOX_ROWS: usize = 3;
+/// Rows the comment box's border takes; the box replaces the footer.
+const BOX_BORDER_ROWS: usize = 2;
+/// The comment box shows at most this many rows of its draft.
+const BOX_MAX_TEXT_ROWS: usize = 10;
 /// The thread panel is half the terminal, but never fewer rows than this
 /// (border included).
 const PANEL_MIN_ROWS: usize = 4;
@@ -372,7 +374,7 @@ impl App {
     pub(super) fn chrome_rows(&self) -> usize {
         match self.mode {
             Mode::Normal | Mode::Visual { .. } => FOOTER_ROWS,
-            Mode::Input { .. } => INPUT_BOX_ROWS,
+            Mode::Input { .. } => self.box_text_rows() + BOX_BORDER_ROWS,
             Mode::Panel { .. } => self.panel_rows() + FOOTER_ROWS,
         }
     }
@@ -381,6 +383,19 @@ impl App {
     /// one, so a cursor after a full row still has a cell to stand on.
     pub(super) fn draft_width(&self) -> usize {
         self.cols.saturating_sub(BOX_BORDER_COLS + 1)
+    }
+
+    /// Draft rows the comment box shows: all of them, at least 1, but at
+    /// most 10 and at most `rows / 2 - 2` (so the file view keeps at least
+    /// half the terminal), never fewer than 1. 0 outside `Input`.
+    pub(super) fn box_text_rows(&self) -> usize {
+        let Mode::Input { draft, .. } = &self.mode else {
+            return 0;
+        };
+        let cap = (self.rows / 2)
+            .saturating_sub(BOX_BORDER_ROWS)
+            .clamp(1, BOX_MAX_TEXT_ROWS);
+        draft.rows(self.draft_width()).len().clamp(1, cap)
     }
 
     /// Whether the panel's selected thread is resolved.
@@ -511,7 +526,8 @@ impl App {
     /// Keep the whole cursor line on screen (`top <= cursor` and lines
     /// `top..=cursor` fit in `height` rows; only a cursor line taller than
     /// the view is cut off, with `top == cursor`), and never leave blank rows
-    /// below the last line while earlier lines could fill them.
+    /// below the last line while earlier lines could fill them. In `Input`,
+    /// also keep the draft's cursor row inside the box.
     fn clamp_view(&mut self) {
         if matches!(self.mode, Mode::Panel { .. }) && self.threads_on(self.cursor).is_empty() {
             self.mode = Mode::Normal;
@@ -523,6 +539,10 @@ impl App {
             .min(self.fit_back(self.last_line(), height))
             .clamp(self.fit_back(self.cursor, height), self.cursor);
         self.clamp_panel();
+        let (width, rows) = (self.draft_width(), self.box_text_rows());
+        if let Mode::Input { draft, .. } = &mut self.mode {
+            draft.clamp_scroll(width, rows);
+        }
     }
 
     /// Keep the panel's selection and scroll inside its content.
@@ -2446,6 +2466,89 @@ mod tests {
         send(&mut a, [press(KeyCode::Esc)]);
         assert_eq!(a.height(), 6);
         assert!(a.top <= a.cursor && a.cursor < a.top + 6, "{:?}", at(&a));
+    }
+
+    /// `a`'s draft scroll and its cursor's screen row.
+    fn box_scroll(a: &App) -> (usize, usize) {
+        match &a.mode {
+            Mode::Input { draft, .. } => (draft.scroll(), draft.cursor_at(a.draft_width()).0),
+            other => panic!("not in Input mode: {other:?}"),
+        }
+    }
+
+    /// `n` draft lines, `x` on each, in a box on line 1.
+    fn box_of(n: usize, rows: u16) -> App {
+        let mut a = app(30, rows);
+        send(&mut a, [press(KeyCode::Enter)]);
+        for i in 0..n {
+            if i > 0 {
+                send(&mut a, [press(KeyCode::Enter)]);
+            }
+            typed(&mut a, "x");
+        }
+        a
+    }
+
+    #[test]
+    fn the_box_grows_with_its_draft_up_to_a_cap() {
+        assert_eq!(box_of(0, 40).chrome_rows(), 3, "an empty draft is one row");
+        assert_eq!(box_of(1, 40).chrome_rows(), 3);
+        assert_eq!(box_of(4, 40).chrome_rows(), 6);
+        assert_eq!(box_of(10, 40).chrome_rows(), 12);
+        assert_eq!(box_of(14, 40).chrome_rows(), 12, "at most 10 text rows");
+        assert_eq!(box_of(14, 16).chrome_rows(), 8, "at most rows / 2 - 2");
+        assert_eq!(box_of(3, 4).chrome_rows(), 3, "at least one text row");
+    }
+
+    #[test]
+    fn a_draft_past_the_cap_scrolls_to_keep_the_cursor_row_shown() {
+        let mut a = box_of(14, 40);
+        assert_eq!(box_scroll(&a), (4, 13), "rows 4..14 shown");
+
+        send(&mut a, (0..13).map(|_| press(KeyCode::Up)));
+        assert_eq!(box_scroll(&a), (0, 0));
+        send(&mut a, (0..10).map(|_| press(KeyCode::Down)));
+        assert_eq!(box_scroll(&a), (1, 10), "scrolled just enough");
+    }
+
+    #[test]
+    fn a_resize_rewraps_the_draft_and_reclamps_its_scroll() {
+        let mut a = app(30, 40);
+        send(&mut a, [press(KeyCode::Enter)]);
+        typed(&mut a, &"word ".repeat(24));
+        send(&mut a, [press(KeyCode::Home)]);
+        assert_eq!(a.chrome_rows(), 4, "120 cells at 77 is two rows");
+
+        update(&mut a, Event::Resize(13, 40));
+        assert_eq!(a.chrome_rows(), 12, "two words a row, capped at 10");
+        assert_eq!(box_scroll(&a), (0, 0));
+        send(&mut a, [press(KeyCode::End)]);
+        assert_eq!(box_scroll(&a), (2, 11));
+
+        update(&mut a, Event::Resize(80, 40));
+        assert_eq!(box_scroll(&a), (0, 1), "no blank rows below the text");
+        update(&mut a, Event::Resize(80, 0));
+        update(&mut a, Event::Resize(0, 0));
+    }
+
+    #[test]
+    fn the_commented_lines_stay_shown_as_the_box_grows() {
+        let mut one = app(30, 24);
+        send(&mut one, (0..20).map(|_| ch('j')));
+        send(&mut one, [press(KeyCode::Enter)]);
+        let mut range = app(30, 24);
+        send(&mut range, (0..18).map(|_| ch('j')));
+        send(
+            &mut range,
+            [ch('v'), ch('j'), ch('j'), press(KeyCode::Enter)],
+        );
+        for a in [&mut one, &mut range] {
+            for _ in 0..12 {
+                send(a, [ch('x'), press(KeyCode::Enter)]);
+                assert!(cursor_line_shown(a), "{:?}", at(a));
+            }
+            assert_eq!(a.chrome_rows(), 12);
+        }
     }
 
     // --- replying from the panel ---
