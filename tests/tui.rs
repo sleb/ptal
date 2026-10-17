@@ -230,6 +230,29 @@ fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
         app.mode()
     );
     assert!(app.status().unwrap().contains("invalid line range"));
+    let screen = screen(&app);
+    assert!(screen.contains("└invalid line range"), "{screen}");
+    assert!(screen.contains("│ok"), "{screen}");
+    assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
+}
+
+#[test]
+fn a_failed_range_save_shows_the_error_under_the_range_title() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let _ = sb.press(&mut app, &["j", "j", "v", "j", "enter", "o", "k"]);
+    fs::write(&sb.file, "one\ntwo\n").unwrap();
+
+    let flow = sb.press(&mut app, &["ctrl+s"]);
+
+    assert_eq!(flow, ControlFlow::Continue(()));
+    let screen = screen(&app);
+    assert!(
+        screen.contains("┌Comment on lines 3-4 as scott"),
+        "{screen}"
+    );
+    assert!(screen.contains("│ok"), "{screen}");
+    assert!(screen.contains("└invalid line range"), "{screen}");
     assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
 }
 
@@ -481,6 +504,12 @@ fn a_failed_reply_keeps_the_draft_and_shows_the_error() {
     );
     let status = app.status().unwrap();
     assert!(status.to_lowercase().contains("permission"), "{status}");
+    // The message is on the box's bottom border; a long store path may push
+    // its tail past the border, so only its head is checked.
+    let screen = screen(&app);
+    assert!(screen.contains("┌Reply to c1 as scott"), "{screen}");
+    assert!(screen.contains("│ok"), "{screen}");
+    assert!(screen.contains(&format!("└{}", &status[..10])), "{screen}");
     assert_eq!(
         cli_comments(&sb)["threads"][0]["comments"]
             .as_array()
