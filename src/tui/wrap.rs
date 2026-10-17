@@ -18,6 +18,7 @@
 //!   exactly the rows its plain text does.
 
 use std::mem;
+use std::ops::Range;
 
 use ratatui::buffer::CellWidth;
 use ratatui::style::Style;
@@ -111,6 +112,19 @@ fn split(text: &str, width: usize) -> Vec<Vec<&str>> {
     }
     rows.push(row);
     rows
+}
+
+/// The byte range in `text` of each grapheme cluster ratatui draws, in
+/// order: the clusters [`rows`] measures. Control characters are not drawn,
+/// so they are in no range.
+pub(super) fn clusters(text: &str) -> Vec<Range<usize>> {
+    Span::raw(text)
+        .styled_graphemes(Style::new())
+        .map(|grapheme| {
+            let at = offset_in(text, grapheme.symbol);
+            at..at + grapheme.symbol.len()
+        })
+        .collect()
 }
 
 /// Byte offset of `part`, a slice of `text`, within `text`.

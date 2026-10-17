@@ -47,11 +47,11 @@ pub fn render(app: &App, frame: &mut Frame) {
             draw_footer(app, buf, footer);
         }
         Mode::Input {
-            draft,
-            cursor,
-            reply_to,
-            ..
-        } => draw_input(app, draft, *cursor, reply_to.as_deref(), buf, bottom),
+            draft, reply_to, ..
+        } => {
+            let cursor = draft.text()[..draft.cursor()].chars().count();
+            draw_input(app, draft.text(), cursor, reply_to.as_deref(), buf, bottom);
+        }
     }
 }
 

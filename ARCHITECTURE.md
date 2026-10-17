@@ -263,8 +263,9 @@ Its parts:
   never changes in a session, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
   outdated ones, footer `status`), `Mode = Normal | Visual { anchor } |
-  Panel { selected, scroll } | Input { draft, cursor, back, reply_to }`
-  (`back` is the `Back` the box returns to on `esc`: `Normal | Panel {
+  Panel { selected, scroll } | Input { draft, back, reply_to }`
+  (`draft` is a `tui::draft::Draft`;
+  `back` is the `Back` the box returns to on `esc`: `Normal | Panel {
   selected, scroll } | Visual { anchor }`), and
   `update(&mut App, Event) -> Option<Effect>`. In `Visual` the cursor is the
   selection's moving end and `anchor` its fixed one (0-based file lines), so
@@ -293,6 +294,14 @@ Its parts:
   1-based (`start == end` for one line). The target thread id is captured when `r`, `x` or `o` is pressed, never
   an index; `x` on a resolved thread and `o` on an open one are refused in
   `update` with a footer message. `update` does no I/O and reads no clock.
+- `tui::draft`: `Draft { text, cursor }`, pure, no widgets: the comment
+  being typed. `text` holds printable characters and `\n` only (control
+  characters, tabs included, are never inserted), so every byte is drawn.
+  `cursor` is a byte offset that always sits on a grapheme cluster boundary
+  (`wrap::clusters`, plus each `\n` as its own cluster): `←`/`→`,
+  `backspace` and `delete` move over or remove one whole cluster, and a
+  typed character that joins the next cluster moves the cursor past the
+  joined one.
 - `tui::panel`: `layout(threads, selected, width) -> Layout { lines,
   thread_starts }`, pure. Per thread: header (`c3 open`, `c3 open · outdated`,
   `c3 resolved by claude`), `> ` quote lines, then each comment's

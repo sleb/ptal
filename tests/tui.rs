@@ -184,14 +184,14 @@ fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
     let flow = sb.press(&mut app, &["enter"]);
 
     assert_eq!(flow, ControlFlow::Continue(()));
-    assert_eq!(
-        app.mode(),
-        &Mode::Input {
-            draft: "ok".into(),
-            cursor: 2,
-            back: Back::Normal,
-            reply_to: None,
-        }
+    assert!(
+        matches!(
+            app.mode(),
+            Mode::Input { draft, back: Back::Normal, reply_to: None }
+                if draft.text() == "ok" && draft.cursor() == 2
+        ),
+        "{:?}",
+        app.mode()
     );
     assert!(app.status().unwrap().contains("invalid line range"));
     assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
@@ -439,7 +439,7 @@ fn a_failed_reply_keeps_the_draft_and_shows_the_error() {
     }
     assert_eq!(flow, ControlFlow::Continue(()));
     assert!(
-        matches!(app.mode(), Mode::Input { draft, reply_to: Some(id), .. } if draft == "ok" && id == "c1"),
+        matches!(app.mode(), Mode::Input { draft, reply_to: Some(id), .. } if draft.text() == "ok" && id == "c1"),
         "{:?}",
         app.mode()
     );

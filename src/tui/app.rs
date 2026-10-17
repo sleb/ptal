@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use crate::model::{State, Status};
 use crate::review::ThreadView;
 
+use super::draft::Draft;
 use super::highlight::{self, Styling};
 use super::panel::{self, Layout};
 use super::{table, wrap};
@@ -39,10 +40,8 @@ pub enum Mode {
     },
     /// Typing a comment: a new thread on the cursor line, or a reply.
     Input {
-        /// The comment so far.
-        draft: String,
-        /// Insertion point as a `char` index into `draft`.
-        cursor: usize,
+        /// The comment so far, and the cursor in it.
+        draft: Draft,
         /// The mode this box was opened from, which `esc` returns to.
         back: Back,
         /// The id of the thread being replied to; `None` adds a new thread.
@@ -58,8 +57,7 @@ impl Mode {
     /// `reply_to`, replying to that thread.
     fn input(back: Back, reply_to: Option<String>) -> Self {
         Mode::Input {
-            draft: String::new(),
-            cursor: 0,
+            draft: Draft::default(),
             back,
             reply_to,
         }
@@ -825,7 +823,6 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
 fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let Mode::Input {
         draft,
-        cursor,
         back,
         reply_to,
     } = &mut app.mode
@@ -834,13 +831,12 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     };
     let back = back.mode();
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let len = draft.chars().count();
     match key.code {
         KeyCode::Char('c') if ctrl => app.mode = back,
         KeyCode::Esc => app.mode = back,
-        KeyCode::Enter if draft.trim().is_empty() => {}
+        KeyCode::Enter if draft.text().trim().is_empty() => {}
         KeyCode::Enter => {
-            let body = draft.clone();
+            let body = draft.text().to_owned();
             return Some(match reply_to {
                 Some(id) => Effect::Reply {
                     id: id.clone(),
@@ -857,31 +853,16 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 }
             });
         }
-        KeyCode::Char(c) if !ctrl => {
-            draft.insert(byte_index(draft, *cursor), c);
-            *cursor += 1;
-        }
-        KeyCode::Backspace if *cursor > 0 => {
-            *cursor -= 1;
-            draft.remove(byte_index(draft, *cursor));
-        }
-        KeyCode::Delete if *cursor < len => {
-            draft.remove(byte_index(draft, *cursor));
-        }
-        KeyCode::Left => *cursor = cursor.saturating_sub(1),
-        KeyCode::Right => *cursor = (*cursor + 1).min(len),
-        KeyCode::Home => *cursor = 0,
-        KeyCode::End => *cursor = len,
+        KeyCode::Char(c) if !ctrl => draft.insert(c),
+        KeyCode::Backspace => draft.backspace(),
+        KeyCode::Delete => draft.delete(),
+        KeyCode::Left => draft.left(),
+        KeyCode::Right => draft.right(),
+        KeyCode::Home => draft.home(),
+        KeyCode::End => draft.end(),
         _ => {}
     }
     None
-}
-
-/// Byte offset of the `index`th `char` of `text` (its length if past the end).
-fn byte_index(text: &str, index: usize) -> usize {
-    text.char_indices()
-        .nth(index)
-        .map_or(text.len(), |(i, _)| i)
 }
 
 #[cfg(test)]
@@ -1559,9 +1540,13 @@ mod tests {
         send(app, text.chars().map(ch));
     }
 
+    /// The draft's text and its cursor as a `char` index.
     fn draft(app: &App) -> (&str, usize) {
         match &app.mode {
-            Mode::Input { draft, cursor, .. } => (draft, *cursor),
+            Mode::Input { draft, .. } => {
+                let text = draft.text();
+                (text, text[..draft.cursor()].chars().count())
+            }
             _ => panic!("not in Input mode"),
         }
     }
