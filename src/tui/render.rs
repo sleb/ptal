@@ -209,7 +209,7 @@ const DISCARD_HINT_TINY: &str = "esc:discard?";
 fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'_, str>, Style) {
     if let Some(status) = app.status() {
         return (
-            one_line(status),
+            Cow::Owned(one_line(status)),
             Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
         );
     }
@@ -228,16 +228,16 @@ fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'_, str>, Styl
     (Cow::Borrowed(hint), Style::new())
 }
 
-/// `text` with each control character (a newline, a tab) as a space, so a
-/// multi-line error reads as one row instead of having its words run
-/// together where ratatui drops the control characters. Borrows when there
-/// are none.
-fn one_line(text: &str) -> Cow<'_, str> {
-    if text.contains(char::is_control) {
-        Cow::Owned(text.replace(char::is_control, " "))
-    } else {
-        Cow::Borrowed(text)
-    }
+/// `text` on one row: each run of whitespace and control characters (a
+/// `\r\n`, a blank line, a tab) becomes one space, and leading and trailing
+/// ones go. Otherwise ratatui drops the control characters and a multi-line
+/// error's words run together, and every blank cell pushes the message's
+/// tail closer to the corner.
+fn one_line(text: &str) -> String {
+    text.split(|c: char| c.is_whitespace() || c.is_control())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The comment box: the draft's rows from its scroll, wrapped at
@@ -1144,6 +1144,23 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
         );
         assert!(rows[2].ends_with('┘'), "{}", rows[2]);
         assert_error_styled(&draw(&app, W, 8), "cannot write x.json: denied");
+    }
+
+    #[test]
+    fn an_error_s_runs_of_blank_and_control_characters_are_one_space() {
+        let mut app = box_with("hi", (W, 8));
+        update(
+            &mut app,
+            Event::SaveFailed("\r\nfailed:\r\n\r\ncaused by:  denied\n".into()),
+        );
+
+        let rows = box_rows(&draw(&app, W, 8), 3);
+
+        assert!(
+            rows[2].starts_with("└failed: caused by: denied─"),
+            "{}",
+            rows[2]
+        );
     }
 
     #[test]
