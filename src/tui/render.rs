@@ -1105,6 +1105,16 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
     }
 
     #[test]
+    fn a_box_with_no_room_between_its_corners_shows_no_error() {
+        let mut app = box_with("hi", (2, 8));
+        update(&mut app, Event::SaveFailed(LOCKED.into()));
+
+        let (text, _) = box_border(&app, false, 2);
+
+        assert_eq!(text, "");
+    }
+
+    #[test]
     fn a_hint_too_wide_even_in_its_shortest_form_ends_in_an_ellipsis() {
         let app = box_with("hi", (20, 8));
         let rows = box_rows(&draw(&app, 20, 8), 3);

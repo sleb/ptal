@@ -353,11 +353,12 @@ Its parts:
   line wraps into exactly the rows of its plain text. `width(text)` is the
   same measure on one unbounded row. `cut(text, room)` is the only place
   one-row text is cut to fit. It returns the text as drawn (tabs as four
-  spaces, control characters dropped; borrowed when there were none): all of
-  it if its `width` fits, else the longest prefix of whole clusters that
-  leaves a cell for `…`, then `…`, so a wide cluster that would straddle the cut is
-  dropped whole and the result is never wider than `room`. One cell is `…`
-  alone; zero cells is empty.
+  spaces, control characters dropped): all of it if its `width` fits, else
+  the longest prefix of whole clusters that leaves a cell for `…`, then `…`,
+  so a wide cluster that would straddle the cut is dropped whole and the
+  result is never wider than `room`. One cell is `…` alone; zero cells is
+  empty. The result is borrowed exactly when it is the text unchanged, so a
+  caller holding an owned copy can keep it.
 - `tui::table`: `align(lines, width) -> Vec<Option<Vec<String>>>`, pure, the
   only place tables are parsed: one entry per file line, that line's screen
   rows if it belongs to a well-formed table that lays out in `width`, else

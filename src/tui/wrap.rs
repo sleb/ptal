@@ -173,8 +173,8 @@ const ELLIPSIS: &str = "…";
 /// `text` on one row of `room` cells, as ratatui draws it (tabs as four
 /// spaces, control characters dropped): all of it if its [`width`] fits,
 /// else its longest prefix of whole clusters that leaves room for
-/// [`ELLIPSIS`], then the ellipsis. Text with no tabs or control characters
-/// that fits comes back borrowed. A wide cluster that would straddle the cut
+/// [`ELLIPSIS`], then the ellipsis. The result is borrowed exactly when it
+/// is `text` unchanged: text with no tabs or control characters that fits. A wide cluster that would straddle the cut
 /// is dropped whole, so the result may be a cell short of `room`, never over
 /// it. With one cell the result is the ellipsis alone, which still says
 /// text was cut; with none it is empty.
@@ -196,7 +196,7 @@ pub(super) fn cut(text: &str, room: usize) -> Cow<'_, str> {
         if used > room {
             return match keep {
                 Some(_) => Cow::Owned(drawn(&shown[..mark]) + ELLIPSIS),
-                None => Cow::Borrowed(""),
+                None => Cow::Owned(String::new()),
             };
         }
         if keep.is_some_and(|keep| used <= keep) {
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn one_cell_is_just_the_ellipsis_and_zero_cells_is_nothing() {
         assert_eq!(cut("abc", 1), "…");
-        assert_eq!(cut("abc", 0), "");
+        assert!(matches!(cut("abc", 0), Cow::Owned(empty) if empty.is_empty()));
         assert_eq!(cut("\u{301}", 0), "\u{301}", "zero cells wide, so it fits");
     }
 
