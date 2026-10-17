@@ -19,7 +19,8 @@ acceptance criteria and link here instead of restating commands.
 | Operation | Agent (CLI) | Human (TUI) | Core call |
 |---|---|---|---|
 | Open a review | `ptal comments <file>` (no session) | `ptal <file>` (interactive terminal only; see below) | `view` |
-| Move around the file | n/a (the agent reads the file itself) | `j`/`k`, `ctrl+d`/`ctrl+u`, `g`/`G`; aliases `↓`/`↑`, `PgDn`/`PgUp`, `End`/`Home`. In Visual mode the same keys (and `]`/`[`) extend the selection | none |
+| Move around the file | n/a (the agent reads the file itself) | `j`/`k`, `ctrl+d`/`ctrl+u`, `g`/`G`; aliases `↓`/`↑`, `PgDn`/`PgUp`, `End`/`Home`. In Visual mode the same keys (and `]`/`[`, `n`/`N`) extend the selection | none |
+| Search the file | n/a (the agent greps the file itself) | `/` opens a prompt (Normal or Visual); typing searches incrementally from where `/` was pressed and moves the cursor to the first matching line after it, `backspace` edits, `enter` keeps the position and makes the query the active search, `esc` or `ctrl+c` restores cursor and view. Smart-case. `n` / `N` jump to the next / previous matching line, wrapping; `esc` in Normal clears the search. Matches are highlighted; the footer shows `/query` | none |
 | Quit | n/a (process exits) | `q`, or `ctrl+c` in Normal mode (in Visual mode they only leave the selection) | none |
 | List open threads | `ptal comments <file>` | Gutter glyph on covered lines: `●` open, `◆` waiting on you (last comment not by `$USER`), `○` resolved only | `view(include_resolved=false)` |
 | Read thread text | `comments` output: id, status, `state`, range, quote, comments | `enter` on a threaded line opens the thread panel: status, `outdated`, quote, every comment with author, time and body | `view` |

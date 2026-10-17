@@ -870,3 +870,60 @@ fn a_failed_save_keeps_the_whole_multi_line_draft() {
     assert!(app.status().unwrap().contains("invalid line range"));
     assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
 }
+
+fn reversed_columns(app: &App) -> Vec<(u16, u16)> {
+    let buffer = drawn(app);
+    let mut cells = Vec::new();
+    for y in 0..ROWS {
+        for x in 0..COLS {
+            if buffer[(x, y)].modifier.contains(Modifier::REVERSED) {
+                cells.push((x, y));
+            }
+        }
+    }
+    cells
+}
+
+#[test]
+fn searching_moves_live_highlights_wraps_and_clears() {
+    let sb = sandbox("alpha\nthe plan\ngamma\nplan b\nomega\n");
+    let mut app = sb.open();
+
+    sb.press(&mut app, &["/", "p", "l", "a", "n"]).is_continue();
+    assert_eq!(app.cursor(), 1);
+    assert_eq!(reversed_columns(&app).len(), 8);
+
+    sb.press(&mut app, &["enter"]).is_continue();
+    assert_eq!(app.cursor(), 1);
+    sb.press(&mut app, &["n"]).is_continue();
+    assert_eq!(app.cursor(), 3);
+    sb.press(&mut app, &["n"]).is_continue();
+    assert_eq!(app.cursor(), 1);
+    assert_eq!(app.status(), Some("search wrapped"));
+
+    sb.press(&mut app, &["esc"]).is_continue();
+    assert!(reversed_columns(&app).is_empty());
+
+    sb.press(&mut app, &["G", "/", "z", "z", "z", "esc"])
+        .is_continue();
+    assert_eq!(app.cursor(), 4);
+    assert_eq!(app.mode(), &Mode::Normal);
+}
+
+#[test]
+fn a_comment_after_a_search_jump_anchors_on_the_line_the_cursor_is_on() {
+    let sb = sandbox("alpha\nbeta\ngamma\n");
+    let mut app = sb.open();
+
+    sb.press_typing(
+        &mut app,
+        &["/", "g", "a", "m", "enter", "enter"],
+        "note",
+        &["ctrl+s"],
+    )
+    .is_continue();
+
+    let threads = sb.reviews.view(&sb.file, true).unwrap();
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].thread.anchor.start_line, 3);
+}

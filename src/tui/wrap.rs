@@ -95,6 +95,32 @@ pub(super) fn row_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
         .collect()
 }
 
+/// The end of `text` on one row of `room` cells: all of it if it fits, else
+/// an ellipsis and the longest suffix of whole clusters that leaves room
+/// for it. Never wider than `room`; with no room for the ellipsis, empty.
+pub(super) fn tail(text: &str, room: usize) -> String {
+    let shown = drawn(&expand_tabs(text));
+    if width(&shown) <= room {
+        return shown;
+    }
+    let Some(keep) = room.checked_sub(width(ELLIPSIS)) else {
+        return String::new();
+    };
+    let mut kept = Vec::new();
+    let mut used = 0;
+    let span = Span::raw(shown.as_str());
+    let graphemes: Vec<_> = span.styled_graphemes(Style::new()).collect();
+    for grapheme in graphemes.into_iter().rev() {
+        used += usize::from(grapheme.symbol.cell_width());
+        if used > keep {
+            break;
+        }
+        kept.push(grapheme.symbol);
+    }
+    kept.reverse();
+    format!("{ELLIPSIS}{}", kept.concat())
+}
+
 /// The clusters of `text` (tabs already expanded) on each row: the one
 /// wrapping algorithm behind [`rows`], [`plain_rows`], [`row_count`] and
 /// [`row_ranges`].
@@ -522,5 +548,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tail_keeps_the_end_of_text_that_does_not_fit() {
+        assert_eq!(tail("hello", 5), "hello");
+        assert_eq!(tail("hello world", 6), "…world");
+        assert_eq!(tail("hello", 1), "…");
+        assert_eq!(tail("hello", 0), "");
+    }
+
+    #[test]
+    fn tail_never_splits_a_wide_cluster_or_overflows() {
+        for room in 0..8 {
+            let out = tail("a日b本c語", room);
+            assert!(width(&out) <= room, "{out:?} in {room}");
+        }
+        assert_eq!(tail("日本語", 5), "…本語");
+        assert_eq!(tail("日本語", 4), "…語");
     }
 }

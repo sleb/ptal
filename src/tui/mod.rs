@@ -5,7 +5,7 @@
 //! [`app`] is the pure state machine, [`draft`] the pure comment editor,
 //! [`panel`] the pure thread layout,
 //! [`wrap`] the pure line wrapping, [`table`] the pure table layout,
-//! [`highlight`] the pure markdown styling, [`mod@render`] the pure drawing; this
+//! [`highlight`] the pure markdown styling, [`search`] the pure text search, [`mod@render`] the pure drawing; this
 //! module is the driver that performs the effects `update` asks for.
 
 pub mod app;
@@ -13,6 +13,7 @@ pub mod draft;
 pub mod highlight;
 pub mod panel;
 pub mod render;
+pub mod search;
 pub mod table;
 pub mod wrap;
 
