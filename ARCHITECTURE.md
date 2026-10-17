@@ -387,13 +387,14 @@ Its parts:
   moves the cursor there like `]`; `esc` restores `origin`, `enter` keeps the
   position and sets `App.search` (even if nothing matched). `n`/`N` live in
   the shared `movement` helper, so Visual gets them; they search the raw file
-  lines (never gutter, comments or the displayed table text), one stop per
-  line. The file view applies `emphasize` (reverse video, patched over the
+  lines (never gutter or comments) and a table line on its laid-out rows,
+  so every jump lands on something highlighted; one stop per line. The file view applies `emphasize` (reverse video, patched over the
   existing style) to the styled line before wrapping, so wrapped rows carry
-  it; a table line is found on its source text but highlighted by searching
-  its displayed rows, so a match split across two cells is found yet not
+  it; a match split across two wrapped table rows is neither found nor
   marked. The prompt replaces the footer row: `/query` (its tail, after `…`,
-  when too wide) plus ` [no match]` or ` [wrapped]` only when that fits whole.
+  when too wide) plus ` [no match]` or ` [wrapped]` only when that fits whole. Backspace on an empty query
+  leaves the prompt. `n`/`N` ignore ctrl/alt chords; the prompt treats
+  ctrl+alt (AltGr) as text.
 - `tui::render`: `render(&App, &mut Frame)`, pure over state. One file line
   is one or more screen rows (word-wrapped by `tui::wrap`, tabs shown as four
   spaces). A well-formed markdown table shows aligned, in place; one too

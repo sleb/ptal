@@ -98,6 +98,7 @@ exits `1` with a `not_a_terminal` JSON error.
 | `e` | Edit your own comment |
 | `s` | Toggle the comment sidebar |
 | `R` | Show / hide resolved threads |
+| (unassigned; `n` / `N` are now search) | Next / previous line changed since you last reviewed |
 
 ### For agents
 

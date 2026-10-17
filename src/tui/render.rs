@@ -1282,11 +1282,15 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
         let mut app = app_with(lines(30), &[], 8);
         key(&mut app, KeyCode::Char('G'));
 
-        let screen = screen(&draw(&app, W, 8));
+        let screen = screen(&draw(&app, 120, 8));
 
         let first = screen.lines().next().unwrap();
         assert_eq!(first, "  24│line 24");
-        assert!(screen.contains("L30/30  enter:thread/comment ]/[:jump q:quit v:se"));
+        assert!(
+            screen
+                .trim_end()
+                .ends_with("L30/30  enter:thread/comment ]/[:jump q:quit v:select /:search")
+        );
     }
 
     /// An app on a terminal `cols` wide, so wrapping matches the drawing.

@@ -50,6 +50,9 @@ pub enum Mode {
         /// The `(cursor, top)` when `/` was pressed: where every search
         /// starts and where `esc` restores.
         origin: (usize, usize),
+        /// The line the query matched from `origin` and whether it wrapped;
+        /// `None` when nothing matched (or the query is empty).
+        hit: Option<(usize, bool)>,
     },
     /// Typing a comment: a new thread on the cursor line, or a reply.
     Input {
@@ -520,8 +523,7 @@ impl App {
             }
             None => {
                 let raw = self.lines[line].as_str();
-                let styled =
-                    styling.map_or_else(|| Line::raw(raw.to_owned()), |styling| styling.apply(raw));
+                let styled = styling.map_or_else(|| Line::raw(raw), |styling| styling.apply(raw));
                 let styled = search::emphasize(styled, &search::find(raw, query));
                 wrap::rows(&styled, self.text_width())
             }
@@ -662,9 +664,18 @@ impl App {
             } else {
                 ((from + count - step % count) % count, step > from)
             };
-            let hit = !search::find(&self.lines[line], query).is_empty();
-            hit.then_some((line, wrapped))
+            self.line_matches(line, query).then_some((line, wrapped))
         })
+    }
+
+    /// Whether 0-based `line` matches `query` as shown: a table line on its
+    /// laid-out rows, so a jump always lands on something highlighted; any
+    /// other line on its raw text.
+    fn line_matches(&self, line: usize, query: &str) -> bool {
+        match &self.tables[line] {
+            Some(rows) => rows.iter().any(|row| !search::find(row, query).is_empty()),
+            None => !search::find(&self.lines[line], query).is_empty(),
+        }
     }
 
     /// Re-run the live search of `Mode::Search` from its origin.
@@ -674,25 +685,28 @@ impl App {
         };
         let (origin, query) = (*origin, query.clone());
         self.top = origin.1;
-        let target = self
-            .next_match(&query, origin.0, true)
-            .map_or(origin.0, |(line, _)| line);
-        self.move_to(target);
+        let found = if query.is_empty() {
+            None
+        } else {
+            self.next_match(&query, origin.0, true)
+        };
+        if let Mode::Search { hit, .. } = &mut self.mode {
+            *hit = found;
+        }
+        self.move_to(found.map_or(origin.0, |(line, _)| line));
     }
 
     /// What the search prompt says about the live query: `" [no match]"` or
     /// `" [wrapped]"`, else nothing.
     pub fn search_note(&self) -> &'static str {
-        let Mode::Search { query, origin, .. } = &self.mode else {
-            return "";
-        };
-        if query.is_empty() {
-            return "";
-        }
-        match self.next_match(query, origin.0, true) {
-            None => " [no match]",
-            Some((_, true)) => " [wrapped]",
-            Some((_, false)) => "",
+        match &self.mode {
+            Mode::Search { query, .. } if query.is_empty() => "",
+            Mode::Search { hit: None, .. } => " [no match]",
+            Mode::Search {
+                hit: Some((_, true)),
+                ..
+            } => " [wrapped]",
+            _ => "",
         }
     }
 
@@ -738,6 +752,7 @@ impl App {
             query: String::new(),
             anchor,
             origin: (self.cursor, self.top),
+            hit: None,
         };
     }
 
@@ -851,6 +866,7 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
 /// Normal and Visual share it, so the two modes move alike.
 fn movement(app: &mut App, key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let chord = ctrl || key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
         KeyCode::Char('d') if ctrl => app.scroll_half_page(true),
         KeyCode::Char('u') if ctrl => app.scroll_half_page(false),
@@ -860,8 +876,8 @@ fn movement(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('G') | KeyCode::End => app.move_to(app.last_line()),
         KeyCode::Char(']') => app.jump_to_covered(true),
         KeyCode::Char('[') => app.jump_to_covered(false),
-        KeyCode::Char('n') => app.repeat_search(true),
-        KeyCode::Char('N') => app.repeat_search(false),
+        KeyCode::Char('n') if !chord => app.repeat_search(true),
+        KeyCode::Char('N') if !chord => app.repeat_search(false),
         KeyCode::PageDown => app.scroll_half_page(true),
         KeyCode::PageUp => app.scroll_half_page(false),
         _ => return false,
@@ -938,29 +954,29 @@ fn search_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         query,
         anchor,
         origin,
+        ..
     } = &mut app.mode
     else {
         return None;
     };
-    let anchor = *anchor;
-    let origin = *origin;
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let back =
-        |anchor: Option<usize>| anchor.map_or(Mode::Normal, |anchor| Mode::Visual { anchor });
+    let (anchor, origin) = (*anchor, *origin);
+    // Terminals report AltGr as ctrl+alt, so only ctrl without alt is a chord.
+    let ctrl =
+        key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT);
+    let back = anchor.map_or(Mode::Normal, |anchor| Mode::Visual { anchor });
     match key.code {
-        KeyCode::Esc => {
-            app.mode = back(anchor);
+        KeyCode::Esc | KeyCode::Char('c') if key.code == KeyCode::Esc || ctrl => {
+            app.mode = back;
             app.top = origin.1;
             app.move_to(origin.0);
         }
-        KeyCode::Char('c') if ctrl => {
-            app.mode = back(anchor);
-            app.top = origin.1;
-            app.move_to(origin.0);
+        // Like vim: backspace on an empty prompt leaves it.
+        KeyCode::Backspace if query.is_empty() => {
+            app.mode = back;
         }
         KeyCode::Enter => {
             let query = std::mem::take(query);
-            app.mode = back(anchor);
+            app.mode = back;
             if !query.is_empty() {
                 app.search = Some(query);
             }
@@ -3546,5 +3562,73 @@ mod tests {
         type_query(&mut a, "omega");
         send(&mut a, [Event::Resize(40, 2)]);
         assert!(a.top <= a.cursor);
+    }
+
+    fn alt_graph(c: char) -> Event {
+        Event::Key(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ))
+    }
+
+    #[test]
+    fn altgr_characters_are_text_in_the_prompt() {
+        let mut a = searching(&PLAN, 10);
+        send(&mut a, [ch('/'), alt_graph('@'), alt_graph('ł')]);
+        let Mode::Search { query, .. } = &a.mode else {
+            panic!("left the prompt");
+        };
+        assert_eq!(query, "@ł");
+    }
+
+    #[test]
+    fn n_with_a_modifier_is_not_a_search_repeat() {
+        let mut a = searching(&PLAN, 10);
+        send(&mut a, [ch('/')]);
+        type_query(&mut a, "plan");
+        send(&mut a, [press(KeyCode::Enter)]);
+        for event in [
+            ctrl('n'),
+            Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT)),
+            Event::Key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::CONTROL)),
+        ] {
+            send(&mut a, [event]);
+            assert_eq!((a.cursor, a.status()), (2, None));
+        }
+    }
+
+    #[test]
+    fn backspace_on_an_empty_query_cancels_the_prompt() {
+        let mut a = searching(&PLAN, 10);
+        send(&mut a, [ch('j'), ch('/'), press(KeyCode::Backspace)]);
+        assert_eq!((a.mode.clone(), a.cursor), (Mode::Normal, 1));
+        send(&mut a, [ch('v'), ch('/'), press(KeyCode::Backspace)]);
+        assert_eq!(a.mode, Mode::Visual { anchor: 1 });
+    }
+
+    #[test]
+    fn a_table_line_matches_on_what_is_shown_so_every_jump_is_highlighted() {
+        let lines = ["intro", "| a | longer |", "|---|---|", "| bb | c |", "end"];
+        let mut a = searching(&lines, 10);
+        // Layout pads the cells, so the source's `a | l` is not on screen.
+        send(&mut a, [ch('/')]);
+        type_query(&mut a, "a | l");
+        assert_eq!(a.cursor, 0);
+        assert_eq!(a.search_note(), " [no match]");
+        send(&mut a, [press(KeyCode::Esc), ch('/')]);
+        type_query(&mut a, "c");
+        let marked = a
+            .screen_rows()
+            .iter()
+            .filter(|row| {
+                row.text.spans.iter().any(|s| {
+                    s.style
+                        .add_modifier
+                        .contains(ratatui::style::Modifier::REVERSED)
+                })
+            })
+            .map(|row| row.line)
+            .collect::<Vec<_>>();
+        assert!(marked.contains(&a.cursor), "{marked:?} vs {}", a.cursor);
     }
 }

@@ -25,20 +25,24 @@ pub fn find(line: &str, query: &str) -> Vec<Range<usize>> {
     }
     let exact = query.chars().any(char::is_uppercase);
     let same = |a: char, b: char| if exact { a == b } else { fold(a) == fold(b) };
-    let needle: Vec<char> = query.chars().collect();
-    let hay: Vec<(usize, char)> = line.char_indices().collect();
+    let needle = query.chars();
+    let len = needle.clone().count();
     let mut found = Vec::new();
-    let mut at = 0;
-    while at + needle.len() <= hay.len() {
-        let window = &hay[at..at + needle.len()];
-        if window.iter().zip(&needle).all(|(&(_, h), &n)| same(h, n)) {
-            let end = hay
-                .get(at + needle.len())
-                .map_or(line.len(), |&(offset, _)| offset);
-            found.push(hay[at].0..end);
-            at += needle.len();
+    let mut starts = line.char_indices().peekable();
+    while let Some(&(start, _)) = starts.peek() {
+        let mut rest = line[start..].char_indices();
+        let hit = needle
+            .clone()
+            .all(|n| rest.next().is_some_and(|(_, h)| same(h, n)));
+        if hit {
+            let end = start + rest.offset();
+            found.push(start..end);
+            // Skip the match so matches do not overlap.
+            for _ in 0..len {
+                starts.next();
+            }
         } else {
-            at += 1;
+            starts.next();
         }
     }
     found
@@ -47,11 +51,11 @@ pub fn find(line: &str, query: &str) -> Vec<Range<usize>> {
 /// `line` with the text under `ranges` (sorted, non-overlapping byte ranges
 /// into its concatenated text, as [`find`] returns) reversed on top of its
 /// existing style. The text itself is unchanged.
-pub fn emphasize(line: Line<'static>, ranges: &[Range<usize>]) -> Line<'static> {
+pub fn emphasize<'a>(line: Line<'a>, ranges: &[Range<usize>]) -> Line<'a> {
     if ranges.is_empty() {
         return line;
     }
-    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut spans: Vec<Span<'a>> = Vec::new();
     let mut base = 0;
     let (style, alignment) = (line.style, line.alignment);
     for span in line.spans {
