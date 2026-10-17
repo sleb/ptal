@@ -48,8 +48,20 @@ pub fn render(app: &App, frame: &mut Frame) {
             draw_footer(app, buf, footer);
         }
         Mode::Input {
-            draft, reply_to, ..
-        } => draw_input(app, draft, reply_to.as_deref(), buf, bottom),
+            draft,
+            discard_asked,
+            reply_to,
+            ..
+        } => {
+            let hint = if *discard_asked {
+                DISCARD_HINT
+            } else if usize::from(bottom.width.saturating_sub(2)) < INPUT_HINT.len() {
+                INPUT_HINT_SHORT
+            } else {
+                INPUT_HINT
+            };
+            draw_input(app, draft, hint, reply_to.as_deref(), buf, bottom);
+        }
     }
 }
 
@@ -180,11 +192,22 @@ fn draw_panel(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
 
 /// The key hint on the comment box's bottom border.
 const INPUT_HINT: &str = "ctrl+s:save enter:newline esc:cancel";
+/// [`INPUT_HINT`] for a box too narrow for it: how to save and cancel.
+const INPUT_HINT_SHORT: &str = "ctrl+s:save esc:cancel";
+/// The bottom border while an `esc` waits to discard a draft.
+const DISCARD_HINT: &str = "esc:discard the draft  any other key:keep it";
 
 /// The comment box: the draft's rows from its scroll, wrapped at
 /// [`App::draft_width`] exactly as `update` counts them, and the cursor as a
-/// reversed cell.
-fn draw_input(app: &App, draft: &Draft, reply_to: Option<&str>, buf: &mut Buffer, area: Rect) {
+/// reversed cell, with `hint` on the bottom border.
+fn draw_input(
+    app: &App,
+    draft: &Draft,
+    hint: &str,
+    reply_to: Option<&str>,
+    buf: &mut Buffer,
+    area: Rect,
+) {
     if area.is_empty() {
         return;
     }
@@ -202,7 +225,7 @@ fn draw_input(app: &App, draft: &Draft, reply_to: Option<&str>, buf: &mut Buffer
             ),
         },
     };
-    let block = Block::bordered().title(title).title_bottom(INPUT_HINT);
+    let block = Block::bordered().title(title).title_bottom(hint);
     let inner = block.inner(area);
     block.render(area, buf);
     if inner.is_empty() {
@@ -855,6 +878,33 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
         );
         assert!(
             rows[2].starts_with("└ctrl+s:save enter:newline esc:cancel─"),
+            "{}",
+            rows[2]
+        );
+    }
+
+    #[test]
+    fn a_narrow_box_keeps_a_short_hint_that_still_says_save_and_cancel() {
+        let app = box_with("hi", (30, 8));
+
+        let rows = box_rows(&draw(&app, 30, 8), 3);
+
+        assert_eq!(
+            rows[2],
+            format!("└ctrl+s:save esc:cancel{}┘", "─".repeat(6))
+        );
+    }
+
+    #[test]
+    fn the_border_asks_before_esc_discards_a_draft() {
+        let mut app = box_with("hi", (W, 8));
+        key(&mut app, KeyCode::Esc);
+
+        let rows = box_rows(&draw(&app, W, 8), 3);
+
+        assert!(rows[1].starts_with("│hi"), "the draft is still shown");
+        assert!(
+            rows[2].starts_with("└esc:discard the draft  any other key:keep it─"),
             "{}",
             rows[2]
         );

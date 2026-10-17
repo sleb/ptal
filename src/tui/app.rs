@@ -44,6 +44,9 @@ pub enum Mode {
         draft: Draft,
         /// The mode this box was opened from, which `esc` returns to.
         back: Back,
+        /// Whether an `esc` (or `ctrl+c`) on a draft that is not blank is
+        /// waiting for a second one to discard it.
+        discard_asked: bool,
         /// The id of the thread being replied to; `None` adds a new thread.
         ///
         /// Captured when `r` is pressed, so a re-read between the keypress
@@ -58,6 +61,7 @@ impl Mode {
     fn input(back: Back, reply_to: Option<String>) -> Self {
         Mode::Input {
             draft: Draft::default(),
+            discard_asked: false,
             back,
             reply_to,
         }
@@ -850,12 +854,15 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
 
 /// A key in the comment box: `ctrl+s` (either case, as some terminals
 /// report it with shift or caps lock) saves a draft that is not blank (as
-/// typed, newlines kept), `enter` starts a new line, `esc` or `ctrl+c`
-/// returns to where the box came from, and the rest edit the draft.
+/// typed, newlines kept, less trailing whitespace), `enter` starts a new
+/// line, and the rest edit the draft. `esc` or `ctrl+c` returns to where the
+/// box came from: at once for a blank draft, else on a second press, any
+/// other key in between keeping the draft.
 fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let width = app.draft_width();
     let Mode::Input {
         draft,
+        discard_asked,
         back,
         reply_to,
     } = &mut app.mode
@@ -864,12 +871,21 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     };
     let back = back.mode();
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let blank = draft.text().trim().is_empty();
+    let cancel = key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c'));
+    if cancel {
+        if blank || *discard_asked {
+            app.mode = back;
+        } else {
+            *discard_asked = true;
+        }
+        return None;
+    }
+    *discard_asked = false;
     match key.code {
-        KeyCode::Char('c') if ctrl => app.mode = back,
-        KeyCode::Esc => app.mode = back,
-        KeyCode::Char('s' | 'S') if ctrl && draft.text().trim().is_empty() => {}
+        KeyCode::Char('s' | 'S') if ctrl && blank => {}
         KeyCode::Char('s' | 'S') if ctrl => {
-            let body = draft.text().to_owned();
+            let body = draft.text().trim_end().to_owned();
             return Some(match reply_to {
                 Some(id) => Effect::Reply {
                     id: id.clone(),
@@ -1649,10 +1665,13 @@ mod tests {
     }
 
     #[test]
-    fn esc_discards_the_draft_and_keeps_the_cursor() {
+    fn esc_twice_discards_the_draft_and_keeps_the_cursor() {
         let mut a = input_app();
         typed(&mut a, "hello");
 
+        assert_eq!(update(&mut a, press(KeyCode::Esc)), None);
+        assert_eq!(draft(&a), ("hello", 5), "the first esc only asks");
+        assert!(discard_asked(&a));
         assert_eq!(update(&mut a, press(KeyCode::Esc)), None);
 
         assert_eq!(a.mode, Mode::Normal);
@@ -1736,11 +1755,76 @@ mod tests {
         assert_eq!(a.cursor, 2);
     }
 
+    /// Whether the box is asking before it discards its draft.
+    fn discard_asked(a: &App) -> bool {
+        matches!(
+            a.mode,
+            Mode::Input {
+                discard_asked: true,
+                ..
+            }
+        )
+    }
+
     #[test]
-    fn ctrl_c_cancels_input_and_a_second_one_quits() {
+    fn a_blank_draft_is_cancelled_by_one_esc() {
+        for cancel in [press(KeyCode::Esc), ctrl('c')] {
+            let mut a = input_app();
+            send(&mut a, [ch(' '), press(KeyCode::Enter)]);
+
+            assert_eq!(update(&mut a, cancel), None);
+
+            assert_eq!(a.mode, Mode::Normal);
+        }
+    }
+
+    #[test]
+    fn esc_or_ctrl_c_after_either_one_discards() {
+        for (first, second) in [
+            (press(KeyCode::Esc), ctrl('c')),
+            (ctrl('c'), press(KeyCode::Esc)),
+            (ctrl('c'), ctrl('c')),
+        ] {
+            let mut a = input_app();
+            typed(&mut a, "x");
+
+            send(&mut a, [first]);
+            assert!(discard_asked(&a));
+            send(&mut a, [second]);
+
+            assert_eq!(a.mode, Mode::Normal);
+        }
+    }
+
+    #[test]
+    fn any_other_key_keeps_the_draft_and_stops_asking() {
+        for key in [
+            ch('y'),
+            press(KeyCode::Left),
+            press(KeyCode::Enter),
+            ctrl('d'),
+        ] {
+            let mut a = input_app();
+            typed(&mut a, "x");
+            send(&mut a, [press(KeyCode::Esc), key.clone()]);
+            assert!(!discard_asked(&a), "{key:?}");
+
+            send(&mut a, [press(KeyCode::Esc)]);
+
+            assert!(
+                discard_asked(&a),
+                "{key:?}: asks again rather than discarding"
+            );
+            assert!(draft(&a).0.starts_with('x'), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn ctrl_c_twice_cancels_input_and_a_third_quits() {
         let mut a = input_app();
         typed(&mut a, "draft");
 
+        assert_eq!(update(&mut a, ctrl('c')), None);
         assert_eq!(update(&mut a, ctrl('c')), None);
         assert_eq!(a.mode, Mode::Normal);
         assert_eq!(update(&mut a, ctrl('c')), Some(Effect::Quit));
@@ -1801,6 +1885,32 @@ mod tests {
                 id: "c2".into(),
                 body: body()
             })
+        );
+    }
+
+    #[test]
+    fn ctrl_s_drops_trailing_blank_lines_and_keeps_the_rest() {
+        let mut a = input_app();
+        typed(&mut a, "  fix this");
+        send(&mut a, [press(KeyCode::Enter), press(KeyCode::Enter)]);
+        typed(&mut a, "please ");
+        send(
+            &mut a,
+            [press(KeyCode::Enter), ch(' '), press(KeyCode::Enter)],
+        );
+
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::Add {
+                start: 3,
+                end: 3,
+                body: "  fix this\n\nplease".into()
+            })
+        );
+        assert_eq!(
+            draft(&a).0,
+            "  fix this\n\nplease \n \n",
+            "the draft is untouched"
         );
     }
 
@@ -2421,6 +2531,7 @@ mod tests {
             typed(&mut a, "draft");
             let before = (panel_after_cancel(&a), a.cursor);
 
+            update(&mut a, cancel.clone());
             update(&mut a, cancel);
 
             assert_eq!((panel(&a), a.cursor), (before.0, before.1));
@@ -2961,6 +3072,7 @@ mod tests {
             send(&mut a, [ch('j'), press(KeyCode::Enter)]);
             typed(&mut a, "draft");
 
+            assert_eq!(update(&mut a, cancel.clone()), None);
             assert_eq!(update(&mut a, cancel.clone()), None);
             assert_eq!(a.mode, Mode::Visual { anchor: 3 });
             assert_eq!(a.selection(), (3, 4));

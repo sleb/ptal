@@ -223,7 +223,7 @@ fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
     assert!(
         matches!(
             app.mode(),
-            Mode::Input { draft, back: Back::Normal, reply_to: None }
+            Mode::Input { draft, back: Back::Normal, reply_to: None, .. }
                 if draft.text() == "ok" && draft.cursor() == 2
         ),
         "{:?}",

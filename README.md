@@ -74,7 +74,9 @@ set `NO_COLOR` (to any non-empty value) to turn it off. Other files show
 plain.
 
 A comment can span several paragraphs: in the comment box `enter` starts a
-new line and `ctrl+s` saves. Text wraps inside the box, which grows with it
+new line and `ctrl+s` saves (trailing blank lines are dropped). With text in
+the box, `esc` asks first; a second `esc` discards the draft and any other
+key keeps it. Text wraps inside the box, which grows with it
 up to 10 rows (and never past half the terminal), then scrolls to follow the
 cursor.
 

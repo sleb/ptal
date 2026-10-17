@@ -99,11 +99,8 @@ fn split(text: &str, width: usize) -> Vec<Vec<&str>> {
     // Index in `row` just after its last whitespace, and the cells used up
     // to there.
     let mut break_at: Option<(usize, usize)> = None;
-    let span = Span::raw(text);
-    for grapheme in span.styled_graphemes(Style::new()) {
-        // The same cluster, borrowed from `text` rather than from `span`.
-        let at = offset_in(text, grapheme.symbol);
-        let symbol = &text[at..at + grapheme.symbol.len()];
+    for cluster in clusters(text) {
+        let symbol = &text[cluster];
         let cells = usize::from(symbol.cell_width());
         if symbol.chars().all(char::is_whitespace) {
             row.push(symbol);
@@ -130,7 +127,7 @@ fn split(text: &str, width: usize) -> Vec<Vec<&str>> {
 }
 
 /// The byte range in `text` of each grapheme cluster ratatui draws, in
-/// order: the clusters [`rows`] measures. Control characters are not drawn,
+/// order: the one segmentation behind [`rows`] and the draft's cursor. Control characters are not drawn,
 /// so they are in no range.
 pub(super) fn clusters(text: &str) -> Vec<Range<usize>> {
     Span::raw(text)

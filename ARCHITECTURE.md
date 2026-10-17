@@ -263,7 +263,7 @@ Its parts:
   never changes in a session, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
   outdated ones, footer `status`), `Mode = Normal | Visual { anchor } |
-  Panel { selected, scroll } | Input { draft, back, reply_to }`
+  Panel { selected, scroll } | Input { draft, discard_asked, back, reply_to }`
   (`draft` is a `tui::draft::Draft`;
   `back` is the `Back` the box returns to on `esc`: `Normal | Panel {
   selected, scroll } | Visual { anchor }`), and
@@ -275,8 +275,10 @@ Its parts:
   typing), else the cursor line alone. `enter` in `Visual` always opens a
   box for a new thread on the selection, never the panel; a save from it
   goes to Normal. In `Input`, `enter` inserts a newline and `ctrl+s`
-  saves the draft exactly as typed (one that is only whitespace and newlines
-  saves nothing); `esc` or `ctrl+c` returns to `back`. The box is as tall as
+  (or `ctrl+S`) saves the draft as typed less trailing whitespace (one that
+  is only whitespace and newlines saves nothing). `esc` or `ctrl+c` returns
+  to `back` at once on a blank draft; otherwise the first sets
+  `discard_asked` and only a second discards, any other key clearing it. The box is as tall as
   its draft's rows at `draft_width()` (terminal columns less the border and
   one cell for a cursor after a full row), at least 1, capped at
   `min(10, rows / 2 - 2)` (at least 1), plus its 2 border rows; the view
@@ -389,7 +391,9 @@ Its parts:
   `App` says; it draws the draft's `rows(draft_width())` from its `scroll`,
   so text wraps inside the border exactly as `update` counts it, the cursor
   is a reversed cell at `cursor_at`, and the bottom border reads
-  `ctrl+s:save enter:newline esc:cancel`.
+  `ctrl+s:save enter:newline esc:cancel` (`ctrl+s:save esc:cancel` when
+  that does not fit), or, while `discard_asked`, `esc:discard the draft  any
+  other key:keep it`.
 - `tui` (module root): the driver. `load` reads lines (`review::file_lines`)
   and all threads; `Loaded::into_app` highlights the file only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
