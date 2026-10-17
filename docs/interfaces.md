@@ -71,7 +71,7 @@ the TUI runs.
 ## Bare `ptal <file>` and subcommand names
 
 `ptal <file>` opens the TUI. A first argument that is exactly `comments`,
-`add`, `resolve`, `reply`, or `reopen` is the subcommand; to open a file with one of those names,
+`add`, `resolve`, `reply`, `reopen` or `help` is the subcommand; to open a file with one of those names,
 write `./comments`. With no arguments, `ptal` prints help and exits `2`. The
 `--json` flag is accepted with a file and has no effect on the TUI. Unlike
 the agent commands, the TUI takes its author from `$USER` only (never
