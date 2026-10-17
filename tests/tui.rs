@@ -504,14 +504,18 @@ fn a_failed_reply_keeps_the_draft_and_shows_the_error() {
     );
     let status = app.status().unwrap();
     assert!(status.to_lowercase().contains("permission"), "{status}");
-    // The message is on the box's bottom border, cut at the inner width: a
-    // long store path may push its tail past the corner. The OS message is
-    // one ASCII row, so a char is a cell.
+    // The message is on the box's bottom border, cut with `…` at the inner
+    // width: a long store path may push its tail past the corner. The OS
+    // message is one ASCII row, so a char is a cell.
     let rendered = screen(&app);
     assert!(rendered.contains("┌Reply to c1 as scott"), "{rendered}");
     assert!(rendered.contains("│ok"), "{rendered}");
     let inner = usize::from(COLS - 2);
-    let shown: String = status.chars().take(inner).collect();
+    let shown: String = if status.chars().count() <= inner {
+        status.to_string()
+    } else {
+        status.chars().take(inner - 1).chain(['…']).collect()
+    };
     let dashes = "─".repeat(inner - shown.chars().count());
     let border = format!("└{shown}{dashes}┘");
     assert!(

@@ -204,15 +204,16 @@ const DISCARD_HINT_TINY: &str = "esc:discard?";
 /// The text on the comment box's bottom border and its style, for a box
 /// `width` cells wide. A pending [`App::status`] (a failed save's error) wins,
 /// red and bold, unless [`one_line`] leaves it empty; then the discard prompt
-/// while `discard_asked`; else the key hint. Hints pick the longest form that fits inside the corners, falling
-/// back to the shortest. The error is put on one row by [`one_line`] and
-/// clipped by the border, a wide character that would straddle the corner
-/// left out whole.
-fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'_, str>, Style) {
+/// while `discard_asked`; else the key hint. Hints pick the longest form that
+/// fits inside the corners, falling back to the shortest. The error is put on
+/// one row by [`one_line`]. Whatever is chosen is [`wrap::cut`] to fit
+/// between the corners, so text that does not fit ends in `…`.
+fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'static, str>, Style) {
+    let room = usize::from(width.saturating_sub(2));
     let error = app.status().map(one_line).filter(|error| !error.is_empty());
     if let Some(error) = error {
         return (
-            Cow::Owned(error),
+            Cow::Owned(wrap::cut(&error, room).into_owned()),
             Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
         );
     }
@@ -221,14 +222,13 @@ fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'_, str>, Styl
     } else {
         &[INPUT_HINT, INPUT_HINT_SHORT]
     };
-    let room = usize::from(width.saturating_sub(2));
     let hint = hints
         .iter()
         .find(|hint| wrap::width(hint) <= room)
         .or(hints.last())
         .copied()
         .unwrap_or_default();
-    (Cow::Borrowed(hint), Style::new())
+    (wrap::cut(hint, room), Style::new())
 }
 
 /// `text` on one row: each run of whitespace and control characters (a
@@ -1078,13 +1078,27 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
     }
 
     #[test]
-    fn a_long_error_is_cut_at_the_narrow_box_s_inner_width() {
+    fn a_long_error_is_cut_with_an_ellipsis_at_the_narrow_box_s_inner_width() {
         let mut app = box_with("hi", (20, 8));
         update(&mut app, Event::SaveFailed(LOCKED.into()));
 
-        let rows = box_rows(&draw(&app, 20, 8), 3);
+        let terminal = draw(&app, 20, 8);
 
-        assert_eq!(rows[2], format!("└{}┘", &LOCKED[..18]));
+        let cut = format!("{}…", &LOCKED[..17]);
+        assert_eq!(box_rows(&terminal, 3)[2], format!("└{cut}┘"));
+        assert_error_styled(&terminal, &cut);
+    }
+
+    #[test]
+    fn a_hint_too_wide_even_in_its_shortest_form_ends_in_an_ellipsis() {
+        let app = box_with("hi", (20, 8));
+        let rows = box_rows(&draw(&app, 20, 8), 3);
+        assert_eq!(rows[2], "└ctrl+s:save esc:c…┘");
+
+        let mut app = box_with("hi", (10, 8));
+        key(&mut app, KeyCode::Esc);
+        let rows = box_rows(&draw(&app, 10, 8), 3);
+        assert_eq!(rows[2], "└esc:dis…┘");
     }
 
     /// The last row of `terminal` as text, skipping the blank cells that
@@ -1107,7 +1121,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
     }
 
     #[test]
-    fn a_wide_character_error_is_styled_by_cell_and_clipped_whole() {
+    fn a_wide_character_error_is_styled_by_cell_and_cut_whole() {
         // 24 cells: eight wide characters and a space, then eight more.
         let message = "鎖定されています レビューが使用中";
         let mut app = box_with("hi", (W, 8));
@@ -1121,13 +1135,15 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
         assert_error_styled(&wide, message);
 
         // 18 inner cells: the first eight characters and the space fill 17;
-        // the next wide character does not fit, and the corner stays.
+        // the next wide character would straddle the cut, so the ellipsis
+        // takes its place, and the corner stays.
         let mut app = box_with("hi", (20, 8));
         update(&mut app, Event::SaveFailed(message.into()));
-        let row = last_row(&draw(&app, 20, 8));
-        assert!(row.starts_with("└鎖定されています "), "{row}");
-        assert!(row.ends_with('┘'), "{row}");
+        let narrow = draw(&app, 20, 8);
+        let row = last_row(&narrow);
+        assert_eq!(row, "└鎖定されています …┘");
         assert_eq!(wrap::width(&row), 20, "{row}");
+        assert_error_styled(&narrow, "鎖定されています …");
     }
 
     #[test]
