@@ -14,6 +14,9 @@ use super::wrap;
 pub struct Draft {
     text: String,
     cursor: usize,
+    /// The column, in cells, that consecutive [`Draft::up`] and
+    /// [`Draft::down`] aim for; every other edit or move clears it.
+    goal: Option<usize>,
 }
 
 impl Draft {
@@ -34,6 +37,7 @@ impl Draft {
         if c.is_control() {
             return;
         }
+        self.goal = None;
         self.text.insert(self.cursor, c);
         self.cursor += c.len_utf8();
         let cursor = self.cursor;
@@ -48,12 +52,14 @@ impl Draft {
 
     /// Start a new line at the cursor.
     pub fn newline(&mut self) {
+        self.goal = None;
         self.text.insert(self.cursor, '\n');
         self.cursor += 1;
     }
 
     /// Move back over one cluster; a no-op at the start.
     pub fn left(&mut self) {
+        self.goal = None;
         if let Some(before) = self.before() {
             self.cursor = before.start;
         }
@@ -61,6 +67,7 @@ impl Draft {
 
     /// Move forward over one cluster; a no-op at the end.
     pub fn right(&mut self) {
+        self.goal = None;
         if let Some(after) = self.after() {
             self.cursor = after.end;
         }
@@ -68,6 +75,7 @@ impl Draft {
 
     /// Remove the cluster before the cursor; a no-op at the start.
     pub fn backspace(&mut self) {
+        self.goal = None;
         if let Some(before) = self.before() {
             self.text.replace_range(before.clone(), "");
             self.cursor = before.start;
@@ -76,19 +84,25 @@ impl Draft {
 
     /// Remove the cluster after the cursor; a no-op at the end.
     pub fn delete(&mut self) {
+        self.goal = None;
         if let Some(after) = self.after() {
             self.text.replace_range(after, "");
         }
     }
 
-    /// Move to the start of the text.
+    /// Move to the start of the cursor's line (just after the `\n` before
+    /// it), whichever of its screen rows the cursor is on.
     pub fn home(&mut self) {
-        self.cursor = 0;
+        self.goal = None;
+        self.cursor = self.text[..self.cursor].rfind('\n').map_or(0, |at| at + 1);
     }
 
-    /// Move to the end of the text.
+    /// Move to the end of the cursor's line (just before its `\n`).
     pub fn end(&mut self) {
-        self.cursor = self.text.len();
+        self.goal = None;
+        self.cursor = self.text[self.cursor..]
+            .find('\n')
+            .map_or(self.text.len(), |at| self.cursor + at);
     }
 
     /// The byte range of each screen row of the text at `width` cells: each
@@ -121,6 +135,47 @@ impl Draft {
         let start = rows.get(row).map_or(0, |row| row.start);
         let col = wrap::width(&self.text[start..self.cursor]).min(width);
         (row, col)
+    }
+
+    /// Move to the screen row above at `width` (see [`Draft::rows`]); a
+    /// no-op on the first row.
+    pub fn up(&mut self, width: usize) {
+        if let Some(row) = self.cursor_at(width).0.checked_sub(1) {
+            self.move_to_row(row, width);
+        }
+    }
+
+    /// Move to the screen row below at `width`; a no-op on the last row.
+    pub fn down(&mut self, width: usize) {
+        self.move_to_row(self.cursor_at(width).0 + 1, width);
+    }
+
+    /// Move to screen row `target` (if there is one) at the goal column:
+    /// the last cluster boundary on it at or before that column. On a row
+    /// that soft-wraps that is at most its last cluster's start, since its
+    /// end shows on the next row.
+    fn move_to_row(&mut self, target: usize, width: usize) {
+        let rows = self.rows(width);
+        let Some(row) = rows.get(target).cloned() else {
+            return;
+        };
+        let goal = self.goal.unwrap_or(self.cursor_at(width).1);
+        let soft = rows
+            .get(target + 1)
+            .is_some_and(|next| next.start == row.end);
+        let mut landing = row.start;
+        for cluster in self.clusters() {
+            if cluster.start < row.start {
+                continue;
+            }
+            let past = cluster.end > row.end || (soft && cluster.end == row.end);
+            if past || wrap::width(&self.text[row.start..cluster.end]) > goal {
+                break;
+            }
+            landing = cluster.end;
+        }
+        self.cursor = landing;
+        self.goal = Some(goal);
     }
 
     /// The cluster ending at the cursor.
@@ -286,6 +341,119 @@ mod tests {
         assert_eq!(draft.cursor_at(9), (0, 9));
         draft.right();
         assert_eq!(draft.cursor_at(9), (1, 0));
+    }
+
+    /// `draft` with its cursor moved to the start of the text.
+    fn at_start(mut draft: Draft, width: usize) -> Draft {
+        for _ in 0..draft.rows(width).len() {
+            draft.up(width);
+        }
+        draft.home();
+        draft
+    }
+
+    #[test]
+    fn up_and_down_move_by_screen_row_keeping_the_column() {
+        let mut draft = lines("one two three\nfour");
+
+        draft.up(8);
+        assert_eq!((draft.cursor(), draft.cursor_at(8)), (12, (1, 4)));
+        draft.up(8);
+        assert_eq!((draft.cursor(), draft.cursor_at(8)), (4, (0, 4)));
+        draft.down(8);
+        assert_eq!(draft.cursor(), 12);
+        draft.down(8);
+        assert_eq!(draft.cursor(), 18);
+    }
+
+    #[test]
+    fn the_column_sticks_across_a_short_row_until_another_key() {
+        let mut draft = lines("aaaaaaaaaaaa\nbbb\ncccccccccccc");
+        draft.left();
+        draft.left();
+
+        draft.up(20);
+        assert_eq!(draft.cursor_at(20), (1, 3));
+        draft.up(20);
+        assert_eq!(draft.cursor_at(20), (0, 10), "back on the column it left");
+
+        draft.down(20);
+        draft.left();
+        draft.up(20);
+        assert_eq!(draft.cursor_at(20), (0, 2), "left reset the column");
+    }
+
+    #[test]
+    fn onto_a_soft_wrapped_row_the_cursor_stops_before_the_break() {
+        let mut draft = lines("abcdefghij\nabcd");
+
+        draft.up(4);
+        assert_eq!(draft.cursor(), 10, "end of `ij`, a whole line's end");
+        draft.up(4);
+        assert_eq!((draft.cursor(), draft.cursor_at(4)), (7, (1, 3)));
+    }
+
+    #[test]
+    fn up_on_the_first_row_and_down_on_the_last_do_nothing() {
+        let mut draft = lines("ab\ncd");
+
+        draft.down(8);
+        assert_eq!(draft.cursor(), 5);
+        draft.up(8);
+        draft.up(8);
+        assert_eq!(draft.cursor(), 2);
+    }
+
+    #[test]
+    fn home_and_end_go_to_the_ends_of_the_whole_line() {
+        let mut draft = lines("one two three\nfour");
+        draft.up(8);
+
+        draft.home();
+        assert_eq!(draft.cursor(), 0);
+        draft.end();
+        assert_eq!(draft.cursor(), 13, "before the newline");
+        draft.right();
+        draft.end();
+        assert_eq!(draft.cursor(), 18);
+        draft.home();
+        assert_eq!(draft.cursor(), 14);
+    }
+
+    #[test]
+    fn every_boundary_is_reachable_by_down_then_right_and_editable() {
+        let text = "First para, long enough to wrap.\n\nSecond 漢字 e\u{301} line.\nThird.";
+        let width = 10;
+        let start = at_start(lines(text), width);
+        // Every cluster boundary, with the row it shows on.
+        let mut boundaries = vec![(0, 0)];
+        let mut walk = start.clone();
+        while walk.cursor() < text.len() {
+            walk.right();
+            boundaries.push((walk.cursor(), walk.cursor_at(width).0));
+        }
+        assert!(boundaries.len() > 40, "{boundaries:?}");
+
+        for &(target, row) in &boundaries {
+            let mut draft = start.clone();
+            (0..row).for_each(|_| draft.down(width));
+            assert_eq!(draft.cursor_at(width).0, row, "{row} downs reach row {row}");
+            assert!(
+                draft.cursor() <= target,
+                "{target} is not behind row {row}'s landing"
+            );
+            while draft.cursor() < target {
+                draft.right();
+            }
+
+            assert_eq!(draft.cursor(), target);
+            draft.insert('X');
+            assert_eq!(
+                draft.text()[target..].chars().next(),
+                Some('X'),
+                "at {target}"
+            );
+        }
     }
 
     #[test]

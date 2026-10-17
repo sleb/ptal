@@ -296,7 +296,7 @@ Its parts:
   1-based (`start == end` for one line). The target thread id is captured when `r`, `x` or `o` is pressed, never
   an index; `x` on a resolved thread and `o` on an open one are refused in
   `update` with a footer message. `update` does no I/O and reads no clock.
-- `tui::draft`: `Draft { text, cursor }`, pure, no widgets: the comment
+- `tui::draft`: `Draft { text, cursor, goal }`, pure, no widgets: the comment
   being typed. `text` holds printable characters and `\n` only (control
   characters, tabs included, are never inserted), so every byte is drawn.
   `cursor` is a byte offset that always sits on a grapheme cluster boundary
@@ -309,6 +309,12 @@ Its parts:
   column in cells). An offset at a soft break shows at the start of the next
   row, and one on hanging whitespace in cell `width`. The width is always
   passed in, never cached, so `Draft` stays plain data (and `Mode` `Eq`).
+  `up(width)`/`down(width)` move by screen row (wrapped rows and lines
+  alike) to the last boundary at or before a sticky goal column (`goal`,
+  in cells, kept across consecutive `↑`/`↓` and cleared by any other edit or
+  move); on a soft-wrapped row that is at most the start of its last
+  cluster. `home`/`end` go to the ends of the cursor's whole line, not its
+  screen row.
 - `tui::panel`: `layout(threads, selected, width) -> Layout { lines,
   thread_starts }`, pure. Per thread: header (`c3 open`, `c3 open · outdated`,
   `c3 resolved by claude`), `> ` quote lines, then each comment's

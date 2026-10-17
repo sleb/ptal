@@ -218,6 +218,8 @@ const INPUT_BOX_ROWS: usize = 3;
 const PANEL_MIN_ROWS: usize = 4;
 /// Rows the panel's border takes from its content.
 const PANEL_BORDER_ROWS: usize = 2;
+/// Columns the comment box's border takes from its text.
+const BOX_BORDER_COLS: usize = 2;
 /// Gutter columns besides the line number: the glyph, a space, and `│`.
 const GUTTER_EXTRA: usize = 3;
 
@@ -373,6 +375,12 @@ impl App {
             Mode::Input { .. } => INPUT_BOX_ROWS,
             Mode::Panel { .. } => self.panel_rows() + FOOTER_ROWS,
         }
+    }
+
+    /// Cells the comment box wraps its draft at: the box's inner width less
+    /// one, so a cursor after a full row still has a cell to stand on.
+    pub(super) fn draft_width(&self) -> usize {
+        self.cols.saturating_sub(BOX_BORDER_COLS + 1)
     }
 
     /// Whether the panel's selected thread is resolved.
@@ -824,6 +832,7 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
 /// typed, newlines kept), `enter` starts a new line, `esc` or `ctrl+c`
 /// returns to where the box came from, and the rest edit the draft.
 fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    let width = app.draft_width();
     let Mode::Input {
         draft,
         back,
@@ -862,6 +871,8 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Delete => draft.delete(),
         KeyCode::Left => draft.left(),
         KeyCode::Right => draft.right(),
+        KeyCode::Up => draft.up(width),
+        KeyCode::Down => draft.down(width),
         KeyCode::Home => draft.home(),
         KeyCode::End => draft.end(),
         _ => {}
@@ -1782,6 +1793,19 @@ mod tests {
 
         assert_eq!(update(&mut a, ctrl('s')), None);
         assert_eq!(draft(&a), ("\n \n", 3));
+    }
+
+    #[test]
+    fn up_and_down_move_between_the_drafts_rows_at_the_box_width() {
+        // 13 columns: an 11-cell inner box, rows wrapped at 10.
+        let mut a = App::open(vec!["x".into()], &[], "scott", (13, 20));
+        send(&mut a, [press(KeyCode::Enter)]);
+        typed(&mut a, "aaaa bbbb cccc");
+
+        send(&mut a, [press(KeyCode::Up)]);
+        assert_eq!(draft(&a).1, 4, "from `cc|cc` up to `aaaa|`");
+        send(&mut a, [press(KeyCode::Down)]);
+        assert_eq!(draft(&a).1, 14);
     }
 
     #[test]
