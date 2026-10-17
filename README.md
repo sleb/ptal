@@ -15,8 +15,8 @@ state persist across rounds and revisions.
 > `reopen`), and a TUI implemented: scroll a file (long lines wrap, markdown
 > tables align, markdown structure is highlighted), comment on a line or a
 > selected range, read threads and the agent's replies, jump between threads,
-> search, write multi-line comments, reply, resolve, reopen, `?` lists every
-> key. Live refresh is planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
+> search, write multi-line comments, reply, resolve, reopen, `?` lists the
+> keys. Live refresh is planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why not a PR?
 
@@ -44,7 +44,7 @@ ptal plan.md            # open the TUI
 
 ### Keys
 
-**Available**, grouped by mode as the `?` help overlay shows them:
+**Available**, by mode:
 
 Normal mode:
 
@@ -59,7 +59,7 @@ Normal mode:
 | `esc` | Clear the active search and its highlight |
 | `v` (or `V`) | Select lines from the cursor (see Visual select below) |
 | `enter` | On a threaded line: open the thread panel. Otherwise comment on the line |
-| `?` | Show every key, grouped by mode (Normal and the thread panel); the footer ends with `?:help` when it fits |
+| `?` | Show the key listing (Normal and thread-panel keys), grouped by mode; the footer ends with `?:help` when it fits |
 | `q` (or `ctrl+c`) | Quit |
 
 Visual select:
@@ -88,7 +88,7 @@ Thread panel:
 | `a` | Add a thread on this line |
 | `r` | Reply to the selected thread; `ctrl+s` saves, `esc` cancels (twice with text in the box) |
 | `x` / `o` | Resolve / reopen the selected thread (no note) |
-| `?` | Show every key |
+| `?` | Show the key listing |
 | `esc` (or `q`, `ctrl+c`) | Close the panel |
 
 Comment box:

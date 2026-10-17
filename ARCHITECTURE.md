@@ -24,8 +24,9 @@ for, and the invariants and contracts between them.
 ```
 
 Dependencies point downward only. `model` depends on nothing in the crate.
-`tui` and `cli` never read or write through `store` or `anchor` directly
-(`cli::main` only constructs the `Store` to build `Reviews`).
+`tui` and `cli` never read or write through `store` or `anchor` directly;
+`cli` only constructs the `Store` (in `main` and in tests) to build
+`Reviews`.
 
 ## Status
 
@@ -356,8 +357,9 @@ Its parts:
   grapheme cluster is never split, even across two spans. Every cluster
   keeps its style (a straddling one takes its first byte's), so a styled
   line wraps into exactly the rows of its plain text. `width(text)` is the
-  same measure on one unbounded row. `cut(text, room)` cuts one-row text to
-  fit. It returns the text as drawn (tabs as four
+  same measure on one unbounded row. `cut(text, room)` and `tail(text,
+  room)` are the only places one-row text is cut to fit: `cut` keeps the
+  start, `tail` the end. `cut` returns the text as drawn (tabs as four
   spaces, control characters dropped): all of it if its `width` fits, else
   the longest prefix of whole clusters that leaves a cell for `…`, then `…`,
   so a wide cluster that would straddle the cut is dropped whole and the
@@ -365,8 +367,8 @@ Its parts:
   empty. The result is borrowed exactly when it is the text unchanged, so a
   caller holding an owned copy can keep it. `tail(text, room)` is the same
   from the other end — all of it if it fits, else `…` and the longest
-  suffix of whole clusters — for the search prompt, which keeps the query's
-  end visible.
+  suffix of whole clusters, owned either way — for the search prompt, which
+  keeps the query's end visible.
 - `tui::table`: `align(lines, width) -> Vec<Option<Vec<String>>>`, pure, the
   only place tables are parsed: one entry per file line, that line's screen
   rows if it belongs to a well-formed table that lays out in `width`, else
