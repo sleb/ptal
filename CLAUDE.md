@@ -20,7 +20,7 @@ Work is tracked in GitHub: an **MVP/milestone issue** holds the scope and design
 5. **Rust skills.** Any step that writes, reviews, or refactors Rust code uses `/rust-skills`.
 
 6. **Releases.** Cutting a release follows `docs/releasing.md`.
-7. **PR review comments.** After addressing a review comment, reply on its thread saying what changed (or why not) and resolve the thread, before merging.
+7. **PR review comments.** CI reviews a PR once, when it is opened; pushes do not re-review. After addressing a review comment, reply on its thread saying what changed (naming the commit) or why not (won't fix, deferred to an issue), and resolve the thread, before merging. The review follows up on each reply: it accepts a won't-fix or deferral, answers questions, and checks a claimed fix, reopening the thread if the fix falls short; wait for those follow-ups before merging.
 
 Green gate for every step: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`, `cargo package --locked`.
 
