@@ -53,13 +53,13 @@ pub fn render(app: &App, frame: &mut Frame) {
             reply_to,
             ..
         } => {
-            let hint = if *discard_asked {
-                DISCARD_HINT
-            } else if usize::from(bottom.width.saturating_sub(2)) < INPUT_HINT.len() {
-                INPUT_HINT_SHORT
+            let (full, short) = if *discard_asked {
+                (DISCARD_HINT, DISCARD_HINT_SHORT)
             } else {
-                INPUT_HINT
+                (INPUT_HINT, INPUT_HINT_SHORT)
             };
+            let fits = usize::from(bottom.width.saturating_sub(2)) >= full.len();
+            let hint = if fits { full } else { short };
             draw_input(app, draft, hint, reply_to.as_deref(), buf, bottom);
         }
     }
@@ -196,6 +196,8 @@ const INPUT_HINT: &str = "ctrl+s:save enter:newline esc:cancel";
 const INPUT_HINT_SHORT: &str = "ctrl+s:save esc:cancel";
 /// The bottom border while an `esc` waits to discard a draft.
 const DISCARD_HINT: &str = "esc:discard the draft  any other key:keep it";
+/// [`DISCARD_HINT`] for a box too narrow for it.
+const DISCARD_HINT_SHORT: &str = "esc:discard other:keep";
 
 /// The comment box: the draft's rows from its scroll, wrapped at
 /// [`App::draft_width`] exactly as `update` counts them, and the cursor as a
@@ -907,6 +909,19 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
             rows[2].starts_with("└esc:discard the draft  any other key:keep it─"),
             "{}",
             rows[2]
+        );
+    }
+
+    #[test]
+    fn a_narrow_box_asks_to_discard_in_a_short_hint() {
+        let mut app = box_with("hi", (30, 8));
+        key(&mut app, KeyCode::Esc);
+
+        let rows = box_rows(&draw(&app, 30, 8), 3);
+
+        assert_eq!(
+            rows[2],
+            format!("└esc:discard other:keep{}┘", "─".repeat(6))
         );
     }
 

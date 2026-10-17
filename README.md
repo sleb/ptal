@@ -48,15 +48,15 @@ ptal plan.md            # open the TUI
 | `j` / `k` (or `↓` / `↑`) | Down / up |
 | `ctrl+d` / `ctrl+u` (or `PgDn` / `PgUp`) | Half page down / up |
 | `g` / `G` (or `Home` / `End`) | Top / bottom |
-| `enter` | On a threaded line: open the thread panel. Otherwise comment on the line; `ctrl+s` saves, `enter` starts a new line, `esc` cancels |
+| `enter` | On a threaded line: open the thread panel. Otherwise comment on the line; `ctrl+s` saves, `enter` starts a new line, `esc` cancels (with text in the box, press it twice) |
 | `]` / `[` | Next / previous threaded line |
 | `v` (or `V`) | Select lines from the cursor; the movement keys and `]` / `[` extend the selection either way |
-| `enter` | In a selection: comment on the selected lines; `ctrl+s` saves, `esc` returns to the selection |
+| `enter` | In a selection: comment on the selected lines; `ctrl+s` saves, `esc` returns to the selection (twice with text in the box) |
 | `esc` (or `q`, `ctrl+c`, `v`, `V`) | In a selection: leave it without commenting (does not quit) |
 | `tab` / `shift+tab` | In the panel: next / previous thread on the line |
 | `j` / `k` | In the panel: scroll |
 | `a` | In the panel: add a thread on this line |
-| `r` | In the panel: reply to the selected thread; `ctrl+s` saves, `esc` cancels |
+| `r` | In the panel: reply to the selected thread; `ctrl+s` saves, `esc` cancels (twice with text in the box) |
 | `x` / `o` | In the panel: resolve / reopen the selected thread (no note) |
 | `esc` (or `q`, `ctrl+c`) | In the panel: close it |
 | `q` (or `ctrl+c`) | Quit |
@@ -74,7 +74,7 @@ set `NO_COLOR` (to any non-empty value) to turn it off. Other files show
 plain.
 
 A comment can span several paragraphs: in the comment box `enter` starts a
-new line and `ctrl+s` saves (trailing blank lines are dropped). With text in
+new line and `ctrl+s` saves (leading and trailing blank lines are dropped). With text in
 the box, `esc` asks first; a second `esc` discards the draft and any other
 key keeps it. Text wraps inside the box, which grows with it
 up to 10 rows (and never past half the terminal), then scrolls to follow the

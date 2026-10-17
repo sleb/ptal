@@ -60,14 +60,7 @@ impl Draft {
         self.goal = None;
         self.text.insert(self.cursor, c);
         self.cursor += c.len_utf8();
-        let cursor = self.cursor;
-        if let Some(joined) = self
-            .clusters()
-            .into_iter()
-            .find(|cluster| cluster.start < cursor && cursor < cluster.end)
-        {
-            self.cursor = joined.end;
-        }
+        self.snap();
     }
 
     /// Start a new line at the cursor.
@@ -93,20 +86,38 @@ impl Draft {
         }
     }
 
-    /// Remove the cluster before the cursor; a no-op at the start.
+    /// Remove the cluster before the cursor; a no-op at the start. If the
+    /// clusters either side then join (two halves of a flag, say), the
+    /// cursor moves to the end of the joined one.
     pub fn backspace(&mut self) {
         self.goal = None;
         if let Some(before) = self.before() {
             self.text.replace_range(before.clone(), "");
             self.cursor = before.start;
+            self.snap();
         }
     }
 
-    /// Remove the cluster after the cursor; a no-op at the end.
+    /// Remove the cluster after the cursor; a no-op at the end. A join is
+    /// handled as for [`Draft::backspace`].
     pub fn delete(&mut self) {
         self.goal = None;
         if let Some(after) = self.after() {
             self.text.replace_range(after, "");
+            self.snap();
+        }
+    }
+
+    /// Move a cursor that an edit left inside a cluster to that cluster's
+    /// end, so it is on a boundary again.
+    fn snap(&mut self) {
+        let cursor = self.cursor;
+        if let Some(joined) = self
+            .clusters()
+            .into_iter()
+            .find(|cluster| cluster.start < cursor && cursor < cluster.end)
+        {
+            self.cursor = joined.end;
         }
     }
 
@@ -477,6 +488,28 @@ mod tests {
                 draft.text()[target..].chars().next(),
                 Some('X'),
                 "at {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn removing_what_kept_two_clusters_apart_leaves_the_cursor_on_a_boundary() {
+        // Two regional indicators pair into one flag once nothing is between them.
+        let (us, a) = ("\u{1f1fa}", "\u{1f1f8}");
+        let mut back = typed(&format!("{us}x{a}"));
+        back.left();
+        back.backspace();
+        let mut del = typed(&format!("{us}x{a}"));
+        del.left();
+        del.left();
+        del.delete();
+
+        for draft in [back, del] {
+            assert_eq!(draft.text(), format!("{us}{a}"));
+            assert!(
+                [0, draft.text().len()].contains(&draft.cursor()),
+                "cursor {} inside the flag",
+                draft.cursor()
             );
         }
     }

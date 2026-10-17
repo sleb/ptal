@@ -852,9 +852,18 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     None
 }
 
+/// What a save stores of `draft`: the text less trailing whitespace and
+/// less leading blank lines, keeping the indent of its first line of text.
+fn saved_body(draft: &str) -> &str {
+    let text = draft.trim_end();
+    let first = text.find(|c: char| !c.is_whitespace()).unwrap_or(0);
+    let line = text[..first].rfind('\n').map_or(0, |at| at + 1);
+    &text[line..]
+}
+
 /// A key in the comment box: `ctrl+s` (either case, as some terminals
 /// report it with shift or caps lock) saves a draft that is not blank (as
-/// typed, newlines kept, less trailing whitespace), `enter` starts a new
+/// typed, newlines kept, less trailing whitespace and leading blank lines), `enter` starts a new
 /// line, and the rest edit the draft. `esc` or `ctrl+c` returns to where the
 /// box came from: at once for a blank draft, else on a second press, any
 /// other key in between keeping the draft.
@@ -885,7 +894,7 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     match key.code {
         KeyCode::Char('s' | 'S') if ctrl && blank => {}
         KeyCode::Char('s' | 'S') if ctrl => {
-            let body = draft.text().trim_end().to_owned();
+            let body = saved_body(draft.text()).to_owned();
             return Some(match reply_to {
                 Some(id) => Effect::Reply {
                     id: id.clone(),
@@ -1911,6 +1920,25 @@ mod tests {
             draft(&a).0,
             "  fix this\n\nplease \n \n",
             "the draft is untouched"
+        );
+    }
+
+    #[test]
+    fn ctrl_s_drops_leading_blank_lines_but_keeps_the_first_lines_indent() {
+        let mut a = input_app();
+        send(
+            &mut a,
+            [press(KeyCode::Enter), ch(' '), press(KeyCode::Enter)],
+        );
+        typed(&mut a, "  indented");
+
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::Add {
+                start: 3,
+                end: 3,
+                body: "  indented".into()
+            })
         );
     }
 

@@ -275,7 +275,7 @@ Its parts:
   typing), else the cursor line alone. `enter` in `Visual` always opens a
   box for a new thread on the selection, never the panel; a save from it
   goes to Normal. In `Input`, `enter` inserts a newline and `ctrl+s`
-  (or `ctrl+S`) saves the draft as typed less trailing whitespace (one that
+  (or `ctrl+S`) saves the draft as typed less trailing whitespace and leading blank lines (one that
   is only whitespace and newlines saves nothing). `esc` or `ctrl+c` returns
   to `back` at once on a blank draft; otherwise the first sets
   `discard_asked` and only a second discards, any other key clearing it. The box is as tall as
@@ -307,9 +307,9 @@ Its parts:
   characters, tabs included, are never inserted), so every byte is drawn.
   `cursor` is a byte offset that always sits on a grapheme cluster boundary
   (`wrap::clusters`, plus each `\n` as its own cluster): `←`/`→`,
-  `backspace` and `delete` move over or remove one whole cluster, and a
-  typed character that joins the next cluster moves the cursor past the
-  joined one. `rows(width)` is each line (split on `\n`) wrapped by
+  `backspace` and `delete` move over or remove one whole cluster, and an
+  edit that leaves the cursor inside a cluster (a typed joiner, or a removal
+  that lets two halves of a flag pair up) moves it to that cluster's end. `rows(width)` is each line (split on `\n`) wrapped by
   `wrap::row_ranges`, as byte ranges of `text`, an empty line or trailing
   `\n` giving one empty row; `cursor_at(width)` is the cursor's (row,
   column in cells). An offset at a soft break shows at the start of the next
@@ -393,7 +393,7 @@ Its parts:
   is a reversed cell at `cursor_at`, and the bottom border reads
   `ctrl+s:save enter:newline esc:cancel` (`ctrl+s:save esc:cancel` when
   that does not fit), or, while `discard_asked`, `esc:discard the draft  any
-  other key:keep it`.
+  other key:keep it` (`esc:discard other:keep` when that does not fit).
 - `tui` (module root): the driver. `load` reads lines (`review::file_lines`)
   and all threads; `Loaded::into_app` highlights the file only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
