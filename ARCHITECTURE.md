@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built: `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built: `Normal`/`Visual`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen |
+| `tui` | Built: `Normal`/`Visual`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls) |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor`, `diffview` | Deferred |
 
@@ -517,7 +517,11 @@ state or `review`.
 - `tui`: scripted key events through `update` assert on state; `TestBackend`
   snapshots (inline expected strings) cover Normal, Visual, Panel and Input
   rendering, gutter glyphs and styles (including the selection highlight on
-  wrapped and table rows, before and after a resize); `tui::wrap` has examples plus a property test
+  wrapped and table rows, before and after a resize, and the comment box
+  wrapping, growing and scrolling its draft); `tui::draft` has examples of
+  its rows and cursor cell by width and of cluster and row moves, plus a
+  property over a fixed three-paragraph draft that every cluster boundary is
+  reachable by `↓` then `→` and editable there; `tui::wrap` has examples plus a property test
   over a fixed corpus (ASCII, CJK, emoji, tabs, long words) and widths
   1..=12: rows join back to the line and each fits the width; `tui::panel`
   has examples plus a property over a fixed corpus (ASCII, CJK, emoji ZWJ,

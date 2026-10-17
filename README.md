@@ -60,6 +60,7 @@ ptal plan.md            # open the TUI
 | `x` / `o` | In the panel: resolve / reopen the selected thread (no note) |
 | `esc` (or `q`, `ctrl+c`) | In the panel: close it |
 | `q` (or `ctrl+c`) | Quit |
+| `←` / `→`, `↑` / `↓`, `Home` / `End` | In a comment box: move by character, by screen row, to the line's start / end; `backspace` / `delete` remove (and join lines) |
 
 Long lines wrap at word boundaries onto continuation rows; the line number and
 thread marker show on a line's first row, and `j` / `k` move by file line,
@@ -71,6 +72,11 @@ emphasis, inline code, code blocks, list markers, block quotes and links are
 highlighted, in your terminal theme's colors and never hiding a character;
 set `NO_COLOR` (to any non-empty value) to turn it off. Other files show
 plain.
+
+A comment can span several paragraphs: in the comment box `enter` starts a
+new line and `ctrl+s` saves. Text wraps inside the box, which grows with it
+up to 10 rows (and never past half the terminal), then scrolls to follow the
+cursor.
 
 Comments are written as `$USER`. The gutter marks lines inside a thread: `●`
 open, `◆` open and waiting on you (its last comment is not yours), `○`
