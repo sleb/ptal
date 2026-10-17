@@ -21,6 +21,7 @@ Work is tracked in GitHub: an **MVP/milestone issue** holds the scope and design
 
 6. **Releases.** Cutting a release follows `docs/releasing.md`.
 7. **PR review comments.** CI reviews a PR once, when it is opened; pushes do not re-review. After addressing a review comment, reply on its thread saying what changed (naming the commit) or why not (won't fix, deferred to an issue), and resolve the thread, before merging. The review follows up on each reply: it accepts a won't-fix or deferral, answers questions, and checks a claimed fix, reopening the thread if the fix falls short; wait for those follow-ups before merging.
+8. **Watch the PR.** Right after opening a PR, subscribe to it for the rest of the session (in Claude Code, a `Monitor` that polls `gh` about once a minute and re-arms when it expires). Report new reviews, review comments, threads that become unresolved, check results, and the PR being merged or closed. Track items by ID, not by their text (a push moves comments to new lines), and skip your own replies. The watch only reports what is new, so read what is already on the PR when you start it. Stop the watch once the PR is merged or closed.
 
 Green gate for every step: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`, `cargo package --locked`.
 
