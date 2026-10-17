@@ -303,7 +303,12 @@ Its parts:
   (`wrap::clusters`, plus each `\n` as its own cluster): `←`/`→`,
   `backspace` and `delete` move over or remove one whole cluster, and a
   typed character that joins the next cluster moves the cursor past the
-  joined one.
+  joined one. `rows(width)` is each line (split on `\n`) wrapped by
+  `wrap::row_ranges`, as byte ranges of `text`, an empty line or trailing
+  `\n` giving one empty row; `cursor_at(width)` is the cursor's (row,
+  column in cells). An offset at a soft break shows at the start of the next
+  row, and one on hanging whitespace in cell `width`. The width is always
+  passed in, never cached, so `Draft` stays plain data (and `Mode` `Eq`).
 - `tui::panel`: `layout(threads, selected, width) -> Layout { lines,
   thread_starts }`, pure. Per thread: header (`c3 open`, `c3 open · outdated`,
   `c3 resolved by claude`), `> ` quote lines, then each comment's
@@ -317,7 +322,9 @@ Its parts:
   TUI wraps text; `plain_rows(text, width) -> Vec<String>` and
   `row_count(text, width)` run the same algorithm on unstyled text (table
   cells, thread panel rows, and the view clamp, which counts rows without
-  building them).
+  building them); `row_ranges(text, width)` gives each row's byte range and
+  `clusters(text)` each drawn cluster's, for the comment draft, whose text
+  has no tabs or control characters.
   Breaks after the last whitespace that fits, hard-breaks a word wider than
   a row, and leaves whitespace at a break hanging on the end of its row, so
   the rows join back to the displayed line. Tabs are four spaces and control

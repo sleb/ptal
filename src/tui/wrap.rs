@@ -1,5 +1,6 @@
 //! Word-wrapping a line of text into screen rows. This is the only place the
-//! TUI wraps text: file lines, table cells and thread panel comments.
+//! TUI wraps text: file lines, table cells, thread panel comments and the
+//! comment being typed.
 //!
 //! - A tab is four spaces; control characters are dropped.
 //! - Width is measured exactly as ratatui draws: grapheme clusters of the
@@ -75,8 +76,22 @@ pub fn row_count(text: &str, width: usize) -> usize {
     split(&expand_tabs(text), width).len()
 }
 
+/// The byte range in `text` of each row of [`plain_rows`], for `text` with
+/// no tabs or control characters (so every byte is drawn where it is).
+/// An empty `text` is one empty row, `0..0`.
+pub(super) fn row_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
+    split(text, width)
+        .iter()
+        .map(|row| match (row.first(), row.last()) {
+            (Some(first), Some(last)) => offset_in(text, first)..offset_in(text, last) + last.len(),
+            _ => 0..0,
+        })
+        .collect()
+}
+
 /// The clusters of `text` (tabs already expanded) on each row: the one
-/// wrapping algorithm behind [`rows`], [`plain_rows`] and [`row_count`].
+/// wrapping algorithm behind [`rows`], [`plain_rows`], [`row_count`] and
+/// [`row_ranges`].
 fn split(text: &str, width: usize) -> Vec<Vec<&str>> {
     let mut rows = Vec::new();
     let mut row: Vec<&str> = Vec::new();
@@ -339,6 +354,23 @@ mod tests {
                     );
                     assert_eq!(row_count(line, width), text.len());
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn row_ranges_cut_the_text_into_exactly_the_plain_rows() {
+        for line in CORPUS
+            .iter()
+            .filter(|line| !line.contains(char::is_control))
+        {
+            for width in 1..=12 {
+                let cut: Vec<&str> = row_ranges(line, width)
+                    .into_iter()
+                    .map(|range| &line[range])
+                    .collect();
+
+                assert_eq!(cut, plain_rows(line, width), "{line:?} at {width}");
             }
         }
     }

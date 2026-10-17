@@ -91,6 +91,38 @@ impl Draft {
         self.cursor = self.text.len();
     }
 
+    /// The byte range of each screen row of the text at `width` cells: each
+    /// line (split on `\n`, which is on no row) wrapped by [`wrap`]. An empty
+    /// line, a trailing `\n` and an empty text each make one empty row.
+    ///
+    /// Whitespace at a soft break hangs on the end of its row, past `width`;
+    /// a caller that wants the cursor's cell inside the box passes one less
+    /// than the box's inner width.
+    pub fn rows(&self, width: usize) -> Vec<Range<usize>> {
+        let mut rows = Vec::new();
+        let mut start = 0;
+        for line in self.text.split('\n') {
+            let shift = |row: Range<usize>| row.start + start..row.end + start;
+            rows.extend(wrap::row_ranges(line, width).into_iter().map(shift));
+            start += line.len() + 1;
+        }
+        rows
+    }
+
+    /// The cursor's (row, column) in [`Draft::rows`] at `width`, the column
+    /// in cells. An offset at a soft break, the end of one row and the start
+    /// of the next, shows at the start of the next. A cursor on hanging
+    /// whitespace shows in cell `width`, the last one.
+    pub fn cursor_at(&self, width: usize) -> (usize, usize) {
+        let rows = self.rows(width);
+        let row = rows
+            .partition_point(|row| row.start <= self.cursor)
+            .saturating_sub(1);
+        let start = rows.get(row).map_or(0, |row| row.start);
+        let col = wrap::width(&self.text[start..self.cursor]).min(width);
+        (row, col)
+    }
+
     /// The cluster ending at the cursor.
     fn before(&self) -> Option<Range<usize>> {
         self.clusters().into_iter().find(|c| c.end == self.cursor)
@@ -187,6 +219,73 @@ mod tests {
         draft.insert('\u{200d}');
 
         assert_eq!(draft.cursor(), draft.text().len());
+    }
+
+    /// `text` typed, with every `\n` from [`Draft::newline`].
+    fn lines(text: &str) -> Draft {
+        let mut draft = Draft::default();
+        for c in text.chars() {
+            match c {
+                '\n' => draft.newline(),
+                c => draft.insert(c),
+            }
+        }
+        draft
+    }
+
+    /// The text of each of `draft`'s rows at `width`.
+    fn shown(draft: &Draft, width: usize) -> Vec<&str> {
+        draft
+            .rows(width)
+            .into_iter()
+            .map(|row| &draft.text()[row])
+            .collect()
+    }
+
+    #[test]
+    fn rows_wrap_each_line_and_keep_empty_ones() {
+        assert_eq!(shown(&lines("one two three"), 8), ["one two ", "three"]);
+        assert_eq!(shown(&lines("a\n\nb"), 8), ["a", "", "b"]);
+        assert_eq!(shown(&lines("a\n"), 8), ["a", ""]);
+        assert_eq!(shown(&lines(""), 8), [""]);
+        assert_eq!(shown(&lines("漢字漢字"), 5), ["漢字", "漢字"]);
+    }
+
+    #[test]
+    fn the_cursor_shows_on_its_row_at_its_cell() {
+        let mut draft = lines("one two three");
+        assert_eq!(draft.cursor_at(8), (1, 5), "at the end");
+        (0..5).for_each(|_| draft.left());
+        assert_eq!(
+            draft.cursor_at(8),
+            (1, 0),
+            "a soft break shows on the next row"
+        );
+        draft.left();
+        assert_eq!(draft.cursor_at(8), (0, 7));
+
+        let draft = lines("a\nb");
+        let mut after_newline = draft.clone();
+        after_newline.left();
+        assert_eq!(after_newline.cursor_at(8), (1, 0));
+        let mut before_newline = after_newline.clone();
+        before_newline.left();
+        assert_eq!(before_newline.cursor_at(8), (0, 1));
+
+        let mut wide = lines("漢a");
+        wide.left();
+        assert_eq!(wide.cursor_at(8), (0, 2), "a wide cluster counts two cells");
+    }
+
+    #[test]
+    fn a_cursor_on_hanging_whitespace_stays_in_the_last_cell() {
+        let mut draft = lines("aaaa bbbb   cccc");
+        (0..5).for_each(|_| draft.left());
+
+        assert_eq!(shown(&draft, 9)[0], "aaaa bbbb   ");
+        assert_eq!(draft.cursor_at(9), (0, 9));
+        draft.right();
+        assert_eq!(draft.cursor_at(9), (1, 0));
     }
 
     #[test]
