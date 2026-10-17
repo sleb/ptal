@@ -173,7 +173,8 @@ fn draw_panel(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
     if area.is_empty() {
         return;
     }
-    let block = Block::bordered().title(format!("Threads on line {}", app.cursor() + 1));
+    let title = format!("Threads on line {}", app.cursor() + 1);
+    let block = Block::bordered().title(fit_title(&title, area.width));
     let inner = block.inner(area);
     block.render(area, buf);
     let Some(layout) = app.panel_layout() else {
@@ -188,6 +189,12 @@ fn draw_panel(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
         };
         buf.set_stringn(row.x, row.y, &line.text, usize::from(row.width), style);
     }
+}
+
+/// A box `width` cells wide's top-border `title`, [`wrap::cut`] to fit
+/// between the corners.
+fn fit_title(title: &str, width: u16) -> Cow<'_, str> {
+    wrap::cut(title, usize::from(width.saturating_sub(2)))
 }
 
 /// The key hint on the comment box's bottom border.
@@ -273,7 +280,7 @@ fn draw_input(
         },
     };
     let block = Block::bordered()
-        .title(title)
+        .title(fit_title(&title, area.width))
         .title_bottom(Line::styled(hint, hint_style));
     let inner = block.inner(area);
     block.render(area, buf);
@@ -1701,6 +1708,47 @@ plan.md  L1/5  enter:thread/c…"
         let footer = footer(&app, 40);
 
         assert_eq!(footer, "cannot write /home/u/.local/share/ptal/…");
+    }
+
+    #[test]
+    fn a_long_author_cuts_the_box_title_with_an_ellipsis_before_the_corner() {
+        let author = "x".repeat(60);
+        let mut app = App::open(lines(3), &[], &author, (W, 8)).labeled("plan.md");
+        key(&mut app, KeyCode::Enter);
+
+        let rows = box_rows(&draw(&app, W, 8), 3);
+
+        let title = format!("Comment on line 1 as {}…", "x".repeat(46));
+        assert_eq!(rows[0], format!("┌{title}┐"));
+    }
+
+    #[test]
+    fn box_titles_too_wide_for_a_narrow_box_end_in_an_ellipsis() {
+        let app = box_with("hi", (20, 8));
+        assert_eq!(box_rows(&draw(&app, 20, 8), 3)[0], "┌Comment on line 1…┐");
+
+        let mut app = narrow(&["one", "two"], &[], (20, 8));
+        keys(&mut app, "vj");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(box_rows(&draw(&app, 20, 8), 3)[0], "┌Comment on lines …┐");
+
+        let threads = [open_thread("c1", (1, 1), State::Current)];
+        let mut app = narrow(&["one", "two"], &threads, (20, 16));
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('r'));
+        let screen = screen(&draw(&app, 20, 16));
+        assert!(screen.contains("┌Reply to c1 as sc…┐"), "{screen}");
+    }
+
+    #[test]
+    fn a_panel_title_too_wide_for_a_narrow_panel_ends_in_an_ellipsis() {
+        let threads = [open_thread("c1", (1, 1), State::Current)];
+        let mut app = narrow(&["one", "two"], &threads, (15, 16));
+        key(&mut app, KeyCode::Enter);
+
+        let screen = screen(&draw(&app, 15, 16));
+
+        assert!(screen.contains("┌Threads on l…┐"), "{screen}");
     }
 
     #[test]

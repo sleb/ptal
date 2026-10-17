@@ -393,8 +393,10 @@ Its parts:
   the terminal width, so a footer too wide ends in `…`. The input box is titled
   `Comment on line N as <author>`, `Comment on lines A-B as <author>` for a
   range, or `Reply to <id> as <author>`. In `Panel`
-  a bordered box of half the terminal (at least 4 rows) sits above the
-  footer and the view shrinks to stay above it. In `Input` the bordered box
+  a bordered box of half the terminal (at least 4 rows), titled
+  `Threads on line N`, sits above the footer and the view shrinks to stay
+  above it. A title too wide for its box is `wrap::cut` to end in `…`
+  before the corner. In `Input` the bordered box
   replaces the footer (and hides the panel it came from), as tall as
   `App` says; it draws the draft's `rows(draft_width())` from its `scroll`,
   so text wraps inside the border exactly as `update` counts it, the cursor
