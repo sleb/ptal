@@ -20,11 +20,12 @@ for, and the invariants and contracts between them.
                ┌─────▼─────┐
                │   model   │   plain data types, serde, JSON Schema
                └───────────┘
-        (tui also uses: diffview; highlight lives under tui)
+        (tui also uses: diffview, deferred; highlight lives under tui)
 ```
 
 Dependencies point downward only. `model` depends on nothing in the crate.
-`tui` and `cli` never touch `store` or `anchor` directly.
+`tui` and `cli` never read or write through `store` or `anchor` directly
+(`cli::main` only constructs the `Store` to build `Reviews`).
 
 ## Status
 
@@ -34,7 +35,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built: `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input` modes, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls) |
+| `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Help` modes, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor`, `diffview` | Deferred |
 
@@ -253,7 +254,8 @@ types, so changing them is a `schema_version` bump.
 ### `tui`
 
 **Role:** the human front end (ratatui; crossterm via `ratatui::crossterm`).
-Depends on `review` and `model` only.
+Depends on `review` and `model` (and the crate-wide `error`), never on
+`store`.
 
 Its parts:
 
@@ -262,8 +264,9 @@ Its parts:
   `tui::highlight`, computed once by `App::highlighted(true)` since the file
   never changes in a session, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
-  outdated ones, footer `status`, the active `search` query), `Mode = Normal | Visual { anchor } |
-  Search { query, anchor, origin } |
+  outdated ones, footer `status`, the active `search` query, the `help`
+  listing laid out for `cols`, the `file` label), `Mode = Normal | Visual { anchor } |
+  Search { query, anchor, origin, hit } |
   Panel { selected, scroll } | Input { draft, discard_asked, back, reply_to } |
   Help { back, scroll }`
   (`draft` is a `tui::draft::Draft`;
@@ -353,14 +356,17 @@ Its parts:
   grapheme cluster is never split, even across two spans. Every cluster
   keeps its style (a straddling one takes its first byte's), so a styled
   line wraps into exactly the rows of its plain text. `width(text)` is the
-  same measure on one unbounded row. `cut(text, room)` is the only place
-  one-row text is cut to fit. It returns the text as drawn (tabs as four
+  same measure on one unbounded row. `cut(text, room)` cuts one-row text to
+  fit. It returns the text as drawn (tabs as four
   spaces, control characters dropped): all of it if its `width` fits, else
   the longest prefix of whole clusters that leaves a cell for `…`, then `…`,
   so a wide cluster that would straddle the cut is dropped whole and the
   result is never wider than `room`. One cell is `…` alone; zero cells is
   empty. The result is borrowed exactly when it is the text unchanged, so a
-  caller holding an owned copy can keep it.
+  caller holding an owned copy can keep it. `tail(text, room)` is the same
+  from the other end — all of it if it fits, else `…` and the longest
+  suffix of whole clusters — for the search prompt, which keeps the query's
+  end visible.
 - `tui::table`: `align(lines, width) -> Vec<Option<Vec<String>>>`, pure, the
   only place tables are parsed: one entry per file line, that line's screen
   rows if it belongs to a well-formed table that lays out in `width`, else
@@ -488,7 +494,7 @@ stops; inline markup in laid-out table cells (a laid-out table gets only its
 header line's bold); `NO_COLOR` for the TUI's chrome as well;
 GFM padding of ragged table rows; pipes inside inline code in a cell; tables
 inside lists or blockquotes; polling the file and `review.json` mtimes and re-syncing; draft
-survival across a re-sync; mapping the cursor through `anchor`; viewing,
+survival across a re-sync; mapping the cursor through `anchor`;
 editing threads; notes on resolve/reopen from the TUI. Until live refresh exists,
 the screen shows the file as read at open, while `add_thread` quotes the file
 as it is at save time.
