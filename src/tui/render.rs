@@ -9,7 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Widget};
 
-use super::app::{App, Marker, Mode, ScreenRow};
+use super::app::{App, HELP_CHROME_ROWS, Marker, Mode, ScreenRow};
 use super::draft::Draft;
 use super::wrap;
 
@@ -20,6 +20,10 @@ pub fn render(app: &App, frame: &mut Frame) {
         return;
     }
     let buf = frame.buffer_mut();
+    if let Mode::Help { scroll, .. } = app.mode() {
+        draw_help(app, *scroll, buf, area);
+        return;
+    }
     let chrome = u16::try_from(app.chrome_rows())
         .unwrap_or(u16::MAX)
         .min(area.height);
@@ -52,6 +56,7 @@ pub fn render(app: &App, frame: &mut Frame) {
             draw_panel(app, *scroll, buf, panel);
             draw_footer(app, buf, footer);
         }
+        Mode::Help { .. } => {}
         Mode::Input {
             draft,
             discard_asked,
@@ -171,11 +176,11 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
     }
     let hints = match app.mode() {
         Mode::Panel { .. } if app.selected_is_resolved() => {
-            "tab:next a:add r:reply o:reopen j/k:scroll esc:close"
+            "tab:next a:add r:reply o:reopen j/k:scroll esc:close ?:help"
         }
-        Mode::Panel { .. } => "tab:next a:add r:reply x:resolve j/k:scroll esc:close",
+        Mode::Panel { .. } => "tab:next a:add r:reply x:resolve j/k:scroll esc:close ?:help",
         Mode::Visual { .. } => "esc:cancel enter:comment j/k:extend",
-        _ => "enter:thread/comment ]/[:jump q:quit v:select /:search",
+        _ => "enter:thread/comment ]/[:jump q:quit v:select /:search ?:help",
     };
     parts.push(hints.to_string());
     let footer = parts.join("  ");
@@ -187,6 +192,32 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
         usize::from(area.width),
         Style::new(),
     );
+}
+
+/// The key listing over the whole screen: a title row, the listing from
+/// `scroll`, and a footer row saying how to scroll and close.
+fn draw_help(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
+    let width = usize::from(area.width);
+    let mut rows = area.rows();
+    if let Some(row) = rows.next() {
+        let title = Style::new().add_modifier(Modifier::BOLD);
+        buf.set_stringn(row.x, row.y, "Help", width, title);
+    }
+    let listing = app.help_rows();
+    let body = usize::from(area.height).saturating_sub(HELP_CHROME_ROWS);
+    for (row, line) in rows.by_ref().take(body).zip(listing.iter().skip(scroll)) {
+        let style = if line.heading {
+            Style::new().add_modifier(Modifier::BOLD)
+        } else {
+            Style::new()
+        };
+        buf.set_stringn(row.x, row.y, &line.text, width, style);
+    }
+    if area.height >= 2 {
+        let y = area.y + area.height - 1;
+        let hint = wrap::cut("j/k g/G:scroll  ?/esc:close", width);
+        buf.set_stringn(area.x, y, hint, width, Style::new());
+    }
 }
 
 fn draw_panel(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
@@ -345,12 +376,13 @@ mod tests {
     use crate::model::{Anchor, State, Status, Thread};
     use crate::review::ThreadView;
     use crate::tui::app::{Event, update};
+    use crate::tui::keys;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::{Color, Modifier};
 
-    const W: u16 = 70;
+    const W: u16 = 80;
 
     fn lines(n: usize) -> Vec<String> {
         (1..=n).map(|i| format!("line {i}")).collect()
@@ -465,7 +497,7 @@ mod tests {
     }
 
     const PANEL_FOOTER: &str =
-        "plan.md  L1/12  tab:next a:add r:reply x:resolve j/k:scroll esc:close";
+        "plan.md  L1/12  tab:next a:add r:reply x:resolve j/k:scroll esc:close ?:help";
 
     #[test]
     fn the_panel_shows_the_thread_in_a_box_above_the_footer() {
@@ -674,11 +706,11 @@ mod tests {
         let done = screen(&draw(&panel_app(&done), W, 16));
 
         assert!(
-            open.ends_with("a:add r:reply x:resolve j/k:scroll esc:close"),
+            open.ends_with("a:add r:reply x:resolve j/k:scroll esc:close ?:help"),
             "{open}"
         );
         assert!(
-            done.ends_with("a:add r:reply o:reopen j/k:scroll esc:close"),
+            done.ends_with("a:add r:reply o:reopen j/k:scroll esc:close ?:help"),
             "{done}"
         );
     }
@@ -741,7 +773,7 @@ mod tests {
    5│line 5
    6│line 6
    7│line 7
-plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search"
+plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help"
         );
     }
 
@@ -764,7 +796,7 @@ plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search"
    5│line 5
 ●  6│line 6
    7│line 7
-plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
+plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:sea…"
         );
     }
 
@@ -1289,7 +1321,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
         assert!(
             screen
                 .trim_end()
-                .ends_with("L30/30  enter:thread/comment ]/[:jump q:quit v:select /:search")
+                .ends_with("L30/30  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help")
         );
     }
 
@@ -1471,7 +1503,7 @@ plan.md  L1/5  enter:thread/c…"
 
         assert_eq!(
             screen,
-            "(empty file)\n\n\nplan.md  L0/0  enter:thread/comment ]/[:jump q:quit v:select /:search"
+            "(empty file)\n\n\nplan.md  L0/0  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help"
         );
     }
 
@@ -1720,7 +1752,7 @@ plan.md  L1/5  enter:thread/c…"
     }
 
     const NORMAL_FOOTER: &str =
-        "plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search";
+        "plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help";
 
     #[test]
     fn a_footer_that_fits_exactly_is_drawn_unchanged() {
@@ -1797,7 +1829,7 @@ plan.md  L1/5  enter:thread/c…"
 
         let rows = box_rows(&draw(&app, W, 8), 3);
 
-        let title = format!("Comment on line 1 as {}…", "x".repeat(46));
+        let title = format!("Comment on line 1 as {}…", "x".repeat(56));
         assert_eq!(rows[0], format!("┌{title}┐"));
     }
 
@@ -1887,7 +1919,7 @@ plan.md  L1/5  enter:thread/c…"
     #[test]
     fn the_normal_footer_shows_the_active_search_and_the_hint() {
         let mut app = app_with(lines(12), &[], 8);
-        assert!(footer(&app, 200).ends_with("/:search"));
+        assert!(footer(&app, 200).ends_with("/:search ?:help"));
         keys(&mut app, "/line 3");
         key(&mut app, KeyCode::Enter);
         assert!(footer(&app, 200).contains("L3/12  /line 3  enter"));
@@ -1912,5 +1944,100 @@ plan.md  L1/5  enter:thread/c…"
             keys(&mut app, "/line 1");
             draw(&app, w, h);
         }
+    }
+
+    // --- help ---
+
+    #[test]
+    fn help_replaces_the_file_with_the_listing_at_80_by_24() {
+        let mut app = app_with(lines(12), &[], 24);
+        key(&mut app, KeyCode::Char('?'));
+
+        let screen = screen(&draw(&app, 80, 24));
+
+        let rows: Vec<_> = screen.lines().collect();
+        assert_eq!(rows[0], "Help");
+        assert!(rows.contains(&"Normal"), "{screen}");
+        assert!(
+            rows.iter()
+                .any(|r| r.starts_with("  j/k, ↓/↑") && r.contains("move the cursor"))
+        );
+        assert_eq!(rows[23], "j/k g/G:scroll  ?/esc:close");
+        assert!(!screen.contains("line 1\n"), "{screen}");
+    }
+
+    #[test]
+    fn help_scrolls_through_a_listing_taller_than_the_window() {
+        let mut app = app_with(lines(12), &[], 10);
+        key(&mut app, KeyCode::Char('?'));
+        let top = screen(&draw(&app, 80, 10));
+        assert!(!top.contains("Thread panel"), "{top}");
+
+        key(&mut app, KeyCode::Char('j'));
+        assert_ne!(screen(&draw(&app, 80, 10)), top);
+
+        key(&mut app, KeyCode::Char('G'));
+        let end = screen(&draw(&app, 80, 10));
+        assert!(end.contains("close the panel"), "{end}");
+        assert!(end.lines().nth(8).is_some_and(|r| !r.is_empty()), "{end}");
+
+        key(&mut app, KeyCode::Char('g'));
+        assert_eq!(screen(&draw(&app, 80, 10)), top);
+    }
+
+    #[test]
+    fn help_in_narrow_windows_fits_and_loses_no_words() {
+        for width in [40, 24] {
+            let rows = keys::rows(usize::from(width));
+            assert!(
+                rows.iter()
+                    .all(|r| wrap::width(&r.text) <= usize::from(width))
+            );
+            let shown = rows
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            for section in keys::HELP {
+                for entry in section.entries {
+                    for word in entry
+                        .keys
+                        .split_whitespace()
+                        .chain(entry.what.split_whitespace())
+                    {
+                        assert!(shown.contains(word), "{width}: {word} is missing");
+                    }
+                }
+            }
+            let mut app = app_with(lines(12), &[], 24);
+            key(&mut app, KeyCode::Char('?'));
+            assert!(
+                screen(&draw(&app, width, 24))
+                    .lines()
+                    .all(|r| wrap::width(r) <= usize::from(width))
+            );
+        }
+    }
+
+    #[test]
+    fn help_on_tiny_terminals_does_not_panic() {
+        for width in 0..=3 {
+            for rows in 0..=3 {
+                let mut app = app_with(lines(5), &[], rows);
+                key(&mut app, KeyCode::Char('?'));
+                draw(&app, width, rows);
+                key(&mut app, KeyCode::Char('G'));
+                draw(&app, width, rows);
+            }
+        }
+    }
+
+    #[test]
+    fn the_help_hint_is_the_first_to_go_in_a_narrow_footer() {
+        let app = app_with(lines(12), &[], 8);
+
+        assert!(footer(&app, 70).contains("q:quit"));
+        assert!(!footer(&app, 70).contains("?:help"));
+        assert!(footer(&app, 80).ends_with("?:help"));
     }
 }

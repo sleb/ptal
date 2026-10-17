@@ -62,6 +62,7 @@ ptal plan.md            # open the TUI
 | `r` | In the panel: reply to the selected thread; `ctrl+s` saves, `esc` cancels (twice with text in the box) |
 | `x` / `o` | In the panel: resolve / reopen the selected thread (no note) |
 | `esc` (or `q`, `ctrl+c`) | In the panel: close it |
+| `?` | Show every key, grouped by mode (Normal and the thread panel); `j` / `k` scroll, `?` or `esc` close |
 | `q` (or `ctrl+c`) | Quit |
 | `←` / `→`, `↑` / `↓`, `Home` / `End` | In a comment box: move by character, by screen row, to the line's start / end; `backspace` / `delete` remove (and join lines) |
 
