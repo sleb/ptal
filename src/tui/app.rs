@@ -13,7 +13,7 @@ use crate::review::ThreadView;
 use super::draft::Draft;
 use super::highlight::{self, Styling};
 use super::panel::{self, Layout};
-use super::{search, table, wrap};
+use super::{keys, search, table, wrap};
 
 /// What the user is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +68,15 @@ pub enum Mode {
         /// Captured when `r` is pressed, so a re-read between the keypress
         /// and the write cannot retarget the reply.
         reply_to: Option<String>,
+    },
+    /// Reading the key listing, which replaces the whole screen.
+    ///
+    /// `back` is only ever Normal or the panel, and is where closing returns.
+    Help {
+        /// Where the overlay was opened from.
+        back: Back,
+        /// First visible row of the listing.
+        scroll: usize,
     },
 }
 
@@ -234,6 +243,8 @@ pub struct ScreenRow {
 
 /// Terminal rows taken by the footer in Normal mode.
 const FOOTER_ROWS: usize = 1;
+/// Rows the help overlay spends on its title and its footer.
+const HELP_CHROME_ROWS: usize = 2;
 /// Rows the comment box's border takes; the box replaces the footer.
 const BOX_BORDER_ROWS: usize = 2;
 /// The comment box shows at most this many rows of its draft.
@@ -404,6 +415,26 @@ impl App {
             Mode::Normal | Mode::Visual { .. } | Mode::Search { .. } => FOOTER_ROWS,
             Mode::Input { .. } => self.box_text_rows() + BOX_BORDER_ROWS,
             Mode::Panel { .. } => self.panel_rows() + FOOTER_ROWS,
+            Mode::Help { .. } => self.rows,
+        }
+    }
+
+    /// The help listing laid out for the window.
+    pub fn help_rows(&self) -> Vec<keys::Row> {
+        keys::rows(self.cols)
+    }
+
+    /// Listing rows the help overlay shows: the screen less its title and
+    /// footer rows.
+    pub(super) fn help_body_rows(&self) -> usize {
+        self.rows.saturating_sub(HELP_CHROME_ROWS)
+    }
+
+    /// Keep the help scroll inside the listing.
+    fn clamp_help(&mut self) {
+        let max = self.help_rows().len().saturating_sub(self.help_body_rows());
+        if let Mode::Help { scroll, .. } = &mut self.mode {
+            *scroll = (*scroll).min(max);
         }
     }
 
@@ -565,6 +596,11 @@ impl App {
         if matches!(self.mode, Mode::Panel { .. }) && self.threads_on(self.cursor).is_empty() {
             self.mode = Mode::Normal;
         }
+        if matches!(self.mode, Mode::Help { .. }) {
+            // The file is hidden, so its view stays as it was.
+            self.clamp_help();
+            return;
+        }
         let height = self.height();
         self.cursor = self.cursor.min(self.last_line());
         self.top = self
@@ -589,6 +625,11 @@ impl App {
             *selected = (*selected).min(last);
             *scroll = (*scroll).min(max_scroll);
         }
+    }
+
+    /// Open the help overlay from `back`.
+    fn open_help(&mut self, back: Back) {
+        self.mode = Mode::Help { back, scroll: 0 };
     }
 
     /// Open the panel on the cursor line's threads, selecting the first one
@@ -855,6 +896,7 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
                 Mode::Search { .. } => search_key(app, key),
                 Mode::Panel { .. } => panel_key(app, key),
                 Mode::Input { .. } => input_key(app, key),
+                Mode::Help { .. } => help_key(app, key),
             }
         }
         Event::Key(_) => None,
@@ -870,12 +912,12 @@ fn movement(app: &mut App, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Char('d') if ctrl => app.scroll_half_page(true),
         KeyCode::Char('u') if ctrl => app.scroll_half_page(false),
-        KeyCode::Char('j') | KeyCode::Down => app.move_to(app.cursor + 1),
-        KeyCode::Char('k') | KeyCode::Up => app.move_to(app.cursor.saturating_sub(1)),
-        KeyCode::Char('g') | KeyCode::Home => app.move_to(0),
-        KeyCode::Char('G') | KeyCode::End => app.move_to(app.last_line()),
-        KeyCode::Char(']') => app.jump_to_covered(true),
-        KeyCode::Char('[') => app.jump_to_covered(false),
+        KeyCode::Char('j') | KeyCode::Down if !chord => app.move_to(app.cursor + 1),
+        KeyCode::Char('k') | KeyCode::Up if !chord => app.move_to(app.cursor.saturating_sub(1)),
+        KeyCode::Char('g') | KeyCode::Home if !chord => app.move_to(0),
+        KeyCode::Char('G') | KeyCode::End if !chord => app.move_to(app.last_line()),
+        KeyCode::Char(']') if !chord => app.jump_to_covered(true),
+        KeyCode::Char('[') if !chord => app.jump_to_covered(false),
         KeyCode::Char('n') if !chord => app.repeat_search(true),
         KeyCode::Char('N') if !chord => app.repeat_search(false),
         KeyCode::PageDown => app.scroll_half_page(true),
@@ -893,6 +935,12 @@ fn is_quit(key: KeyEvent) -> bool {
         || matches!(key.code, KeyCode::Char('q') if !ctrl)
 }
 
+/// Whether `key` has ctrl or alt held.
+fn is_chord(key: KeyEvent) -> bool {
+    key.modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+}
+
 /// [`is_quit`] or `esc`: back to Normal from Visual or the panel.
 fn is_leave(key: KeyEvent) -> bool {
     key.code == KeyCode::Esc || is_quit(key)
@@ -907,6 +955,7 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
+        KeyCode::Char('?') if !is_chord(key) => app.open_help(Back::Normal),
         KeyCode::Char('v' | 'V') if !ctrl && !app.lines.is_empty() => {
             app.mode = Mode::Visual { anchor: app.cursor };
         }
@@ -994,6 +1043,37 @@ fn search_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     None
 }
 
+/// Keys in [`Mode::Help`]: `?`, `esc`, `q` and `ctrl+c` close it (never
+/// quit), the movement keys scroll the listing.
+fn help_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    let Mode::Help { back, scroll } = app.mode else {
+        return None;
+    };
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let half = (app.help_body_rows() / 2).max(1);
+    let to = match key.code {
+        KeyCode::Esc | KeyCode::Char('?' | 'q') if !ctrl => {
+            app.mode = back.mode();
+            return None;
+        }
+        KeyCode::Char('c') if ctrl => {
+            app.mode = back.mode();
+            return None;
+        }
+        KeyCode::Char('j') | KeyCode::Down if !ctrl => scroll + 1,
+        KeyCode::Char('k') | KeyCode::Up if !ctrl => scroll.saturating_sub(1),
+        KeyCode::Char('d') if ctrl => scroll + half,
+        KeyCode::PageDown => scroll + half,
+        KeyCode::Char('u') if ctrl => scroll.saturating_sub(half),
+        KeyCode::PageUp => scroll.saturating_sub(half),
+        KeyCode::Char('g') | KeyCode::Home if !ctrl => 0,
+        KeyCode::Char('G') | KeyCode::End if !ctrl => usize::MAX,
+        _ => return None,
+    };
+    app.mode = Mode::Help { back, scroll: to };
+    None
+}
+
 fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let Mode::Panel { selected, scroll } = app.mode else {
         return None;
@@ -1006,6 +1086,7 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let count = app.threads_on(app.cursor).len().max(1);
     match key.code {
+        KeyCode::Char('?') if !is_chord(key) => app.open_help(Back::Panel { selected, scroll }),
         KeyCode::Char('a') if !ctrl => {
             app.mode = Mode::input(Back::Panel { selected, scroll }, None);
         }
@@ -3630,5 +3711,280 @@ mod tests {
             .map(|row| row.line)
             .collect::<Vec<_>>();
         assert!(marked.contains(&a.cursor), "{marked:?} vs {}", a.cursor);
+    }
+
+    // --- help ---
+
+    fn help_scroll(a: &App) -> usize {
+        match a.mode {
+            Mode::Help { scroll, .. } => scroll,
+            _ => panic!("not in Help mode: {:?}", a.mode),
+        }
+    }
+
+    fn snapshot(a: &App) -> (Mode, usize, usize, Option<String>) {
+        (a.mode.clone(), a.cursor, a.top, a.search.clone())
+    }
+
+    #[test]
+    fn question_mark_opens_help_and_the_closing_keys_return_to_normal() {
+        for close in [ch('?'), press(KeyCode::Esc), ch('q'), ctrl('c')] {
+            let mut a = app(20, 10);
+            send(
+                &mut a,
+                [ch('j'), ch('j'), ch('/'), ch('5'), press(KeyCode::Enter)],
+            );
+            let before = snapshot(&a);
+
+            send(&mut a, [ch('?')]);
+            assert!(matches!(
+                a.mode,
+                Mode::Help {
+                    back: Back::Normal,
+                    ..
+                }
+            ));
+            let effect = update(&mut a, close);
+
+            assert_eq!(effect, None);
+            assert_eq!(snapshot(&a), before);
+        }
+    }
+
+    #[test]
+    fn help_from_the_panel_returns_to_the_same_selection_and_scroll() {
+        let threads = [chatty("c1", (2, 2), 6), chatty("c2", (2, 2), 1)];
+        for close in [ch('?'), press(KeyCode::Esc), ch('q'), ctrl('c')] {
+            let mut a = panel_app(&threads, 12);
+            send(
+                &mut a,
+                [
+                    ch('j'),
+                    press(KeyCode::Enter),
+                    ch('j'),
+                    ch('j'),
+                    press(KeyCode::Tab),
+                ],
+            );
+            let before = a.mode.clone();
+
+            send(&mut a, [ch('?')]);
+            assert!(matches!(
+                a.mode,
+                Mode::Help {
+                    back: Back::Panel { .. },
+                    ..
+                }
+            ));
+            let effect = update(&mut a, close);
+
+            assert_eq!(effect, None);
+            assert_eq!(a.mode, before);
+        }
+    }
+
+    #[test]
+    fn question_mark_does_not_open_help_in_visual_and_is_text_in_search_and_the_box() {
+        let mut a = app(5, 10);
+        send(&mut a, [ch('v'), ch('?')]);
+        assert!(matches!(a.mode, Mode::Visual { .. }));
+
+        let mut a = app(5, 10);
+        send(&mut a, [ch('/'), ch('?')]);
+        assert!(matches!(&a.mode, Mode::Search { query, .. } if query == "?"));
+
+        let mut a = input_app();
+        typed(&mut a, "?");
+        assert_eq!(draft(&a), ("?", 1));
+    }
+
+    #[test]
+    fn help_scrolls_and_clamps_to_the_listing() {
+        let mut a = app(5, 10);
+        let max = a.help_rows().len() - a.help_body_rows();
+        assert!(max > 3, "the listing must not fit in 10 rows");
+
+        send(&mut a, [ch('?'), ch('k')]);
+        assert_eq!(help_scroll(&a), 0);
+        send(&mut a, [ch('j'), press(KeyCode::Down)]);
+        assert_eq!(help_scroll(&a), 2);
+        send(&mut a, [ch('k')]);
+        assert_eq!(help_scroll(&a), 1);
+        send(&mut a, [ch('G')]);
+        assert_eq!(help_scroll(&a), max);
+        send(&mut a, [ch('j')]);
+        assert_eq!(help_scroll(&a), max);
+        send(&mut a, [ch('g')]);
+        assert_eq!(help_scroll(&a), 0);
+        send(&mut a, [ctrl('d')]);
+        assert_eq!(help_scroll(&a), a.help_body_rows() / 2);
+        send(&mut a, [ctrl('u')]);
+        assert_eq!(help_scroll(&a), 0);
+        send(&mut a, [press(KeyCode::End)]);
+        assert_eq!(help_scroll(&a), max);
+
+        send(&mut a, [Event::Resize(80, 40)]);
+        assert_eq!(help_scroll(&a), 0, "a taller window fits it all");
+    }
+
+    // --- the key listing and the handlers agree ---
+
+    fn key_event(name: &str) -> KeyEvent {
+        let none = KeyModifiers::NONE;
+        match name {
+            "enter" => KeyEvent::new(KeyCode::Enter, none),
+            "esc" => KeyEvent::new(KeyCode::Esc, none),
+            "tab" => KeyEvent::new(KeyCode::Tab, none),
+            "shift+tab" => KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+            "↓" => KeyEvent::new(KeyCode::Down, none),
+            "↑" => KeyEvent::new(KeyCode::Up, none),
+            "PgDn" => KeyEvent::new(KeyCode::PageDown, none),
+            "PgUp" => KeyEvent::new(KeyCode::PageUp, none),
+            "Home" => KeyEvent::new(KeyCode::Home, none),
+            "End" => KeyEvent::new(KeyCode::End, none),
+            _ => match name.strip_prefix("ctrl+") {
+                Some(c) => KeyEvent::new(
+                    KeyCode::Char(c.chars().next().unwrap()),
+                    KeyModifiers::CONTROL,
+                ),
+                None => KeyEvent::new(KeyCode::Char(name.chars().next().unwrap()), none),
+            },
+        }
+    }
+
+    /// Every key worth trying: printable ASCII plain and with ctrl, and the
+    /// named keys.
+    fn candidates() -> Vec<KeyEvent> {
+        let mut out = vec![];
+        for c in ' '..='~' {
+            out.push(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            out.push(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+        }
+        // Terminals report shift+tab as BackTab with shift held.
+        out.push(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        for code in [
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Tab,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+        ] {
+            out.push(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        out
+    }
+
+    /// Whether pressing `key` in `fixture()` changes anything or asks for
+    /// an effect.
+    fn does_something(fixture: &dyn Fn() -> App, key: KeyEvent) -> bool {
+        let mut a = fixture();
+        let before = (snapshot(&a), a.status.clone());
+        let effect = update(&mut a, Event::Key(key));
+        effect.is_some() || (snapshot(&a), a.status.clone()) != before
+    }
+
+    /// Normal mode mid-file with an active search and threads either side.
+    fn normal_fixture() -> App {
+        let threads = [
+            said_by(
+                view("c1", (3, 3), Status::Open, State::Current),
+                &["claude"],
+            ),
+            said_by(
+                view("c2", (35, 35), Status::Open, State::Current),
+                &["claude"],
+            ),
+        ];
+        let lines = (1..=40).map(|i| format!("line {i}")).collect();
+        let mut a = App::open(lines, &threads, "scott", (80, 10));
+        send(
+            &mut a,
+            [ch('/'), ch('2'), ch('9'), press(KeyCode::Enter), ch('g')],
+        );
+        send(&mut a, std::iter::repeat_with(|| ch('j')).take(8));
+        a
+    }
+
+    /// The panel on a line with a long open thread and a resolved one,
+    /// scrolled one row down, the open one selected.
+    fn panel_fixture() -> App {
+        let threads = [
+            chatty("c1", (2, 2), 8),
+            said_by(view("c2", (2, 2), resolved(), State::Current), &["claude"]),
+        ];
+        let mut a = panel_app(&threads, 12);
+        send(&mut a, [ch('j'), press(KeyCode::Enter), ch('j')]);
+        assert!(
+            matches!(
+                a.mode,
+                Mode::Panel {
+                    selected: 0,
+                    scroll: 1
+                }
+            ),
+            "{:?}",
+            a.mode
+        );
+        a
+    }
+
+    fn listed_keys(title: &str) -> Vec<KeyEvent> {
+        let section = keys::HELP.iter().find(|s| s.title == title).unwrap();
+        section
+            .entries
+            .iter()
+            .flat_map(|entry| keys::names(entry.keys))
+            .map(key_event)
+            .collect()
+    }
+
+    fn assert_listing_matches(title: &str, fixture: &dyn Fn() -> App) {
+        let listed = listed_keys(title);
+        for key in candidates() {
+            if does_something(fixture, key) && !listed.contains(&key) {
+                panic!("{title}: {key:?} does something but is not in the help listing");
+            }
+        }
+        for key in &listed {
+            assert!(
+                does_something(fixture, *key),
+                "{title}: {key:?} is listed but does nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn every_bound_normal_key_is_listed_and_every_listed_one_is_bound() {
+        assert_listing_matches("Normal", &normal_fixture);
+    }
+
+    #[test]
+    fn every_bound_panel_key_is_listed_and_every_listed_one_is_bound() {
+        assert_listing_matches("Thread panel", &panel_fixture);
+    }
+
+    #[test]
+    fn the_listed_keys_are_named_in_interfaces_md() {
+        let doc = include_str!("../../docs/interfaces.md");
+        for section in keys::HELP {
+            for entry in section.entries {
+                for name in keys::names(entry.keys) {
+                    let quoted = format!("`{name}`");
+                    assert!(
+                        doc.contains(&quoted) || doc.contains(name) && name.len() > 1,
+                        "{name} ({}) is not in docs/interfaces.md",
+                        entry.keys
+                    );
+                }
+            }
+        }
     }
 }

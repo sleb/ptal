@@ -264,7 +264,8 @@ Its parts:
   `rows`, `mode`, `author`, every thread of the file including resolved and
   outdated ones, footer `status`, the active `search` query), `Mode = Normal | Visual { anchor } |
   Search { query, anchor, origin } |
-  Panel { selected, scroll } | Input { draft, discard_asked, back, reply_to }`
+  Panel { selected, scroll } | Input { draft, discard_asked, back, reply_to } |
+  Help { back, scroll }`
   (`draft` is a `tui::draft::Draft`;
   `back` is the `Back` the box returns to on `esc`: `Normal | Panel {
   selected, scroll } | Visual { anchor }`), and
@@ -376,6 +377,18 @@ Its parts:
   takes as many rows as its tallest cell, shorter cells top-aligned. The
   delimiter is one row of `─` runs joined by `┼`. Every row of a table is
   equally wide, so the `App` shows a table laid out or raw as a whole.
+- `tui::keys`: the help listing. `HELP: &[Section]` is a `const` table of every
+  key bound in Normal mode and the thread panel (`Entry { keys, what }`,
+  with aliases in one label such as `j/k, ↓/↑`), and `rows(width)` lays it out
+  (keys beside the description, or stacked in a narrow window; nothing is
+  cut). `Mode::Help { back, scroll }` shows it full-screen, opened by `?` from
+  Normal or the panel (not from Visual, Search or the box, where `?` is
+  text or unbound); `back` is `Normal` or `Panel` and closing returns there
+  untouched; `?`/`esc`/`q`/`ctrl+c` close, `j`/`k`, `ctrl+d`/`ctrl+u`,
+  `PgDn`/`PgUp`, `g`/`G`, `Home`/`End` scroll, clamped in `update`. The
+  handlers are not table-driven; a probe test in `tui::app` presses every
+  candidate key in each section's fixture and fails when a key does
+  something unlisted or a listed key does nothing.
 - `tui::search`: `find(line, query) -> Vec<Range<usize>>` and
   `emphasize(Line, ranges) -> Line`, pure. Matching is smart-case and folds
   one `char` at a time, so ranges are valid byte ranges of the line (`ß`/`SS`
@@ -469,7 +482,7 @@ Its parts:
   handled.
 - Display only; never mutates the reviewed file (it is read once on open).
 
-*Deferred within `tui`:* the `Help` mode; character or column selection; sub-line scrolling of a
+*Deferred within `tui`:* character or column selection; sub-line scrolling of a
 line taller than the view; a hanging indent for wrapped list items; real tab
 stops; inline markup in laid-out table cells (a laid-out table gets only its
 header line's bold); `NO_COLOR` for the TUI's chrome as well;
@@ -563,7 +576,7 @@ state or `review`.
 - `cli`: in-process tests (golden JSON, TTY rendering, error table, help) in
   `src/cli.rs`; process tests in `tests/cli.rs` for streams, exit status, and
   env. Schema conformance is deferred with `ptal schema`.
-- `tui`: scripted key events through `update` assert on state (including the search prompt, `n`/`N` and Visual search); `TestBackend`
+- `tui`: scripted key events through `update` assert on state (including the search prompt, `n`/`N` and Visual search, and the help probe that ties `tui::keys::HELP` to the key handlers); `TestBackend`
   snapshots (inline expected strings) cover Normal, Visual, Panel and Input
   rendering, gutter glyphs and styles (including the selection highlight on
   wrapped and table rows, before and after a resize, and the comment box
