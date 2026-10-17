@@ -351,7 +351,12 @@ Its parts:
   grapheme cluster is never split, even across two spans. Every cluster
   keeps its style (a straddling one takes its first byte's), so a styled
   line wraps into exactly the rows of its plain text. `width(text)` is the
-  same measure on one unbounded row.
+  same measure on one unbounded row. `cut(text, room)` is the only place
+  one-row text is cut to fit: text whose `width` fits comes back unchanged
+  (borrowed); otherwise the longest prefix of whole clusters that leaves a
+  cell for `…`, then `…`, so a wide cluster that would straddle the cut is
+  dropped whole and the result is never wider than `room`. One cell is `…`
+  alone; zero cells is empty.
 - `tui::table`: `align(lines, width) -> Vec<Option<Vec<String>>>`, pure, the
   only place tables are parsed: one entry per file line, that line's screen
   rows if it belongs to a well-formed table that lays out in `width`, else
@@ -384,7 +389,8 @@ Its parts:
   text on the cursor background is hard to read.
   Footer: path (or the last save message),
   `L<line>/<total>`, `visual <a>-<b>` in `Visual` (1-based, ascending),
-  `N outdated` (open threads only), key hints. The input box is titled
+  `N outdated` (open threads only), key hints, the whole row `wrap::cut` to
+  the terminal width, so a footer too wide ends in `…`. The input box is titled
   `Comment on line N as <author>`, `Comment on lines A-B as <author>` for a
   range, or `Reply to <id> as <author>`. In `Panel`
   a bordered box of half the terminal (at least 4 rows) sits above the

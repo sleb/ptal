@@ -158,10 +158,12 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
         _ => "enter:thread/comment ]/[:jump q:quit v:select",
     };
     parts.push(hints.to_string());
+    let footer = parts.join("  ");
+    let footer = wrap::cut(&footer, usize::from(area.width));
     buf.set_stringn(
         area.x,
         area.y,
-        parts.join("  "),
+        footer,
         usize::from(area.width),
         Style::new(),
     );
@@ -723,7 +725,7 @@ plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select"
    5│line 5
 ●  6│line 6
    7│line 7
-plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
+plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
         );
     }
 
@@ -1242,7 +1244,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:sel"
    │charlie delta
    │echo foxtrot
   2│short
-plan.md  L1/2  enter"
+plan.md  L1/2  ente…"
         );
     }
 
@@ -1347,7 +1349,7 @@ plan.md  L1/2  enter"
    │   │ filling rule for
    │   │ widths
   5│after
-plan.md  L1/5  enter:thread/co"
+plan.md  L1/5  enter:thread/c…"
         );
     }
 
@@ -1620,6 +1622,69 @@ plan.md  L1/5  enter:thread/co"
         let footer = screen.lines().last().unwrap();
         assert!(footer.contains("visual 1-3  1 outdated"), "{footer}");
         assert!(footer.contains("esc:cancel"), "{footer}");
+    }
+
+    /// The last row of a `width`-column, 8-row terminal showing `app`.
+    fn footer(app: &App, width: u16) -> String {
+        screen(&draw(app, width, 8))
+            .lines()
+            .last()
+            .unwrap()
+            .to_string()
+    }
+
+    const NORMAL_FOOTER: &str = "plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select";
+
+    #[test]
+    fn a_footer_that_fits_exactly_is_drawn_unchanged() {
+        let app = app_with(lines(12), &[], 8);
+        let width = u16::try_from(NORMAL_FOOTER.len()).unwrap();
+
+        assert_eq!(footer(&app, width), NORMAL_FOOTER);
+        assert_eq!(footer(&app, W), NORMAL_FOOTER);
+    }
+
+    #[test]
+    fn a_normal_footer_too_wide_for_the_terminal_ends_in_an_ellipsis() {
+        let app = app_with(lines(12), &[], 8);
+
+        assert_eq!(footer(&app, 30), "plan.md  L1/12  enter:thread/…");
+    }
+
+    #[test]
+    fn a_visual_footer_too_wide_for_the_terminal_ends_in_an_ellipsis() {
+        let mut app = app_with(lines(12), &[], 8);
+        keys(&mut app, "vj");
+
+        assert_eq!(footer(&app, 30), "plan.md  L2/12  visual 1-2  e…");
+    }
+
+    #[test]
+    fn a_panel_footer_too_wide_for_the_terminal_ends_in_an_ellipsis() {
+        let app = panel_app(&[open_thread("c1", (1, 1), State::Current)]);
+
+        let screen = screen(&draw(&app, 30, 16));
+
+        assert_eq!(
+            screen.lines().last().unwrap(),
+            "plan.md  L1/12  tab:next a:ad…"
+        );
+    }
+
+    #[test]
+    fn a_long_error_in_the_footer_ends_in_an_ellipsis() {
+        let mut app = app_with(lines(12), &[], 8);
+        update(
+            &mut app,
+            Event::SaveFailed(
+                "cannot write /home/u/.local/share/ptal/reviews/0123abcd.json: permission denied"
+                    .into(),
+            ),
+        );
+
+        let footer = footer(&app, 40);
+
+        assert_eq!(footer, "cannot write /home/u/.local/share/ptal/…");
     }
 
     #[test]
