@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built: `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built: `Normal`/`Visual`/`Panel`/`Input` modes, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls) |
+| `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input` modes, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls) |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor`, `diffview` | Deferred |
 
@@ -262,7 +262,8 @@ Its parts:
   `tui::highlight`, computed once by `App::highlighted(true)` since the file
   never changes in a session, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
-  outdated ones, footer `status`), `Mode = Normal | Visual { anchor } |
+  outdated ones, footer `status`, the active `search` query), `Mode = Normal | Visual { anchor } |
+  Search { query, anchor, origin } |
   Panel { selected, scroll } | Input { draft, discard_asked, back, reply_to }`
   (`draft` is a `tui::draft::Draft`;
   `back` is the `Back` the box returns to on `esc`: `Normal | Panel {
@@ -375,6 +376,25 @@ Its parts:
   takes as many rows as its tallest cell, shorter cells top-aligned. The
   delimiter is one row of `─` runs joined by `┼`. Every row of a table is
   equally wide, so the `App` shows a table laid out or raw as a whole.
+- `tui::search`: `find(line, query) -> Vec<Range<usize>>` and
+  `emphasize(Line, ranges) -> Line`, pure. Matching is smart-case and folds
+  one `char` at a time, so ranges are valid byte ranges of the line (`ß`/`SS`
+  does not match). `Mode::Search` is the `/` prompt, opened from Normal
+  (`anchor: None`) or Visual (`anchor: Some`, so the live jumps extend the
+  selection and `enter`/`esc` return to it). `origin` is the `(cursor, top)`
+  at `/`; every edit to the query re-searches from `origin` (never from the
+  live cursor) for the first matching line strictly after it, wrapping, and
+  moves the cursor there like `]`; `esc` restores `origin`, `enter` keeps the
+  position and sets `App.search` (even if nothing matched). `n`/`N` live in
+  the shared `movement` helper, so Visual gets them; they search the raw file
+  lines (never gutter or comments) and a table line on its laid-out rows,
+  so every jump lands on something highlighted; one stop per line. The file view applies `emphasize` (reverse video, patched over the
+  existing style) to the styled line before wrapping, so wrapped rows carry
+  it; a match split across two wrapped table rows is neither found nor
+  marked. The prompt replaces the footer row: `/query` (its tail, after `…`,
+  when too wide) plus ` [no match]` or ` [wrapped]` only when that fits whole. Backspace on an empty query
+  leaves the prompt. `n`/`N` ignore ctrl/alt chords; the prompt treats
+  ctrl+alt (AltGr) as text.
 - `tui::render`: `render(&App, &mut Frame)`, pure over state. One file line
   is one or more screen rows (word-wrapped by `tui::wrap`, tabs shown as four
   spaces). A well-formed markdown table shows aligned, in place; one too
@@ -543,7 +563,7 @@ state or `review`.
 - `cli`: in-process tests (golden JSON, TTY rendering, error table, help) in
   `src/cli.rs`; process tests in `tests/cli.rs` for streams, exit status, and
   env. Schema conformance is deferred with `ptal schema`.
-- `tui`: scripted key events through `update` assert on state; `TestBackend`
+- `tui`: scripted key events through `update` assert on state (including the search prompt, `n`/`N` and Visual search); `TestBackend`
   snapshots (inline expected strings) cover Normal, Visual, Panel and Input
   rendering, gutter glyphs and styles (including the selection highlight on
   wrapped and table rows, before and after a resize, and the comment box

@@ -36,6 +36,7 @@ pub fn render(app: &App, frame: &mut Frame) {
     draw_file(app, buf, view);
     match app.mode() {
         Mode::Normal | Mode::Visual { .. } => draw_footer(app, buf, bottom),
+        Mode::Search { query, .. } => draw_prompt(app, query, buf, bottom),
         Mode::Panel { scroll, .. } => {
             // The footer is the panel's last row; the box takes the rest.
             let rows = bottom.height.saturating_sub(1);
@@ -124,6 +125,26 @@ fn glyph(marker: Marker) -> (&'static str, Style) {
     }
 }
 
+/// The search prompt on the footer row: `/query` and a note, cut to show
+/// the tail of a query too wide for the row.
+fn draw_prompt(app: &App, query: &str, buf: &mut Buffer, area: Rect) {
+    if area.is_empty() {
+        return;
+    }
+    let width = usize::from(area.width);
+    // The query has first claim on the row; the note shows only if it fits
+    // whole beside it.
+    let text = wrap::tail(&format!("/{query}"), width);
+    let left = width.saturating_sub(wrap::width(&text));
+    let note = app.search_note();
+    let text = if wrap::width(note) <= left {
+        text + note
+    } else {
+        text
+    };
+    buf.set_stringn(area.x, area.y, text, width, Style::new());
+}
+
 fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
     if area.is_empty() {
         return;
@@ -145,13 +166,16 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
     if app.outdated() > 0 {
         parts.push(format!("{} outdated", app.outdated()));
     }
+    if let Some(query) = app.active_search() {
+        parts.push(format!("/{query}"));
+    }
     let hints = match app.mode() {
         Mode::Panel { .. } if app.selected_is_resolved() => {
             "tab:next a:add r:reply o:reopen j/k:scroll esc:close"
         }
         Mode::Panel { .. } => "tab:next a:add r:reply x:resolve j/k:scroll esc:close",
         Mode::Visual { .. } => "esc:cancel enter:comment j/k:extend",
-        _ => "enter:thread/comment ]/[:jump q:quit v:select",
+        _ => "enter:thread/comment ]/[:jump q:quit v:select /:search",
     };
     parts.push(hints.to_string());
     let footer = parts.join("  ");
@@ -717,7 +741,7 @@ mod tests {
    5│line 5
    6│line 6
    7│line 7
-plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select"
+plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search"
         );
     }
 
@@ -1258,11 +1282,15 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:se…"
         let mut app = app_with(lines(30), &[], 8);
         key(&mut app, KeyCode::Char('G'));
 
-        let screen = screen(&draw(&app, W, 8));
+        let screen = screen(&draw(&app, 120, 8));
 
         let first = screen.lines().next().unwrap();
         assert_eq!(first, "  24│line 24");
-        assert!(screen.ends_with("L30/30  enter:thread/comment ]/[:jump q:quit v:select"));
+        assert!(
+            screen
+                .trim_end()
+                .ends_with("L30/30  enter:thread/comment ]/[:jump q:quit v:select /:search")
+        );
     }
 
     /// An app on a terminal `cols` wide, so wrapping matches the drawing.
@@ -1443,7 +1471,7 @@ plan.md  L1/5  enter:thread/c…"
 
         assert_eq!(
             screen,
-            "(empty file)\n\n\nplan.md  L0/0  enter:thread/comment ]/[:jump q:quit v:select"
+            "(empty file)\n\n\nplan.md  L0/0  enter:thread/comment ]/[:jump q:quit v:select /:search"
         );
     }
 
@@ -1691,7 +1719,8 @@ plan.md  L1/5  enter:thread/c…"
             .to_string()
     }
 
-    const NORMAL_FOOTER: &str = "plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select";
+    const NORMAL_FOOTER: &str =
+        "plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search";
 
     #[test]
     fn a_footer_that_fits_exactly_is_drawn_unchanged() {
@@ -1810,5 +1839,78 @@ plan.md  L1/5  enter:thread/c…"
         let screen = screen(&draw(&app, W, 8));
 
         assert!(screen.contains("┌Comment on line 3 as scott─"), "{screen}");
+    }
+
+    fn reversed_cells(terminal: &Terminal<TestBackend>) -> usize {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|cell| cell.modifier.contains(Modifier::REVERSED))
+            .count()
+    }
+
+    #[test]
+    fn the_search_prompt_replaces_the_footer_with_the_query_and_a_note() {
+        let mut app = app_with(lines(12), &[], 8);
+        keys(&mut app, "/line 9");
+        assert_eq!(footer(&app, W), "/line 9");
+        keys(&mut app, "9");
+        assert_eq!(footer(&app, W), "/line 99 [no match]");
+        let mut app = app_with(lines(12), &[], 8);
+        keys(&mut app, "G/line 2");
+        assert_eq!(footer(&app, W), "/line 2 [wrapped]");
+    }
+
+    #[test]
+    fn a_query_wider_than_the_row_shows_its_tail_and_drops_the_note() {
+        let mut app = app_with(lines(12), &[], 8);
+        keys(&mut app, "/abcdefghij");
+        assert_eq!(footer(&app, 8), "…defghij");
+        assert_eq!(footer(&app, 6), "…fghij");
+        assert_eq!(footer(&app, 3), "…ij");
+        for width in 1..20 {
+            assert!(wrap::width(&footer(&app, width)) <= usize::from(width));
+        }
+    }
+
+    #[test]
+    fn a_wide_character_query_is_cut_whole() {
+        let mut app = app_with(lines(12), &[], 8);
+        keys(&mut app, "/日本語");
+        // The screen helper shows a wide cell's spacer as a blank.
+        assert_eq!(footer(&app, 6).replace(' ', ""), "…本語");
+        assert_eq!(footer(&app, 4).replace(' ', ""), "…語");
+    }
+
+    #[test]
+    fn the_normal_footer_shows_the_active_search_and_the_hint() {
+        let mut app = app_with(lines(12), &[], 8);
+        assert!(footer(&app, 200).ends_with("/:search"));
+        keys(&mut app, "/line 3");
+        key(&mut app, KeyCode::Enter);
+        assert!(footer(&app, 200).contains("L3/12  /line 3  enter"));
+    }
+
+    #[test]
+    fn matches_are_drawn_reversed_and_only_while_a_search_is_active() {
+        let mut app = app_with(lines(12), &[], 8);
+        assert_eq!(reversed_cells(&draw(&app, W, 8)), 0);
+        keys(&mut app, "/line 2");
+        assert_eq!(reversed_cells(&draw(&app, W, 8)), "line 2".len());
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(reversed_cells(&draw(&app, W, 8)), "line 2".len());
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(reversed_cells(&draw(&app, W, 8)), 0);
+    }
+
+    #[test]
+    fn a_tiny_terminal_does_not_panic_in_the_prompt() {
+        for (w, h) in [(20, 4), (1, 1), (80, 24)] {
+            let mut app = app_with(lines(12), &[], h);
+            keys(&mut app, "/line 1");
+            draw(&app, w, h);
+        }
     }
 }

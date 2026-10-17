@@ -50,6 +50,9 @@ ptal plan.md            # open the TUI
 | `g` / `G` (or `Home` / `End`) | Top / bottom |
 | `enter` | On a threaded line: open the thread panel. Otherwise comment on the line; `ctrl+s` saves, `enter` starts a new line, `esc` cancels (with text in the box, press it twice) |
 | `]` / `[` | Next / previous threaded line |
+| `/` | Search the file: type a query and the cursor jumps live to the next matching line (smart-case: case-insensitive unless the query has an uppercase letter); `enter` keeps the position and makes it the active search, `esc` goes back to where you were |
+| `n` / `N` | Next / previous line matching the active search, wrapping (the footer says so); matches are highlighted in reverse video, one stop per line however many matches it has. Works in a selection too, extending it |
+| `esc` | In Normal mode: clear the active search and its highlight |
 | `v` (or `V`) | Select lines from the cursor; the movement keys and `]` / `[` extend the selection either way |
 | `enter` | In a selection: comment on the selected lines; `ctrl+s` saves, `esc` returns to the selection (twice with text in the box) |
 | `esc` (or `q`, `ctrl+c`, `v`, `V`) | In a selection: leave it without commenting (does not quit) |
@@ -95,7 +98,7 @@ exits `1` with a `not_a_terminal` JSON error.
 | `e` | Edit your own comment |
 | `s` | Toggle the comment sidebar |
 | `R` | Show / hide resolved threads |
-| `n` / `N` | Next / previous line changed since you last reviewed |
+| (unassigned; `n` / `N` are now search) | Next / previous line changed since you last reviewed |
 
 ### For agents
 
