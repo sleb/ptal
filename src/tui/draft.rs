@@ -40,8 +40,9 @@ impl Draft {
     /// Scroll just enough that the cursor's row is among the `height` rows
     /// shown at `width`, and no blank rows sit below the text.
     pub fn clamp_scroll(&mut self, width: usize, height: usize) {
-        let rows = self.rows(width).len();
-        let row = self.cursor_at(width).0;
+        let rows = self.rows(width);
+        let row = self.cursor_row(&rows);
+        let rows = rows.len();
         let height = height.max(1);
         self.scroll = self
             .scroll
@@ -148,9 +149,7 @@ impl Draft {
     /// whitespace shows in cell `width`, the last one.
     pub fn cursor_at(&self, width: usize) -> (usize, usize) {
         let rows = self.rows(width);
-        let row = rows
-            .partition_point(|row| row.start <= self.cursor)
-            .saturating_sub(1);
+        let row = self.cursor_row(&rows);
         let start = rows.get(row).map_or(0, |row| row.start);
         let col = wrap::width(&self.text[start..self.cursor]).min(width);
         (row, col)
@@ -195,6 +194,13 @@ impl Draft {
         }
         self.cursor = landing;
         self.goal = Some(goal);
+    }
+
+    /// Which of `rows` (from [`Draft::rows`]) the cursor shows on: the last
+    /// one starting at or before it, so a soft break shows on the next row.
+    fn cursor_row(&self, rows: &[Range<usize>]) -> usize {
+        rows.partition_point(|row| row.start <= self.cursor)
+            .saturating_sub(1)
     }
 
     /// The cluster ending at the cursor.

@@ -848,7 +848,8 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     None
 }
 
-/// A key in the comment box: `ctrl+s` saves a draft that is not blank (as
+/// A key in the comment box: `ctrl+s` (either case, as some terminals
+/// report it with shift or caps lock) saves a draft that is not blank (as
 /// typed, newlines kept), `enter` starts a new line, `esc` or `ctrl+c`
 /// returns to where the box came from, and the rest edit the draft.
 fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
@@ -866,8 +867,8 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     match key.code {
         KeyCode::Char('c') if ctrl => app.mode = back,
         KeyCode::Esc => app.mode = back,
-        KeyCode::Char('s') if ctrl && draft.text().trim().is_empty() => {}
-        KeyCode::Char('s') if ctrl => {
+        KeyCode::Char('s' | 'S') if ctrl && draft.text().trim().is_empty() => {}
+        KeyCode::Char('s' | 'S') if ctrl => {
             let body = draft.text().to_owned();
             return Some(match reply_to {
                 Some(id) => Effect::Reply {
@@ -1801,6 +1802,16 @@ mod tests {
                 body: body()
             })
         );
+    }
+
+    #[test]
+    fn ctrl_with_a_capital_s_saves_too() {
+        let mut a = input_app();
+        typed(&mut a, "why?");
+
+        let effect = update(&mut a, ctrl('S'));
+
+        assert!(matches!(effect, Some(Effect::Add { .. })), "{effect:?}");
     }
 
     #[test]
