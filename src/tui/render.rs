@@ -9,7 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Widget};
 
-use super::app::{App, Marker, Mode, ScreenRow};
+use super::app::{App, HELP_CHROME_ROWS, Marker, Mode, ScreenRow};
 use super::draft::Draft;
 use super::wrap;
 
@@ -204,7 +204,7 @@ fn draw_help(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
         buf.set_stringn(row.x, row.y, "Help", width, title);
     }
     let listing = app.help_rows();
-    let body = usize::from(area.height).saturating_sub(2);
+    let body = usize::from(area.height).saturating_sub(HELP_CHROME_ROWS);
     for (row, line) in rows.by_ref().take(body).zip(listing.iter().skip(scroll)) {
         let style = if line.heading {
             Style::new().add_modifier(Modifier::BOLD)
@@ -215,7 +215,7 @@ fn draw_help(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
     }
     if area.height >= 2 {
         let y = area.y + area.height - 1;
-        let hint = wrap::cut("j/k:scroll  ?/esc:close", width);
+        let hint = wrap::cut("j/k g/G:scroll  ?/esc:close", width);
         buf.set_stringn(area.x, y, hint, width, Style::new());
     }
 }
@@ -1962,7 +1962,7 @@ plan.md  L1/5  enter:thread/c…"
             rows.iter()
                 .any(|r| r.starts_with("  j/k, ↓/↑") && r.contains("move the cursor"))
         );
-        assert_eq!(rows[23], "j/k:scroll  ?/esc:close");
+        assert_eq!(rows[23], "j/k g/G:scroll  ?/esc:close");
         assert!(!screen.contains("line 1\n"), "{screen}");
     }
 

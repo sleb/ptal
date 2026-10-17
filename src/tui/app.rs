@@ -207,6 +207,8 @@ pub struct App {
     /// The active search query (set by `enter` on a search), highlighted and
     /// repeated by `n` / `N`; cleared by `esc` in Normal.
     pub(super) search: Option<String>,
+    /// The help listing laid out for `cols`.
+    help: Vec<keys::Row>,
     /// The reviewed file's path as shown in the footer.
     file: String,
     /// Who the comments will be written as, shown in the input box.
@@ -244,7 +246,7 @@ pub struct ScreenRow {
 /// Terminal rows taken by the footer in Normal mode.
 const FOOTER_ROWS: usize = 1;
 /// Rows the help overlay spends on its title and its footer.
-const HELP_CHROME_ROWS: usize = 2;
+pub(super) const HELP_CHROME_ROWS: usize = 2;
 /// Rows the comment box's border takes; the box replaces the footer.
 const BOX_BORDER_ROWS: usize = 2;
 /// The comment box shows at most this many rows of its draft.
@@ -280,6 +282,7 @@ impl App {
             mode: Mode::Normal,
             status: None,
             search: None,
+            help: Vec::new(),
             file: String::new(),
             author: author.to_string(),
             threads: threads.to_vec(),
@@ -420,8 +423,8 @@ impl App {
     }
 
     /// The help listing laid out for the window.
-    pub fn help_rows(&self) -> Vec<keys::Row> {
-        keys::rows(self.cols)
+    pub fn help_rows(&self) -> &[keys::Row] {
+        &self.help
     }
 
     /// Listing rows the help overlay shows: the screen less its title and
@@ -533,6 +536,7 @@ impl App {
     /// Lay out the tables again for the current text width.
     fn relayout(&mut self) {
         self.tables = table::align(&self.lines, self.text_width());
+        self.help = keys::rows(self.cols);
     }
 
     /// The screen rows of 0-based `line` at the current width: its table
@@ -909,15 +913,23 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
 fn movement(app: &mut App, key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let chord = ctrl || key.modifiers.contains(KeyModifiers::ALT);
-    match key.code {
+    // The letter aliases are plain keys only; ctrl+j is not `j`.
+    let code = match key.code {
+        KeyCode::Char('j') if !ctrl => KeyCode::Down,
+        KeyCode::Char('k') if !ctrl => KeyCode::Up,
+        KeyCode::Char('g') if !ctrl => KeyCode::Home,
+        KeyCode::Char('G') if !ctrl => KeyCode::End,
+        code => code,
+    };
+    match code {
         KeyCode::Char('d') if ctrl => app.scroll_half_page(true),
         KeyCode::Char('u') if ctrl => app.scroll_half_page(false),
-        KeyCode::Char('j') | KeyCode::Down if !chord => app.move_to(app.cursor + 1),
-        KeyCode::Char('k') | KeyCode::Up if !chord => app.move_to(app.cursor.saturating_sub(1)),
-        KeyCode::Char('g') | KeyCode::Home if !chord => app.move_to(0),
-        KeyCode::Char('G') | KeyCode::End if !chord => app.move_to(app.last_line()),
-        KeyCode::Char(']') if !chord => app.jump_to_covered(true),
-        KeyCode::Char('[') if !chord => app.jump_to_covered(false),
+        KeyCode::Down => app.move_to(app.cursor + 1),
+        KeyCode::Up => app.move_to(app.cursor.saturating_sub(1)),
+        KeyCode::Home => app.move_to(0),
+        KeyCode::End => app.move_to(app.last_line()),
+        KeyCode::Char(']') if !ctrl => app.jump_to_covered(true),
+        KeyCode::Char('[') if !ctrl => app.jump_to_covered(false),
         KeyCode::Char('n') if !chord => app.repeat_search(true),
         KeyCode::Char('N') if !chord => app.repeat_search(false),
         KeyCode::PageDown => app.scroll_half_page(true),
@@ -935,12 +947,6 @@ fn is_quit(key: KeyEvent) -> bool {
         || matches!(key.code, KeyCode::Char('q') if !ctrl)
 }
 
-/// Whether `key` has ctrl or alt held.
-fn is_chord(key: KeyEvent) -> bool {
-    key.modifiers
-        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-}
-
 /// [`is_quit`] or `esc`: back to Normal from Visual or the panel.
 fn is_leave(key: KeyEvent) -> bool {
     key.code == KeyCode::Esc || is_quit(key)
@@ -955,7 +961,7 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Char('?') if !is_chord(key) => app.open_help(Back::Normal),
+        KeyCode::Char('?') if !ctrl => app.open_help(Back::Normal),
         KeyCode::Char('v' | 'V') if !ctrl && !app.lines.is_empty() => {
             app.mode = Mode::Visual { anchor: app.cursor };
         }
@@ -1043,6 +1049,12 @@ fn search_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     None
 }
 
+/// Leave the help overlay for `back`.
+fn close(app: &mut App, back: Back) -> Option<Effect> {
+    app.mode = back.mode();
+    None
+}
+
 /// Keys in [`Mode::Help`]: `?`, `esc`, `q` and `ctrl+c` close it (never
 /// quit), the movement keys scroll the listing.
 fn help_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
@@ -1052,14 +1064,8 @@ fn help_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let half = (app.help_body_rows() / 2).max(1);
     let to = match key.code {
-        KeyCode::Esc | KeyCode::Char('?' | 'q') if !ctrl => {
-            app.mode = back.mode();
-            return None;
-        }
-        KeyCode::Char('c') if ctrl => {
-            app.mode = back.mode();
-            return None;
-        }
+        KeyCode::Esc | KeyCode::Char('?' | 'q') if !ctrl => return close(app, back),
+        KeyCode::Char('c') if ctrl => return close(app, back),
         KeyCode::Char('j') | KeyCode::Down if !ctrl => scroll + 1,
         KeyCode::Char('k') | KeyCode::Up if !ctrl => scroll.saturating_sub(1),
         KeyCode::Char('d') if ctrl => scroll + half,
@@ -1086,7 +1092,7 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let count = app.threads_on(app.cursor).len().max(1);
     match key.code {
-        KeyCode::Char('?') if !is_chord(key) => app.open_help(Back::Panel { selected, scroll }),
+        KeyCode::Char('?') if !ctrl => app.open_help(Back::Panel { selected, scroll }),
         KeyCode::Char('a') if !ctrl => {
             app.mode = Mode::input(Back::Panel { selected, scroll }, None);
         }
@@ -3979,7 +3985,7 @@ mod tests {
                 for name in keys::names(entry.keys) {
                     let quoted = format!("`{name}`");
                     assert!(
-                        doc.contains(&quoted) || doc.contains(name) && name.len() > 1,
+                        doc.contains(&quoted),
                         "{name} ({}) is not in docs/interfaces.md",
                         entry.keys
                     );
