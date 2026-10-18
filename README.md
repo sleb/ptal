@@ -12,8 +12,11 @@ threads. You re-open ptal and see what changed. Comments, replies, and resolved
 state persist across rounds and revisions.
 
 > **Status:** core library, the agent CLI (`comments`, `add`, `resolve`, `reply`,
-> `reopen`), and a TUI (scroll a file, comment on a line or a range, read threads and the
-> agent's replies, jump between threads, reply, resolve, reopen) implemented. Live refresh is planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
+> `reopen`), and a TUI implemented: scroll a file (long lines wrap, markdown
+> tables align, markdown structure is highlighted), comment on a line or a
+> selected range, read threads and the agent's replies, jump between threads,
+> search, write multi-line comments, reply, resolve, reopen, `?` lists the
+> keys. Live refresh is planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why not a PR?
 
@@ -41,30 +44,68 @@ ptal plan.md            # open the TUI
 
 ### Keys
 
-**Available**
+**Available**, by mode:
+
+Normal mode:
 
 | Key | Action |
 |---|---|
 | `j` / `k` (or `↓` / `↑`) | Down / up |
 | `ctrl+d` / `ctrl+u` (or `PgDn` / `PgUp`) | Half page down / up |
 | `g` / `G` (or `Home` / `End`) | Top / bottom |
-| `enter` | On a threaded line: open the thread panel. Otherwise comment on the line; `ctrl+s` saves, `enter` starts a new line, `esc` cancels (with text in the box, press it twice) |
-| `]` / `[` | Next / previous threaded line |
-| `/` | Search the file: type a query and the cursor jumps live to the next matching line (smart-case: case-insensitive unless the query has an uppercase letter); `enter` keeps the position and makes it the active search, `esc` goes back to where you were |
-| `n` / `N` | Next / previous line matching the active search, wrapping (the footer says so); matches are highlighted in reverse video, one stop per line however many matches it has. Works in a selection too, extending it |
-| `esc` | In Normal mode: clear the active search and its highlight |
-| `v` (or `V`) | Select lines from the cursor; the movement keys and `]` / `[` extend the selection either way |
-| `enter` | In a selection: comment on the selected lines; `ctrl+s` saves, `esc` returns to the selection (twice with text in the box) |
-| `esc` (or `q`, `ctrl+c`, `v`, `V`) | In a selection: leave it without commenting (does not quit) |
-| `tab` / `shift+tab` | In the panel: next / previous thread on the line |
-| `j` / `k` | In the panel: scroll |
-| `a` | In the panel: add a thread on this line |
-| `r` | In the panel: reply to the selected thread; `ctrl+s` saves, `esc` cancels (twice with text in the box) |
-| `x` / `o` | In the panel: resolve / reopen the selected thread (no note) |
-| `esc` (or `q`, `ctrl+c`) | In the panel: close it |
-| `?` | Show every key, grouped by mode (Normal and the thread panel); `j` / `k` scroll, `?` or `esc` close |
+| `]` / `[` | Next / previous threaded line (no wrap) |
+| `/` | Search the file (see Search below) |
+| `n` / `N` | Next / previous line matching the active search, wrapping (the footer says so); matches are highlighted in reverse video, one stop per line however many matches it has |
+| `esc` | Clear the active search and its highlight |
+| `v` (or `V`) | Select lines from the cursor (see Visual select below) |
+| `enter` | On a threaded line: open the thread panel. Otherwise comment on the line |
+| `?` | Show the key listing (Normal and thread-panel keys), grouped by mode; the footer ends with `?:help` when it fits |
 | `q` (or `ctrl+c`) | Quit |
-| `←` / `→`, `↑` / `↓`, `Home` / `End` | In a comment box: move by character, by screen row, to the line's start / end; `backspace` / `delete` remove (and join lines) |
+
+Visual select:
+
+| Key | Action |
+|---|---|
+| movement keys, `]` / `[`, `n` / `N` | Extend the selection either way |
+| `/` | Search; the live jumps extend the selection, `enter` and `esc` return to it |
+| `enter` | Comment on the selected lines; `esc` in the box returns to the selection (twice with text in the box) |
+| `esc` (or `q`, `ctrl+c`, `v`, `V`) | Leave the selection without commenting (does not quit) |
+
+Search:
+
+| Key | Action |
+|---|---|
+| (typing) | The cursor jumps live to the next matching line (smart-case: case-insensitive unless the query has an uppercase letter); `backspace` edits, and leaves an empty prompt |
+| `enter` | Keep the position and make the query the active search |
+| `esc` (or `ctrl+c`) | Go back to where you were |
+
+Thread panel:
+
+| Key | Action |
+|---|---|
+| `tab` / `shift+tab` | Next / previous thread on the line |
+| `j` / `k` (or `↓` / `↑`) | Scroll |
+| `a` | Add a thread on this line |
+| `r` | Reply to the selected thread; `ctrl+s` saves, `esc` cancels (twice with text in the box) |
+| `x` / `o` | Resolve / reopen the selected thread (no note) |
+| `?` | Show the key listing |
+| `esc` (or `q`, `ctrl+c`) | Close the panel |
+
+Comment box:
+
+| Key | Action |
+|---|---|
+| `enter` | New line |
+| `ctrl+s` | Save |
+| `esc` (or `ctrl+c`) | Cancel; with text in the box, press it twice (the first asks, any key in between keeps the draft) |
+| `←` / `→`, `↑` / `↓`, `Home` / `End` | Move by character, by screen row, to the line's start / end; `backspace` / `delete` remove (and join lines) |
+
+Help overlay:
+
+| Key | Action |
+|---|---|
+| `j` / `k` (or `↓` / `↑`), `ctrl+d` / `ctrl+u` (or `PgDn` / `PgUp`), `g` / `G` (or `Home` / `End`) | Scroll the listing |
+| `?` (or `esc`, `q`, `ctrl+c`) | Close |
 
 Long lines wrap at word boundaries onto continuation rows; the line number and
 thread marker show on a line's first row, and `j` / `k` move by file line,
@@ -72,10 +113,13 @@ not by screen row. Markdown tables show with aligned columns; one too wide
 for the window wraps its cells inside their columns, still one cursor stop
 per file line. A malformed table, or a window too narrow for it, shows as
 written. In a markdown file (`.md`, `.markdown` or `.mdx`) headings,
-emphasis, inline code, code blocks, list markers, block quotes and links are
-highlighted, in your terminal theme's colors and never hiding a character;
-set `NO_COLOR` (to any non-empty value) to turn it off. Other files show
-plain.
+emphasis, strikethrough, inline code, code blocks, list markers, block
+quotes and links are highlighted, in your terminal theme's colors and never
+hiding a character; set `NO_COLOR` (to any non-empty value) to turn it off.
+Other files show plain.
+One-row text too wide for the window — the footer, a box's title or border
+message — is cut and ends in `…`; the search prompt instead keeps the end of
+a long query, after a leading `…`.
 
 A comment can span several paragraphs: in the comment box `enter` starts a
 new line and `ctrl+s` saves (leading and trailing blank lines are dropped). With text in
@@ -99,14 +143,15 @@ exits `1` with a `not_a_terminal` JSON error.
 | `e` | Edit your own comment |
 | `s` | Toggle the comment sidebar |
 | `R` | Show / hide resolved threads |
-| (unassigned; `n` / `N` are now search) | Next / previous line changed since you last reviewed |
+| (unassigned) | Next / previous line changed since you last reviewed |
 
 ### For agents
 
 Everything an agent needs to use the tool is on the CLI: `ptal --help` says what
 each command does and what the output means. How you want reviews to run (when
 to resolve, when to ask, when to publish) is yours to put in your own skill or
-prompt. Output is JSON when stdout is not a terminal.
+prompt. Output is JSON when stdout is not a terminal (or always, with
+`--json`).
 
 ```sh
 ptal comments plan.md          # open threads: id, status, state, line range, quote, comments
