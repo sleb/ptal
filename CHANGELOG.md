@@ -6,6 +6,21 @@ workflow publishes that section as the GitHub Release notes. See
 
 ## Unreleased
 
+## 0.2.0 - 2026-10-18
+
+TUI-focused release: richer commenting and a much better reading view.
+
+- Comment on a range of lines with visual select, and write multi-line
+  comments in the comment box.
+- Incremental `/` search with `n`/`N` and highlighted matches.
+- `?` help overlay listing every key.
+- Long lines wrap instead of being cut off; one-row text that is cut off is
+  marked with an ellipsis; panel comments wrap by cell width.
+- Markdown tables render aligned in place, and wide tables wrap their cells.
+- Markdown structure is highlighted.
+- A failed save's error shows while the comment box is open.
+- Docs reviewed against the built behavior.
+
 ## 0.1.0 - 2026-10-13
 
 First release. ptal is a terminal tool for reviewing a single throwaway text
