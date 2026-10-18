@@ -544,7 +544,7 @@ Which basic moves each scenario uses; a starting point for the analysis.
 Collected from the scenarios above, unanswered here on purpose:
 
 - **Turn:** is it per review or per thread? Is it enforced or a signal? Is
-  a hand-off a snapshot? (A5, B1, E1, E2)
+  a hand-off a snapshot? (A5, B1, E1, E2) *Proposed: see [Turn](#turn).*
 - **Resolution:** who may resolve, and are fixed / won't fix / deferred /
   superseded / withdrawn kinds of resolution or just prose? (A3, A6, A7, C1, D4)
 - **Acknowledgement:** does the human's acceptance of an agent's resolve
@@ -556,3 +556,117 @@ Collected from the scenarios above, unanswered here on purpose:
 - **Comment intent:** question, change request, nit; explicit or prose? (A4, C2)
 - **Verdict:** does approval with open threads block, and does a later edit
   undo it? (C2)
+
+---
+
+## Definitions
+
+Proposed definitions, one concept at a time, each checked against the
+scenarios above. Each gives the recommendation, how the relevant scenarios
+play out under it, the alternatives considered and dropped, and what it
+means for open stories. Nothing here is built.
+
+### Turn
+
+**Definition.** A *turn* says which side of a review, the human or the
+agent, is expected to act next. There is one turn per review, held by
+exactly one side at a time. It passes only through a *hand-off*: an
+explicit, recorded act by the side holding it. The turn is a signal, not a
+lock: either side may write at any time.
+
+**Rules.**
+
+1. **Per review.** The turn belongs to the review, not to a thread.
+   Per-thread "whose move" already exists as *waiting on* (an open thread
+   whose last comment is not yours) and stays a separate, derived notion.
+2. **Two sides, by role.** The sides are `human` (the TUI) and `agent` (the
+   CLI), not author names. Names stay on the hand-off record as its
+   author.
+3. **Starts with the human.** A review with no hand-offs is the human's
+   turn: a review exists so a human can review the file.
+4. **Only the holder hands off.** A hand-off by the side that doesn't hold
+   the turn fails (`not_your_turn`, exit `2`) and writes nothing, like
+   `already_resolved`.
+5. **Writes are never refused for being out of turn.** Comments, replies,
+   resolves, reopens and file edits are valid from either side at any time.
+   They don't move the turn.
+6. **A hand-off is a marker, not a copy.** It records who handed off, when,
+   an optional note, the comment-id high-water mark (`next_id` at that
+   moment) and, once revisions exist (#45), the file's revision. It does
+   not copy or freeze threads. "Everything up to `cN` and revision `R`" is
+   what was handed over; later writes are visibly later.
+7. **A hand-off reports what it leaves behind.** It never refuses because
+   threads are still waiting on the side handing off, but its output lists
+   them, so the hand-off is a decision rather than an accident.
+8. **One event for both directions.** The human's hand-off (#35's "finish")
+   and the agent's (#35's "hand-off") are the same event. The human's may
+   carry a verdict (see Verdict, still to be defined); front ends may
+   still name the two commands differently.
+9. **Hand-offs are kept as a log.** Append-only. The current turn is the
+   recipient of the last entry, or the human if there is none. The log is
+   what Round will build on.
+
+**The scenarios under this definition.**
+
+| Scenario | How the turn plays out |
+|---|---|
+| A1–A6, D1–D4 | One hand-off each way per round. Each `── H → A ──` / `── A → H ──` line is a hand-off record. |
+| A5 | The agent's turn ends with only a question and no edit. That is a valid hand-off: nothing requires a revision. The agent can't park just `c1`, but it doesn't need to; it finishes the other threads, then hands off. |
+| B1 | The agent hands back with `c2` waiting on the human and nothing waiting on itself: a clean hand-off. "Answered", not "closed", is what a turn needs. |
+| C2 | The human hands off with `approved`. The agent's nit fix happens in its own turn and needs no hand-back. Whether approval ends the review is a Verdict question. |
+| C3 | The review starts as the human's turn. The agent seeds `c1`, `c2` during it (allowed by rule 5), then asks the human to open ptal. No hand-off is needed, or possible, until the human finishes. |
+| C4 | The human edits the file during their own turn; the revision on their hand-off record captures it. |
+| E1 | The human adds `c3` after handing off. When the agent hands back, the output lists `c3` as still waiting on the agent (rule 7). The agent answers it or hands back knowingly. The record's high-water mark shows `c3` arrived mid-turn. |
+| E2 | The agent replies during the human's turn. Allowed; the TUI refreshes (#36); the turn doesn't change. |
+| A7 | The human resolves their own thread before handing off; the agent sees it was resolved before the hand-off and owes nothing. |
+
+**Considered and dropped.**
+
+- **Per-thread turns** (each thread's "waiting on" *is* the turn). Can't say
+  "my whole revision is done". Edits aren't per thread (B2, C1); the
+  human needs one signal that the file is ready to reread, not a count of
+  answered threads. Kept as the derived "waiting on" instead.
+- **Enforced turns** (writes out of turn are refused). E1, E2, C3 and A7
+  are all useful writes out of turn. Refusing them pushes the content back
+  into the agent chat, which v0.3.0 sets out to remove. ptal can't lock the
+  reviewed file anyway (C4).
+- **Implicit turns** (inferred from quitting the TUI, the last writer, or
+  the file changing). Quitting isn't finishing; the human may come back.
+  The agent writes incrementally, and nothing in its writes says "done".
+  #35 already chose an explicit hand-off.
+- **Batch submit** (comments stay pending, hidden from the other side until
+  the hand-off, like a GitHub pending review). Cut from v0.3.0 already. The
+  marker in rule 6 gives the useful part (what is new since the hand-off)
+  without a second copy of threads. Live refresh (#36) would show pending
+  writes anyway unless they were filtered.
+- **Hand-off as a full snapshot** (copy threads and file into the record).
+  Duplicates data the review and revisions already hold; the id mark and
+  revision point at it instead.
+- **Two separate events** (a human "finish" and an agent "hand-off" with
+  different shapes). They differ only in the verdict. One event keeps the
+  log uniform for Round.
+- **Sides by author name.** A changed `--as` name, or a human using the CLI
+  under their own name, would invent a third side. A turn needs exactly two
+  parties, so it uses roles; names stay for attribution and "waiting on".
+- **Either side may pass the turn** (so the agent can "hand off" before the
+  human's first look, C3). Makes the turn meaningless as a signal: both
+  sides could claim to be waiting. The default-human start covers C3.
+- **Hand-off refuses while threads wait on the sender.** Too strict for E1
+  (the agent may reasonably leave a late thread for the next round) and
+  for "I'll come back to that" replies. Reporting them (rule 7) keeps the
+  information without the friction.
+
+**What it means for open stories.**
+
+- **#35:** both commands write the same hand-off record (rule 8). Only the
+  holder may hand off (`not_your_turn`). The output lists threads still
+  waiting on the sender. Whose turn it is shows in the TUI and in
+  `ptal comments` (or a `status` command).
+- **#36:** the agent's wait returns when the turn becomes the agent's and
+  returns the hand-off record (author, note, verdict, mark). The TUI's
+  live refresh shows out-of-turn writes without moving the turn.
+- **#46:** "last look" could be the human's last hand-off rather than a
+  separate marker. Left to that story.
+- **#45:** a hand-off records the revision once revisions exist.
+- **Not decided here:** what a verdict is and whether `approved` ends the
+  turn-taking (Verdict); whether rounds are numbered from the log (Round).
