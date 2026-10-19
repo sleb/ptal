@@ -53,6 +53,7 @@ Transcript lines:
 | `── H → A ──` | The turn passes to the agent | out of band today (chat: "done, take a look"); planned: finish (#35) + wait (#36) |
 | `── A → H ──` | The turn passes back to the human | out of band today; planned: hand-off (#35), live refresh (#36) |
 | `H  finish approved / changes_requested ["..."]` | Review-level verdict and note | planned (#35) |
+| `H  close [verdict] ["..."]`, `X  reopen review` | End the review; bring it back | planned (#35's finish and reopen) |
 | `[outdated]`, `[current]` | A thread's state after an edit | computed today, mapped after #45 |
 
 Ids follow ptal's rule: one counter per review, so replies and notes use up
@@ -408,6 +409,36 @@ A  resolve c1 note "Removed the Open questions section."
 
 ---
 
+### C6. The human ends the review
+
+The human is done and expects nothing more from the agent on this review.
+Three common reasons:
+
+```
+(a) done, satisfied
+H  close approved "Good to go."
+(b) done, plan dropped or superseded
+H  close "Dropping this; we're buying a gateway product instead."
+(c) done, stopped looking (open threads left as they are)
+H  close
+```
+
+Later, either side brings it back:
+
+```
+(the human asks the agent, in chat, to fold in a new requirement)
+A  edit L13-14: (adds a burst allowance)
+A  reopen review note "Added burst limits; please take another look."
+── A → H ──
+H  (reviews as in any round)
+```
+
+- **Ends:** no one is expected to act; reopening starts a new round.
+- **Questions:** Is "done" a verdict or something separate from it (C2 is
+  approved but not done)? May the agent end a review? Does a write to a
+  closed review bring it back, or only an explicit reopen? What does an
+  agent waiting on its turn (#36) see when the review closes?
+
 ## D. Across rounds
 
 ### D1. Resolved thread gets a new follow-up
@@ -535,7 +566,8 @@ Which basic moves each scenario uses; a starting point for the analysis.
 | Human resolves | A3, A4, A6a, A7 |
 | Human reopens | A2, D1 (by reply) |
 | Thread goes outdated | B3, C1, C5 |
-| Review-level verdict or note | C1, C2, D2 |
+| Review-level verdict or note | C1, C2, C6, D2 |
+| Review ends or comes back | C6 |
 | Turn passes without a file change | A5, A6, A7, D4 |
 | Writes overlap a turn | E1, E2 |
 
@@ -555,7 +587,8 @@ Collected from the scenarios above, unanswered here on purpose:
 - **Round:** first-class (numbered) or implied by hand-offs? (D2)
 - **Comment intent:** question, change request, nit; explicit or prose? (A4, C2)
 - **Verdict:** does approval with open threads block, and does a later edit
-  undo it? (C2)
+  undo it? Is "done" a verdict? (C2, C6) *Partly proposed: closing is
+  separate from the verdict, see [Turn](#turn) rules 10–14.*
 
 ---
 
@@ -573,6 +606,11 @@ agent, is expected to act next. There is one turn per review, held by
 exactly one side at a time. It passes only through a *hand-off*: an
 explicit, recorded act by the side holding it. The turn is a signal, not a
 lock: either side may write at any time.
+
+A review is either *active*, and someone holds the turn, or *closed*, and
+no one does: closing is how the human says "we're done, nothing more is
+expected of either of us". Rules 1–9 describe an active review; rules
+10–14 cover closing and reopening.
 
 **Rules.**
 
@@ -605,6 +643,29 @@ lock: either side may write at any time.
 9. **Hand-offs are kept as a log.** Append-only. The current turn is the
    recipient of the last entry, or the human if there is none. The log is
    what Round will build on.
+10. **Closing removes the turn.** A *close* is a log entry like a hand-off
+    but with no recipient: who, when, an optional note and verdict, the id
+    mark and revision. While closed, no one holds the turn, so neither side
+    is waiting on the other.
+11. **Only the human closes, and at any time.** The review exists for the
+    human (rule 3), so ending it is the human's call, during either side's
+    turn; closing isn't passing the turn, so rule 4 doesn't apply. The
+    agent that thinks the work is done says so in a hand-off note and lets
+    the human close.
+12. **Closing is not a verdict.** A close may carry one (`approved`), or
+    none (dropped, superseded, stopped looking). And an `approved` hand-off
+    is not a close: in C2 the human approves and still expects the agent
+    to act. Which verdicts exist is left to Verdict.
+13. **A closed review still takes writes, and they don't reopen it.** A
+    late nit fix, a reply to a last question, or a note about what shipped
+    is valid (rule 5 again). Threads left open at close stay open; the
+    close output lists them, as a hand-off does (rule 7).
+14. **Reopening is explicit, by either side, and gives the turn to the
+    human.** Either side may reopen a closed review (the agent, when it has
+    revised the plan at the human's request outside the review). A reopen
+    is a log entry and returns the review to its start state, the human's
+    turn (rule 3), with all history kept. Reopening an active review is
+    `already_open`-style (`not_closed`, exit `2`), writing nothing.
 
 **The scenarios under this definition.**
 
@@ -613,7 +674,9 @@ lock: either side may write at any time.
 | A1–A6, D1–D4 | One hand-off each way per round. Each `── H → A ──` / `── A → H ──` line is a hand-off record. |
 | A5 | The agent's turn ends with only a question and no edit. That is a valid hand-off: nothing requires a revision. The agent can't park just `c1`, but it doesn't need to; it finishes the other threads, then hands off. |
 | B1 | The agent hands back with `c2` waiting on the human and nothing waiting on itself: a clean hand-off. "Answered", not "closed", is what a turn needs. |
-| C2 | The human hands off with `approved`. The agent's nit fix happens in its own turn and needs no hand-back. Whether approval ends the review is a Verdict question. |
+| C2 | The human hands off with `approved`: the agent is still expected to act (fix the nit, then implement), so the review stays active. The agent hands back, or the human closes it once satisfied. If the human wanted no further action, they'd close with `approved` instead (C6a). |
+| C6 | Each ending is a close (rule 10) by the human (rule 11); (a) carries `approved`, (b) and (c) carry no verdict (rule 12). Open threads in (c) are listed and stay open (rule 13). The agent's reopen is a log entry and makes it the human's turn (rule 14). |
+| D2 | Round 3 ends with a close carrying `approved`, not a hand-off. |
 | C3 | The review starts as the human's turn. The agent seeds `c1`, `c2` during it (allowed by rule 5), then asks the human to open ptal. No hand-off is needed, or possible, until the human finishes. |
 | C4 | The human edits the file during their own turn; the revision on their hand-off record captures it. |
 | E1 | The human adds `c3` after handing off. When the agent hands back, the output lists `c3` as still waiting on the agent (rule 7). The agent answers it or hands back knowingly. The record's high-water mark shows `c3` arrived mid-turn. |
@@ -651,6 +714,28 @@ lock: either side may write at any time.
 - **Either side may pass the turn** (so the agent can "hand off" before the
   human's first look, C3). Makes the turn meaningless as a signal: both
   sides could claim to be waiting. The default-human start covers C3.
+- **`approved` is the terminal state** (approval ends the review, as #35's
+  status list implies). C2 approves and still expects work; C6b and C6c
+  are done without approving. Ending and judging are separate questions.
+- **Closing is a hand-off to the agent with a "done" flag.** The agent
+  would hold a turn in which it is expected to do nothing, and its wait
+  (#36) would return as if there were work. A closed review has no holder.
+- **The agent may close.** Lets the agent declare its own work accepted.
+  It can say so in a hand-off note; the human closes.
+- **Close only by the holder** (rule 4 applied to closing). The human
+  couldn't stop a review while the agent holds it, which is when stopping
+  matters most (the agent is off track, or the plan is dropped).
+- **A closed review refuses writes.** Breaks C2's late nit fix and the
+  last reply to a question; pushes them back into chat.
+- **Any write reopens a closed review.** A late nit fix or a "shipped"
+  note would wake the human for nothing, and a close would never stick.
+  Reopen is explicit.
+- **Closing resolves the open threads.** Silently rewrites their outcome:
+  C6c's threads were never answered. They stay open and are listed.
+- **Reopen keeps the turn with whoever reopens.** An agent reopening would
+  hold the turn and have to hand off immediately; a human reopening is
+  about to review anyway. Both end at the human's turn, so reopening
+  always does.
 - **Hand-off refuses while threads wait on the sender.** Too strict for E1
   (the agent may reasonably leave a late thread for the next round) and
   for "I'll come back to that" replies. Reporting them (rule 7) keeps the
@@ -661,12 +746,19 @@ lock: either side may write at any time.
 - **#35:** both commands write the same hand-off record (rule 8). Only the
   holder may hand off (`not_your_turn`). The output lists threads still
   waiting on the sender. Whose turn it is shows in the TUI and in
-  `ptal comments` (or a `status` command).
+  `ptal comments` (or a `status` command). #35's three statuses (open,
+  `approved`, `changes_requested`) split in two: the review is active
+  (with a turn) or closed, and the verdict rides on the hand-off or close
+  that carried it. The TUI needs a close action alongside finish, and the
+  existing "reopen a finished review" becomes the reopen of rule 14,
+  available to the agent's CLI too.
 - **#36:** the agent's wait returns when the turn becomes the agent's and
-  returns the hand-off record (author, note, verdict, mark). The TUI's
+  returns the hand-off record (author, note, verdict, mark), or when the
+  review closes, returning the close record. "Closed" is how an agent's
+  loop knows to stop; a wait on an already closed review returns at once. The TUI's
   live refresh shows out-of-turn writes without moving the turn.
 - **#46:** "last look" could be the human's last hand-off rather than a
   separate marker. Left to that story.
 - **#45:** a hand-off records the revision once revisions exist.
-- **Not decided here:** what a verdict is and whether `approved` ends the
-  turn-taking (Verdict); whether rounds are numbered from the log (Round).
+- **Not decided here:** which verdicts exist and whether open threads block
+  `approved` (Verdict); whether rounds are numbered from the log (Round).
