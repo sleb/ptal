@@ -797,7 +797,8 @@ next. Rules 1–9 describe an active review; rules
 **Definition.** A *revision* is one distinct content of the reviewed file,
 identified by the SHA-256 of its bytes and kept as a snapshot in the
 review's data dir. ptal never writes the file, so it doesn't create
-revisions; it *observes* them, whenever it reads the file. A review is a
+revisions; it *observes* them when it reads the file, and keeps the ones
+something was written against. A review is a
 sequence of observed revisions plus the threads and turn log written
 against them.
 
@@ -806,15 +807,16 @@ against them.
 1. **Identity is content.** Same bytes, same revision. A file edited and
    then reverted (A → B → A) is back on revision A, not a third one.
    Snapshots are content-addressed, so a revisited content costs nothing.
-2. **Observed on every touch.** Every command and every TUI load or
-   refresh hashes the file; content not seen before is snapshotted, under
-   the review lock, before anything is written against it. Edits made
-   between two touches collapse into one revision: the review records what
-   was seen, not every keystroke.
-3. **Numbered for people, hashed for identity.** Each revision gets a
-   per-review ordinal the first time it is seen (`r1`, `r2`, ...), for
-   display and for `ptal` output. A revisited content keeps its first
-   ordinal.
+2. **Kept when written against.** Every write (a thread, comment,
+   resolve, reopen, hand-off or close) hashes the file and, if that
+   content isn't kept yet, snapshots it in the same locked transaction.
+   Reads hash the file but never write, so viewing stays lock-free. Edits
+   made between two writes collapse into one revision: the review records
+   what someone acted on, not every save.
+3. **Numbered for people, hashed for identity.** Each kept revision gets a
+   per-review ordinal (`r1`, `r2`, ...), for display and for `ptal`
+   output. A revisited content keeps its first ordinal. A view of content
+   nobody has written against yet reports it as new (no ordinal).
 4. **Every write records the revision it saw.** A thread's anchor is
    `{revision, start_line, end_line, quote}` on the revision current when
    it was created. Each comment, resolve and reopen also records the
@@ -847,7 +849,7 @@ against them.
 | B2 | `c2`'s resolve records `r2`; "see step 3" is checkable as the diff from `c2`'s anchor revision to `r2`, even though the change is outside `c2`'s lines. |
 | B3 | The agent's insert makes `r2`. `c2`'s anchor (`r1`, L14) maps to L15 in `r2` and stays `current` (rule 5). The agent sees the mapped line in `ptal comments`. |
 | C1 | The rewrite is `r2` of the same review (rule 7); every thread maps `outdated` with its original quote, and the agent resolves or leaves them. |
-| C4 | The human's edit is observed as a new revision the next time either side touches the file (rule 2). It carries no author (rule 6); it falls inside the human's turn, between the agent's hand-back and the human's hand-off. |
+| C4 | The human's edit becomes a new revision when the human comments on it (rule 2). It carries no author (rule 6); it falls inside the human's turn, between the agent's hand-back and the human's hand-off. |
 | C5 | The anchored lines are gone in `r2`; `c1` maps `outdated`, clamped in bounds, quote kept (rule 5). |
 | D3 | `c4` is anchored to `r2`, the others to `r1`; each maps from its own revision (rules 4, 5). |
 | E1, E2 | Out-of-turn writes record their revision like any other, so it is visible which version of the file a late comment was written against. |
@@ -859,12 +861,14 @@ against them.
   diff, and re-reading an unchanged file would mint revisions.
 - **Hash only, no ordinal.** Hashes are unreadable in the TUI and in an
   agent's notes ("resolved in `9f2c...`"). The ordinal costs one counter.
+- **Snapshot on every read.** Makes `ptal comments` and every TUI refresh
+  a write under the lock, for content nobody acted on.
 - **Snapshot only at hand-offs.** Threads created mid-turn would anchor to
   content ptal never kept, so they couldn't be mapped.
 - **Watch the file to catch every save** (#36 may watch for refresh
   anyway). Intermediate saves aren't something anyone reviewed; snapshots
   of them add revisions without adding meaning. Rule 2 records what each
-  side actually saw.
+  side acted on.
 - **Revision only on the thread, not on comments and resolves.** Leaves
   A2's and B2's question ("which version did this resolve refer to?")
   unanswerable, for one field per entry.
@@ -886,7 +890,8 @@ against them.
 
 **What it means for open stories.**
 
-- **#45:** snapshots on every touch, under the lock (rule 2); ordinals
+- **#45:** snapshots on writes, in the write's transaction, never on
+  reads (rule 2); ordinals
   (rule 3); `revision` on anchors, comments, resolves and reopens (rule
   4); direct mapping from the anchor's revision with no stored re-anchor
   (rule 5); no pruning (rule 8). Existing reviews have no revisions: their
