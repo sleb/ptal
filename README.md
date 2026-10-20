@@ -132,8 +132,11 @@ error on its bottom border.
 Comments are written as `$USER`. The gutter marks lines inside a thread: `●`
 open, `◆` open and waiting on you (its last comment is not yours), `○`
 resolved. The thread panel shows each thread's status, `outdated` state,
-quoted text and comments; resolved threads are dimmed. The footer counts open
-threads whose quoted text has since changed (`N outdated`). The TUI needs an interactive terminal: run without one it
+quoted text and comments; resolved threads are dimmed. Threads follow the
+file as it changes: lines inserted or deleted above a thread move it, and it
+becomes `outdated` once one of its own lines is edited or removed, shown at a
+best guess with its original quote. The footer counts open outdated threads
+(`N outdated`). The TUI needs an interactive terminal: run without one it
 exits `1` with a `not_a_terminal` JSON error.
 
 **Planned**
