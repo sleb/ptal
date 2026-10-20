@@ -1031,6 +1031,23 @@ impl App {
         }
     }
 
+    /// Move to the start of the nearest change strictly after (or before)
+    /// the cursor; stay put when there is none.
+    fn jump_to_change(&mut self, forward: bool) {
+        let starts = self
+            .changes
+            .iter()
+            .map(|change| (change.range.start as usize).saturating_sub(1));
+        let target = if forward {
+            starts.into_iter().find(|&line| line > self.cursor)
+        } else {
+            starts.rev().find(|&line| line < self.cursor)
+        };
+        if let Some(line) = target {
+            self.move_to(line);
+        }
+    }
+
     /// Move `top` and the cursor by the whole lines, from `top` down (or
     /// above `top` up), that fit in half the view's rows; at least one line.
     /// Past either end of the file a line counts as one row, so the cursor
@@ -1218,6 +1235,8 @@ fn movement(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::End => app.move_to(app.last_line()),
         KeyCode::Char(']') if !ctrl_only => app.jump_to_covered(true),
         KeyCode::Char('[') if !ctrl_only => app.jump_to_covered(false),
+        KeyCode::Char('}') if !ctrl_only => app.jump_to_change(true),
+        KeyCode::Char('{') if !ctrl_only => app.jump_to_change(false),
         KeyCode::Char('n') if !chord => app.repeat_search(true),
         KeyCode::Char('N') if !chord => app.repeat_search(false),
         KeyCode::PageDown => app.scroll_half_page(true),
@@ -4383,7 +4402,10 @@ mod tests {
             ),
         ];
         let lines = (1..=40).map(|i| format!("line {i}")).collect();
-        let mut a = App::open(lines, &threads, "scott", (80, 10));
+        let mut a = App::open(lines, &threads, "scott", (80, 10)).with_changes(vec![
+            change(2, 2, ChangeKind::Changed),
+            change(30, 31, ChangeKind::Changed),
+        ]);
         send(
             &mut a,
             [ch('/'), ch('2'), ch('9'), press(KeyCode::Enter), ch('g')],
@@ -4836,5 +4858,77 @@ mod tests {
         );
 
         assert_eq!(change_marks(&a), [None, None, Some(ChangeKind::Removed)]);
+    }
+
+    fn change_app() -> App {
+        let lines = (1..=12).map(|i| i.to_string()).collect();
+        App::open(lines, &[], "scott", (80, 6)).with_changes(vec![
+            change(3, 4, ChangeKind::Changed),
+            change(7, 7, ChangeKind::Removed),
+            change(10, 11, ChangeKind::Changed),
+        ])
+    }
+
+    #[test]
+    fn braces_jump_between_change_starts_and_stop_at_the_ends() {
+        let mut a = change_app();
+        let mut visited = vec![];
+        for _ in 0..4 {
+            send(&mut a, [ch('}')]);
+            visited.push(a.cursor);
+        }
+        assert_eq!(visited, [2, 6, 9, 9], "no wrap past the last");
+
+        let mut back = vec![];
+        for _ in 0..4 {
+            send(&mut a, [ch('{')]);
+            back.push(a.cursor);
+        }
+        assert_eq!(back, [6, 2, 2, 2], "no wrap before the first");
+    }
+
+    #[test]
+    fn open_brace_inside_a_change_goes_to_the_previous_change() {
+        let mut a = change_app();
+        send(&mut a, std::iter::repeat_with(|| ch('j')).take(10));
+        assert_eq!(a.cursor, 10, "inside the last change");
+
+        send(&mut a, [ch('{')]);
+
+        assert_eq!(a.cursor, 9, "its start is strictly before the cursor");
+    }
+
+    #[test]
+    fn braces_do_nothing_without_changes() {
+        let mut a = app(5, 10);
+        send(&mut a, [ch('j'), ch('}'), ch('{')]);
+        assert_eq!(a.cursor, 1);
+    }
+
+    #[test]
+    fn jumping_to_a_change_past_wrapped_lines_keeps_the_cursor_on_screen() {
+        let long = "word ".repeat(30);
+        let lines = (1..=12)
+            .map(|i| if i < 10 { long.clone() } else { i.to_string() })
+            .collect();
+        let mut a = App::open(lines, &[], "scott", (20, 8)).with_changes(vec![change(
+            11,
+            11,
+            ChangeKind::Changed,
+        )]);
+
+        send(&mut a, [ch('}')]);
+
+        assert_eq!(a.cursor, 10);
+        assert!(a.top <= a.cursor && a.cursor < a.top + a.height());
+    }
+
+    #[test]
+    fn a_brace_in_visual_extends_the_selection() {
+        let mut a = change_app();
+
+        send(&mut a, [ch('v'), ch('}')]);
+
+        assert_eq!(a.selection(), (0, 2));
     }
 }

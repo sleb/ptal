@@ -47,6 +47,10 @@ pub const HELP: &[Section] = &[
                 what: "next / previous threaded line",
             },
             Entry {
+                keys: "}/{",
+                what: "next / previous change since your last hand-off or close",
+            },
+            Entry {
                 keys: "/",
                 what: "search; the cursor jumps live, enter keeps it, esc goes back",
             },

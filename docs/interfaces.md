@@ -19,7 +19,8 @@ acceptance criteria and link here instead of restating commands.
 | Operation | Agent (CLI) | Human (TUI) | Core call |
 |---|---|---|---|
 | Open a review | `ptal comments <file>` (no session) | `ptal <file>` (interactive terminal only; see below) | `view` |
-| Move around the file | n/a (the agent reads the file itself) | `j`/`k`, `ctrl+d`/`ctrl+u`, `g`/`G`; aliases `↓`/`↑`, `PgDn`/`PgUp`, `End`/`Home`. In Visual mode the same keys (and `]`/`[`, `n`/`N`) extend the selection | none |
+| Move around the file | n/a (the agent reads the file itself) | `j`/`k`, `ctrl+d`/`ctrl+u`, `g`/`G`; aliases `↓`/`↑`, `PgDn`/`PgUp`, `End`/`Home`. In Visual mode the same keys (and `]`/`[`, `}`/`{`, `n`/`N`) extend the selection | none |
+| See what changed since your last look | n/a (deliberate; see asymmetries) | Gutter column 2: `┃` (green) on lines added or edited since your last hand-off or close, `-` (red) where text was removed; footer `N changes` (hunks). `}`/`{` jump to the next / previous change start (no wrap). Nothing is marked before your first hand-off or close; opening `ptal` is not a look, so markers stay until your next hand-off or close | `view` (`View.changes`) |
 | Search the file | n/a (the agent greps the file itself) | `/` opens a prompt (Normal or Visual); typing searches incrementally from where `/` was pressed and moves the cursor to the first matching line after it, `backspace` edits, `enter` keeps the position and makes the query the active search, `esc` or `ctrl+c` restores cursor and view. Smart-case. `n` / `N` jump to the next / previous matching line, wrapping; `esc` in Normal clears the search. Matches are highlighted; the footer shows `/query` | none |
 | Quit | n/a (process exits) | `q`, or `ctrl+c` in Normal mode (in Visual mode they only leave the selection) | none |
 | List open threads | `ptal comments <file>` | Gutter glyph on covered lines: `●` open, `◆` waiting on you (last comment not by `$USER`), `○` resolved only | `view(include_resolved=false)` |
@@ -88,6 +89,8 @@ the agent commands, the TUI takes its author from `$USER` only (never
 the terminal is taken over.
 
 ## Deliberate asymmetries
+
+- **Changes since the last look are TUI-only.** They answer the human's "what did the agent change?"; the agent made the edits and reads the file itself, so `comments` carries no changes.
 
 - **Only the human closes a review.** The CLI has no close command; the
   agent reads the verdict and note from `comments`.
