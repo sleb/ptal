@@ -401,9 +401,16 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   CLI never invents an author and never reads `$USER`.
 - `--lines` is `N` or `A-B`; syntax errors are `usage`, range validity
   against the file is the core's `InvalidRange`.
-- `--help` is part of the product: the top-level help carries the agent
-  workflow, the JSON shape, exit codes, and env vars; every command has an
-  example. It states facts about the tool (what a command does, what a field
+- `--help` is part of the product, split so each fact lives in one place.
+  The top-level help is the one page an agent must read: the human's entry
+  point, the turn loop (`wait` first, what each `reason` and verdict means,
+  backgrounding or `--timeout`), the concepts, author, output and error
+  conventions, the full exit-code table and env vars, and a pointer to each
+  command's help. Each command's `after_long_help` (one `*_HELP` const) has
+  its output shape, the errors it can return, and examples. Tests pin the
+  split: every `Failure::classify` code is in the top-level table, every
+  subcommand is named there, and every subcommand's help says what it prints
+  and has an example. It states facts about the tool (what a command does, what a field
   means), not policy: when to resolve, what to ask, how to hand over to the
   human belong to the user's own skill or prompt, which ptal does not ship.
 
