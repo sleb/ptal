@@ -2,7 +2,10 @@
 //! TUI wraps text: file lines, table cells, thread panel comments and the
 //! comment being typed.
 //!
-//! - A tab is four spaces; control characters are dropped.
+//! - A tab is four spaces; control characters are dropped. The comment
+//!   being typed keeps its tabs: for it (`row_ranges`, `clusters`) a
+//!   tab is one cluster four cells wide, so its rows still map to byte
+//!   ranges of the text.
 //! - Width is measured exactly as ratatui draws: grapheme clusters of the
 //!   whole line (as [`Span::styled_graphemes`] yields them), each
 //!   [`CellWidth::cell_width`] cells wide. A cluster is never split, not even
@@ -83,8 +86,9 @@ pub fn row_count(text: &str, width: usize) -> usize {
 }
 
 /// The byte range in `text` of each row of [`plain_rows`], for `text` with
-/// no tabs or control characters (which [`plain_rows`] would expand or
-/// drop). An empty `text` is one empty row, `0..0`.
+/// no control characters but tabs (which [`plain_rows`] would drop). A tab
+/// stays one cluster four cells wide, so each range, its tabs expanded, is
+/// the [`plain_rows`] row. An empty `text` is one empty row, `0..0`.
 pub(super) fn row_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
     split(text, width)
         .iter()
@@ -121,9 +125,9 @@ pub(super) fn tail(text: &str, room: usize) -> String {
     format!("{ELLIPSIS}{}", kept.concat())
 }
 
-/// The clusters of `text` (tabs already expanded) on each row: the one
-/// wrapping algorithm behind [`rows`], [`plain_rows`], [`row_count`] and
-/// [`row_ranges`].
+/// The clusters of `text` on each row, a tab four cells wide: the one
+/// wrapping algorithm behind [`rows`], [`plain_rows`], [`row_count`] (which
+/// expand tabs first) and [`row_ranges`] (which keeps them).
 fn split(text: &str, width: usize) -> Vec<Vec<&str>> {
     let mut rows = Vec::new();
     let mut row: Vec<&str> = Vec::new();
@@ -133,7 +137,7 @@ fn split(text: &str, width: usize) -> Vec<Vec<&str>> {
     let mut break_at: Option<(usize, usize)> = None;
     each_cluster(text, |cluster| {
         let symbol = &text[cluster];
-        let cells = usize::from(symbol.cell_width());
+        let cells = cells(symbol);
         if symbol.chars().all(char::is_whitespace) {
             row.push(symbol);
             used += cells;
@@ -159,8 +163,8 @@ fn split(text: &str, width: usize) -> Vec<Vec<&str>> {
 }
 
 /// The byte range in `text` of each grapheme cluster ratatui draws, in
-/// order, as [`each_cluster`] yields them. Control characters are not
-/// drawn, so they are in no range.
+/// order, as [`each_cluster`] yields them: a tab is a cluster of its own.
+/// Other control characters are not drawn, so they are in no range.
 pub(super) fn clusters(text: &str) -> Vec<Range<usize>> {
     let mut clusters = Vec::new();
     each_cluster(text, |cluster| clusters.push(cluster));
@@ -169,11 +173,32 @@ pub(super) fn clusters(text: &str) -> Vec<Range<usize>> {
 
 /// Call `f` with the byte range of each grapheme cluster of `text` that
 /// ratatui draws, in order, without collecting them: the one segmentation
-/// behind [`split`], [`clusters`] and so the draft's cursor.
+/// behind [`split`], [`clusters`] and so the draft's cursor. A tab, which
+/// ratatui would drop, is a cluster of its own (a control character is
+/// always a grapheme boundary, so this splits no cluster).
 fn each_cluster(text: &str, mut f: impl FnMut(Range<usize>)) {
-    for grapheme in Span::raw(text).styled_graphemes(Style::new()) {
-        let at = offset_in(text, grapheme.symbol);
-        f(at..at + grapheme.symbol.len());
+    let mut start = 0;
+    for piece in text.split('\t') {
+        for grapheme in Span::raw(piece).styled_graphemes(Style::new()) {
+            let at = offset_in(text, grapheme.symbol);
+            f(at..at + grapheme.symbol.len());
+        }
+        start += piece.len();
+        if start < text.len() {
+            f(start..start + 1);
+            start += 1;
+        }
+    }
+}
+
+/// Cells a cluster from [`each_cluster`] takes: [`TAB_WIDTH`] for a tab
+/// (which [`CellWidth::cell_width`] must not be given), else as ratatui
+/// draws it.
+fn cells(symbol: &str) -> usize {
+    if symbol == "\t" {
+        TAB_WIDTH
+    } else {
+        usize::from(symbol.cell_width())
     }
 }
 
@@ -244,8 +269,12 @@ fn drawn(text: &str) -> String {
     drawn
 }
 
+/// Cells a tab takes: it is drawn as this many spaces.
+const TAB_WIDTH: usize = 4;
+
+/// `text` with each tab replaced by [`TAB_WIDTH`] spaces, as it is drawn.
 fn expand_tabs(text: &str) -> String {
-    text.replace('\t', "    ")
+    text.replace('\t', &" ".repeat(TAB_WIDTH))
 }
 
 #[cfg(test)]
@@ -506,15 +535,27 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_is_one_cluster_of_its_own() {
+        assert_eq!(super::clusters("a\tb"), [0..1, 1..2, 2..3]);
+        assert_eq!(super::clusters("\t\u{301}"), [0..1, 1..3]);
+    }
+
+    #[test]
+    fn row_ranges_count_a_tab_as_four_cells_and_break_after_it() {
+        assert_eq!(row_ranges("\tab cd", 6), [0..4, 4..6]);
+        assert_eq!(row_ranges("ab\tcd", 5), [0..3, 3..5]);
+    }
+
+    #[test]
     fn row_ranges_cut_the_text_into_exactly_the_plain_rows() {
         for line in CORPUS
             .iter()
-            .filter(|line| !line.contains(char::is_control))
+            .filter(|line| !line.contains(|c: char| c.is_control() && c != '\t'))
         {
             for width in 1..=12 {
-                let cut: Vec<&str> = row_ranges(line, width)
+                let cut: Vec<String> = row_ranges(line, width)
                     .into_iter()
-                    .map(|range| &line[range])
+                    .map(|range| expand_tabs(&line[range]))
                     .collect();
 
                 assert_eq!(cut, plain_rows(line, width), "{line:?} at {width}");
