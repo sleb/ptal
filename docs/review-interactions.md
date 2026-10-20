@@ -225,8 +225,8 @@ H  resolve c1
 
 - **Ends:** resolved by its opener, with no agent work (or wasted agent work).
 - **Questions:** Should a thread the opener resolved before the hand-off be
-  visible to the agent at all? (Deferred in v0.3.0: draft comments hidden
-  until submit.)
+  visible to the agent at all? (Draft comments hidden until submit were
+  considered for v0.3.0 and cut; see "Batch submit" under [Turn](#turn).)
 
 ---
 
@@ -328,7 +328,8 @@ H  finish changes_requested "Rate limiting belongs in the CDN, not the gateway. 
 A  edit L1-22: (rewrites the plan)
      every open thread → [outdated]; quotes no longer exist
 A  read
-A  resolve c1..cN note "Superseded by the CDN rewrite."      (or leaves them for the human to judge)
+A  resolve c1 note "Superseded by the CDN rewrite."   (and so on, one call per open thread;
+                                                       or leaves them for the human to judge)
 ── A → H ──
 ```
 
@@ -367,9 +368,9 @@ A  add L22    c2 "Do internal services bypass? I couldn't find a config for it."
 ── A → H ──    (agent asks the human to run `ptal plan.md`; planned: opens a pane, #37)
 H  reply c1 "100 per key is fine; IP limit should be 60."
 H  reply c2 "They bypass; they use mTLS."
-H  add L7 c3 "Mention the Retry-After header here too."
+H  add L7 c5 "Mention the Retry-After header here too."
 ── H → A ──
-A  edit ...; resolve c1, c2, c3
+A  edit ...; resolve c1, c2, c5
 ```
 
 - **Ends:** the agent's threads answered and resolved by the agent.
@@ -477,7 +478,8 @@ round 3  H: (reviews changes since last look, #46) finish approved
 - **Ends:** approved after three human turns.
 - **Questions:** What does each round see: all threads, or what changed? A
   "round" is a pair of turns; is it a first-class thing (numbered, like
-  critty's plan versions), or only implied by revisions and hand-offs?
+  critty's plan versions; critty is a plan-review tool cited in the v0.3.0
+  issues), or only implied by revisions and hand-offs?
 
 ### D3. Comment on text the agent just wrote
 
@@ -564,15 +566,16 @@ Which basic moves each scenario uses; a starting point for the analysis.
 | Agent starts a thread | C3 |
 | Agent asks a question in a thread | A5, A6, B1, B4, D4, A7 |
 | Human answers in a thread | A5, A6b, B4, C3, D4 |
-| Agent edits the file | A1–A2, A4b, A5, A6b, B1–B4, C1–C2, C5, D1–D4 |
+| Agent edits the file | A1–A3, A4b, A5, A6b, B1–B4, C1–C3, C5, D1–D4 |
 | Human edits the file | C4 |
-| Agent resolves with a note | A1, A2, A4b, A5, A6b, B1–B4, C1–C2, C5, D1, D4 |
+| Agent resolves with a note | A1, A2, A4b, A5, A6b, B1–B4, C1–C2, C5, D1, D2, D4 |
+| Agent resolves without a note | C3, C4 |
 | Human resolves | A3, A4, A6a, A7 |
 | Human reopens | A2, D1 (by reply) |
 | Thread goes outdated | B3, C1, C5 |
 | Review-level verdict or note | C1, C2, C6, D2 |
 | Review ends or comes back | C6 |
-| Turn passes without a file change | A5, A6, A7, D4 |
+| Turn passes without a file change | A4, A5, A6, A7, D4 |
 | Writes overlap a turn | E1, E2 |
 
 ## Recurring questions
