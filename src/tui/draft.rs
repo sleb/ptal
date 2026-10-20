@@ -1,7 +1,9 @@
 //! The comment box's text being edited: a pure value, no widgets.
 //!
-//! The text holds printable characters and `\n` only, so none of it is
-//! dropped by [`wrap`] and its rows map 1:1 to byte ranges of it. (A
+//! The text holds printable characters, `\t` and `\n` only, so none of it
+//! is dropped by [`wrap`] and its rows map 1:1 to byte ranges of it. A tab
+//! comes only from a paste ([`Draft::paste`]); it is one cluster, four
+//! cells wide, and is drawn as four spaces. (A
 //! zero-width cluster, such as a zero-width space, has a range but takes no
 //! cell, so the cursor seems to stay put as it steps over one.) The cursor
 //! is a byte offset that always sits on a grapheme cluster boundary, so it
@@ -336,12 +338,14 @@ mod tests {
         assert_eq!(draft.cursor(), draft.text().len());
     }
 
-    /// `text` typed, with every `\n` from [`Draft::newline`].
+    /// `text` typed, with every `\n` from [`Draft::newline`] and every tab
+    /// pasted (it cannot be typed).
     fn lines(text: &str) -> Draft {
         let mut draft = Draft::default();
         for c in text.chars() {
             match c {
                 '\n' => draft.newline(),
+                '\t' => draft.paste("\t"),
                 c => draft.insert(c),
             }
         }
@@ -482,7 +486,7 @@ mod tests {
 
     #[test]
     fn every_boundary_is_reachable_by_down_then_right_and_editable() {
-        let text = "First para, long enough to wrap.\n\nSecond 漢字 e\u{301} line.\nThird.";
+        let text = "First para, long enough to wrap.\n\nSecond 漢字 e\u{301} line.\n\tTabbed\tline.\nThird.";
         let width = 10;
         let start = at_start(lines(text), width);
         // Every cluster boundary, with the row it shows on.
@@ -536,6 +540,43 @@ mod tests {
                 draft.cursor()
             );
         }
+    }
+
+    #[test]
+    fn a_tab_is_four_cells_and_moves_and_deletes_as_one_cluster() {
+        let mut draft = lines("\tab");
+        draft.home();
+        draft.right();
+        assert_eq!((draft.cursor(), draft.cursor_at(20)), (1, (0, 4)));
+        draft.left();
+        assert_eq!(draft.cursor(), 0);
+        draft.delete();
+        assert_eq!(draft.text(), "ab");
+
+        let mut draft = lines("a\t");
+        draft.backspace();
+        assert_eq!((draft.text(), draft.cursor()), ("a", 1));
+    }
+
+    #[test]
+    fn up_and_down_keep_the_column_across_a_tab_indented_line() {
+        let mut draft = lines("abcdef\n\tx\nabcdef");
+        draft.left();
+
+        draft.up(20);
+        assert_eq!(draft.cursor_at(20), (1, 5), "end of `\tx`");
+        draft.up(20);
+        assert_eq!(draft.cursor_at(20), (0, 5));
+        draft.down(20);
+        draft.home();
+        draft.right();
+        draft.down(20);
+        assert_eq!(draft.cursor_at(20), (2, 4), "under the tab's end");
+    }
+
+    #[test]
+    fn a_tab_indented_line_wraps_with_the_tab_counted_four() {
+        assert_eq!(shown(&lines("\tab cd"), 6), ["\tab ", "cd"]);
     }
 
     #[test]
