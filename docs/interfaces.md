@@ -82,9 +82,10 @@ the terminal is taken over.
 
 - **Navigation and quitting** are TUI-only; the agent has no cursor.
 - **The TUI reads threads, adds threads on a line or a line range, replies,
-  resolves and reopens.** Notes on resolve/reopen are CLI-only for now. A thread covers its stored
-  range whatever its state, so outdated threads carry the same gutter glyph
-  and open from it; the panel labels them `outdated`.
+  resolves and reopens.** Notes on resolve/reopen are CLI-only for now. A thread covers its range
+  as mapped to the file now, whatever its state, so an outdated thread
+  carries the same gutter glyph at its best-guess lines and opens from them;
+  the panel labels it `outdated` and shows its original quote.
 - **Ranges and long lines.** The TUI comments on one line or a range of
   whole lines (Visual mode); there is no column selection. Long
   file lines wrap at word boundaries onto continuation rows (the number and

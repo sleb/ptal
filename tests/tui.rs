@@ -928,3 +928,33 @@ fn a_comment_after_a_search_jump_anchors_on_the_line_the_cursor_is_on() {
     assert_eq!(threads.len(), 1);
     assert_eq!(threads[0].thread.anchor.start_line, 3);
 }
+
+#[test]
+fn a_thread_follows_lines_inserted_above_it_and_turns_outdated_when_edited() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let _ = sb.press(&mut app, &["j", "j", "enter", "x", "ctrl+s"]);
+
+    fs::write(&sb.file, "new\nlines\none\ntwo\nthree\nfour\nfive\n").unwrap();
+    let mut moved = sb.open();
+
+    let text = screen(&moved);
+    assert!(text.contains("● 5│three"), "{text}");
+    assert!(text.contains("  3│one"), "{text}");
+    assert!(!text.contains("outdated"), "{text}");
+    let _ = sb.press(&mut moved, &["G", "k", "k", "enter"]);
+    let panel = screen(&moved);
+    assert!(panel.contains("c1 open"), "{panel}");
+    assert!(!panel.contains("outdated"), "{panel}");
+
+    fs::write(&sb.file, "new\nlines\none\ntwo\nTHREE\nfour\nfive\n").unwrap();
+    let mut edited = sb.open();
+
+    let text = screen(&edited);
+    assert!(text.contains("● 5│THREE"), "{text}");
+    assert_eq!(edited.outdated(), 1);
+    let _ = sb.press(&mut edited, &["G", "k", "k", "enter"]);
+    let panel = screen(&edited);
+    assert!(panel.contains("c1 open · outdated"), "{panel}");
+    assert!(panel.contains("> three"), "{panel}");
+}

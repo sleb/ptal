@@ -276,9 +276,12 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
 - **stdout** is data only: JSON when not a TTY (or `--json`), a readable
   rendering when a TTY. **stderr** is diagnostics. Never mixed; on failure
   stdout is empty. `--help` and `--version` go to stdout with exit `0`.
-- `comments` prints `{"file", "threads": [...]}`. Each thread is self-contained:
-  id, `status`, `state`, `anchor` with the quote, and its flat list of
-  `comments` (resolved threads add `resolved_by`/`resolved_at`). Default is
+- `comments` prints `{"file", "revision", "threads": [...]}`; `revision` is
+  the file's current revision id, or `null` if nothing has been written
+  against this content. Each thread is self-contained: id, `status`, `state`,
+  `anchor` (its `revision`, its lines mapped to the file now, and the
+  original quote), and its flat list of `comments`, each with its `revision`
+  (resolved threads add `resolved_by`/`resolved_at`/`resolved_revision`). Default is
   open threads; `--all` includes resolved. Threads are in id order. Replies are
   flat: there is no reply tree yet.
 - `add`, `reply`, `resolve` and `reopen` print `{"file", "thread"}` (no
@@ -344,8 +347,9 @@ Its parts:
   its draft's rows at `draft_width()` (terminal columns less the border and
   one cell for a cursor after a full row), at least 1, capped at
   `min(10, rows / 2 - 2)` (at least 1), plus its 2 border rows; the view
-  shrinks to stay above it. A thread covers its stored
-  range whatever its `state`; `Marker = Waiting | Open | Resolved` is derived
+  shrinks to stay above it. A thread covers its range as
+  `view` maps it to the file read at open (or after a save), whatever its
+  `state`, so an outdated thread sits at its best-guess lines; `Marker = Waiting | Open | Resolved` is derived
   per line (waiting > open > resolved). Waiting means open and last comment
   not by `author`. The panel's thread set is recomputed from the threads and
   the cursor, never cached. `screen_rows()` maps the view to
@@ -671,7 +675,8 @@ state or `review`.
   the clamp and key effects are identical with highlighting on and off;
   `tests/tui.rs` runs scripted rounds through `step` against a real
   `Reviews` (single-line and Visual range comments checked through the real
-  `ptal comments`); the terminal guard and panic hook are tested with injected
+  `ptal comments`; a thread moving with lines inserted above it, then
+  outdated once its line is edited); the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the
   panic hook is global). A real-terminal check (pty) is manual.
 
