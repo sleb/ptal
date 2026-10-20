@@ -503,7 +503,7 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
         .ok_or(Failure::Core(Error::NoDataDir))?;
     let author = |flag: &Option<String>| resolve_author(flag.as_deref(), env.author_env.as_deref());
     match command {
-        Command::Comments { file, all } => Ok(Output::Threads(reviews.view(file, *all)?)),
+        Command::Comments { file, all } => Ok(Output::Threads(reviews.view(file, *all)?.threads)),
         Command::Add {
             file,
             lines: (start, end),

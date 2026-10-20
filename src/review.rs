@@ -3,14 +3,16 @@
 //! No printing and no terminal awareness; front ends render what these
 //! operations return.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
 use jiff::Timestamp;
 use serde::Serialize;
 
+use crate::anchor::{LineRange, map_range};
 use crate::error::{Error, Result};
-use crate::model::{Anchor, Comment, Review, State, Status, Thread};
+use crate::model::{Anchor, Comment, Review, Revision, State, Status, Thread};
 use crate::store::{Snapshots, Store, content_hash};
 
 /// Source of timestamps, injected so tests are deterministic.
@@ -39,11 +41,23 @@ impl<F: Fn() -> String> Clock for F {
 }
 
 /// A thread together with its computed [`State`], as shown to front ends.
+///
+/// The anchor's lines are mapped to the current file; its `revision` and
+/// `quote` are as stored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ThreadView {
     #[serde(flatten)]
     pub thread: Thread,
     pub state: State,
+}
+
+/// The threads of a file as it is now, from one read of it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct View {
+    /// The current content's revision id, or `None` if no write has been
+    /// made against this content yet.
+    pub revision: Option<String>,
+    pub threads: Vec<ThreadView>,
 }
 
 /// Review operations over a [`Store`].
@@ -131,9 +145,16 @@ impl<C: Clock> Reviews<C> {
         })
     }
 
-    /// The threads of `file` in id order, each with its [`State`].
+    /// The threads of `file` in id order, each mapped to the file as it is
+    /// now, with its [`State`].
     ///
-    /// Resolved threads are omitted unless `include_resolved`.
+    /// Each anchor is mapped from its own revision's snapshot (see
+    /// [`map_range`]): it is `current` only if the anchored lines are
+    /// unchanged and still read as its `quote`. Otherwise it is `outdated`
+    /// at a best-guess range within the file. A thread from before revisions
+    /// existed is checked in place, and one whose snapshot is missing is
+    /// `outdated` at its stored range, clamped to the file. Resolved threads
+    /// are omitted unless `include_resolved`. Never writes.
     ///
     /// # Errors
     /// [`Error::FileUnreadable`] plus any store error.
@@ -148,28 +169,30 @@ impl<C: Clock> Reviews<C> {
     /// reviews.add_thread(&file, 1, 1, "Hmm", "scott")?;
     /// std::fs::write(&file, "ONE\ntwo\n")?;
     ///
-    /// let views = reviews.view(&file, false)?;
-    /// assert_eq!(views[0].state, State::Outdated);
+    /// let view = reviews.view(&file, false)?;
+    /// assert_eq!(view.threads[0].state, State::Outdated);
+    /// assert_eq!(view.revision, None);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn view(&self, file: &Path, include_resolved: bool) -> Result<Vec<ThreadView>> {
-        let lines = file_lines(file)?;
-        let review = self.store.load(file)?;
-        Ok(review
-            .threads
+    pub fn view(&self, file: &Path, include_resolved: bool) -> Result<View> {
+        let content = Content::read(file)?;
+        let Review {
+            revisions, threads, ..
+        } = self.store.load(file)?;
+        let mut mapper = Mapper::new(&self.store, file, &revisions, &content);
+        let threads = threads
             .into_iter()
             .filter(|t| include_resolved || t.status == Status::Open)
-            .map(|thread| {
-                let current = quote_of(&lines, thread.anchor.start_line, thread.anchor.end_line)
-                    .is_some_and(|q| q == thread.anchor.quote);
-                let state = if current {
-                    State::Current
-                } else {
-                    State::Outdated
-                };
-                ThreadView { thread, state }
+            .map(|mut thread| {
+                let state = mapper.map(&mut thread.anchor)?;
+                Ok(ThreadView { thread, state })
             })
-            .collect())
+            .collect::<Result<_>>()?;
+        let revision = revisions
+            .into_iter()
+            .find(|r| r.sha256 == content.sha256)
+            .map(|r| r.id);
+        Ok(View { revision, threads })
     }
 
     /// Resolve thread `id`, optionally appending `note` as a comment by
@@ -367,8 +390,94 @@ impl Content {
         Ok(Self { text, sha256 })
     }
 
-    fn lines(&self) -> Vec<String> {
-        self.text.lines().map(String::from).collect()
+    fn lines(&self) -> Vec<&str> {
+        self.text.lines().collect()
+    }
+}
+
+/// Maps anchors from their own revision to one current content, loading
+/// each snapshot at most once.
+struct Mapper<'a> {
+    store: &'a Store,
+    file: &'a Path,
+    revisions: &'a [Revision],
+    current: &'a Content,
+    /// Snapshot text by revision id; `None` if it is missing.
+    snapshots: HashMap<String, Option<String>>,
+}
+
+impl<'a> Mapper<'a> {
+    fn new(
+        store: &'a Store,
+        file: &'a Path,
+        revisions: &'a [Revision],
+        current: &'a Content,
+    ) -> Self {
+        Self {
+            store,
+            file,
+            revisions,
+            current,
+            snapshots: HashMap::new(),
+        }
+    }
+
+    /// Rewrite `anchor`'s lines to the current file and say whether it is
+    /// still current. Its `revision` and `quote` are left as stored.
+    ///
+    /// # Errors
+    /// [`Error::Io`] if a snapshot exists but cannot be read.
+    fn map(&mut self, anchor: &mut Anchor) -> Result<State> {
+        let current = self.current.lines();
+        let stored = LineRange {
+            start: anchor.start_line,
+            end: anchor.end_line,
+        };
+        let mapped = match self.old_text(anchor.revision.as_deref())? {
+            Some(old) => map_range(&old.lines().collect::<Vec<_>>(), &current, stored),
+            None => {
+                // Snapshot missing: in place, never current.
+                let mut clamped = map_range(&current, &current, stored);
+                clamped.state = State::Outdated;
+                clamped
+            }
+        };
+        anchor.start_line = mapped.range.start;
+        anchor.end_line = mapped.range.end;
+        let reads_as_quote = quote_of(&current, mapped.range.start, mapped.range.end)
+            .is_some_and(|q| q == anchor.quote);
+        Ok(if mapped.state == State::Current && reads_as_quote {
+            State::Current
+        } else {
+            State::Outdated
+        })
+    }
+
+    /// The text `revision` refers to, or `None` if its snapshot is missing.
+    /// An anchor from before revisions (`None`) refers to the current text.
+    fn old_text(&mut self, revision: Option<&str>) -> Result<Option<&str>> {
+        let Some(id) = revision else {
+            return Ok(Some(&self.current.text));
+        };
+        let sha = self
+            .revisions
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| &r.sha256);
+        if sha == Some(&self.current.sha256) {
+            return Ok(Some(&self.current.text));
+        }
+        if !self.snapshots.contains_key(id) {
+            let text = match sha {
+                Some(sha) => self
+                    .store
+                    .load_revision(self.file, sha)?
+                    .and_then(|bytes| String::from_utf8(bytes).ok()),
+                None => None,
+            };
+            self.snapshots.insert(id.to_string(), text);
+        }
+        Ok(self.snapshots[id].as_deref())
     }
 }
 
@@ -426,12 +535,16 @@ fn require_author(author: &str) -> Result<()> {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn file_lines(file: &Path) -> Result<Vec<String>> {
-    Ok(Content::read(file)?.lines())
+    Ok(Content::read(file)?
+        .text
+        .lines()
+        .map(String::from)
+        .collect())
 }
 
 /// Lines `start..=end` (1-based) of `lines` joined by `\n`, or `None` if the
 /// range is empty, starts before line 1, or runs past the end.
-fn quote_of(lines: &[String], start: u32, end: u32) -> Option<String> {
+fn quote_of(lines: &[&str], start: u32, end: u32) -> Option<String> {
     if start == 0 || start > end {
         return None;
     }
@@ -439,7 +552,7 @@ fn quote_of(lines: &[String], start: u32, end: u32) -> Option<String> {
     Some(range.join("\n"))
 }
 
-fn invalid_range(lines: &[String], start: u32, end: u32) -> Error {
+fn invalid_range(lines: &[&str], start: u32, end: u32) -> Error {
     let reason = if start == 0 {
         "lines are numbered from 1"
     } else if start > end {
@@ -497,6 +610,7 @@ mod tests {
             self.reviews
                 .view(&self.file, include_resolved)
                 .unwrap()
+                .threads
                 .into_iter()
                 .map(|v| v.thread.id)
                 .collect()
@@ -656,6 +770,7 @@ mod tests {
         fx.reviews
             .view(&fx.file, true)
             .unwrap()
+            .threads
             .into_iter()
             .find(|v| v.thread.id == id)
             .unwrap()
@@ -700,23 +815,134 @@ mod tests {
         assert_eq!(state_of(&fx, "c1"), State::Outdated);
     }
 
+    fn view_of(fx: &Fixture, id: &str) -> ThreadView {
+        fx.reviews
+            .view(&fx.file, true)
+            .unwrap()
+            .threads
+            .into_iter()
+            .find(|v| v.thread.id == id)
+            .unwrap()
+    }
+
+    fn lines_of(view: &ThreadView) -> (u32, u32, State) {
+        let a = &view.thread.anchor;
+        (a.start_line, a.end_line, view.state)
+    }
+
     #[test]
-    fn inserting_lines_above_the_range_makes_the_thread_outdated() {
-        // MVP does not map anchors between versions of the file; this pins
-        // that behavior until revisions land.
+    fn lines_inserted_or_deleted_above_move_the_thread_and_keep_it_current() {
         let fx = fixture();
         fx.reviews.add_thread(&fx.file, 2, 3, "x", "s").unwrap();
 
         fs::write(&fx.file, "zero\none\ntwo\nthree\nfour\n").unwrap();
+        assert_eq!(lines_of(&view_of(&fx, "c1")), (3, 4, State::Current));
 
-        assert_eq!(state_of(&fx, "c1"), State::Outdated);
+        fs::write(&fx.file, "two\nthree\nfour\n").unwrap();
+        assert_eq!(lines_of(&view_of(&fx, "c1")), (1, 2, State::Current));
+    }
+
+    #[test]
+    fn an_edited_anchored_line_is_outdated_at_the_best_guess_with_its_quote() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 2, 3, "x", "s").unwrap();
+
+        fs::write(&fx.file, "zero\none\nTWO\nthree\nfour\n").unwrap();
+
+        let view = view_of(&fx, "c1");
+        assert_eq!(lines_of(&view), (3, 4, State::Outdated));
+        assert_eq!(view.thread.anchor.quote, "two\nthree");
+        assert_eq!(view.thread.anchor.revision.as_deref(), Some("r1"));
+    }
+
+    #[test]
+    fn removed_anchored_lines_are_outdated_and_in_bounds() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 3, 4, "x", "s").unwrap();
+
+        fs::write(&fx.file, "one\n").unwrap();
+
+        assert_eq!(lines_of(&view_of(&fx, "c1")), (1, 1, State::Outdated));
+    }
+
+    #[test]
+    fn an_edit_that_is_reverted_maps_back_to_current() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 2, 2, "x", "s").unwrap();
+        fs::write(&fx.file, "one\nTWO\nthree\nfour\n").unwrap();
+        assert_eq!(view_of(&fx, "c1").state, State::Outdated);
+
+        fs::write(&fx.file, "one\ntwo\nthree\nfour\n").unwrap();
+
+        assert_eq!(lines_of(&view_of(&fx, "c1")), (2, 2, State::Current));
+    }
+
+    #[test]
+    fn threads_on_different_revisions_each_map_from_their_own() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "s").unwrap();
+        fs::write(&fx.file, "zero\none\ntwo\nthree\nfour\n").unwrap();
+        fx.reviews.add_thread(&fx.file, 1, 1, "y", "s").unwrap();
+
+        fs::write(&fx.file, "new\nzero\none\ntwo\nthree\nfour\n").unwrap();
+
+        assert_eq!(lines_of(&view_of(&fx, "c1")), (3, 3, State::Current));
+        assert_eq!(lines_of(&view_of(&fx, "c2")), (2, 2, State::Current));
+    }
+
+    #[test]
+    fn a_legacy_anchor_before_any_write_is_checked_in_place() {
+        let fx = fixture();
+        write_legacy_review(&fx);
+        assert_eq!(lines_of(&view_of(&fx, "c1")), (2, 2, State::Current));
+
+        fs::write(&fx.file, "zero\none\ntwo\nthree\nfour\n").unwrap();
+
+        assert_eq!(lines_of(&view_of(&fx, "c1")), (2, 2, State::Outdated));
+    }
+
+    #[test]
+    fn an_adopted_legacy_anchor_whose_quote_no_longer_matched_stays_outdated() {
+        let fx = fixture();
+        write_legacy_review(&fx);
+        fs::write(&fx.file, "one\nTWO\nthree\nfour\n").unwrap();
+        fx.reviews.reply(&fx.file, "c1", "hi", "s").unwrap();
+
+        assert_eq!(lines_of(&view_of(&fx, "c1")), (2, 2, State::Outdated));
+    }
+
+    #[test]
+    fn a_missing_snapshot_is_outdated_at_the_clamped_stored_range() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 3, 4, "x", "s").unwrap();
+        let dir = fx.store.review_dir(&fx.file).unwrap();
+        fs::remove_dir_all(dir.join("revisions")).unwrap();
+
+        fs::write(&fx.file, "one\ntwo\nthree\n").unwrap();
+
+        assert_eq!(lines_of(&view_of(&fx, "c1")), (3, 3, State::Outdated));
+    }
+
+    #[test]
+    fn view_names_the_current_revision_or_none_for_new_content() {
+        let fx = fixture();
+        assert_eq!(fx.reviews.view(&fx.file, true).unwrap().revision, None);
+
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "s").unwrap();
+        assert_eq!(
+            fx.reviews.view(&fx.file, true).unwrap().revision.as_deref(),
+            Some("r1")
+        );
+
+        fs::write(&fx.file, "changed\n").unwrap();
+        assert_eq!(fx.reviews.view(&fx.file, true).unwrap().revision, None);
     }
 
     #[test]
     fn view_of_a_review_with_no_threads_is_empty() {
         let fx = fixture();
 
-        assert!(fx.reviews.view(&fx.file, true).unwrap().is_empty());
+        assert!(fx.reviews.view(&fx.file, true).unwrap().threads.is_empty());
         assert_eq!(fx.review_json(), None);
     }
 

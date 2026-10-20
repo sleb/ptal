@@ -64,7 +64,7 @@ fn a_second_store_over_the_same_dir_sees_the_write() {
 
     writer.add_thread(&env.file, 2, 2, "Why?", "scott").unwrap();
 
-    let views = reader.view(&env.file, false).unwrap();
+    let views = reader.view(&env.file, false).unwrap().threads;
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].thread.comments[0].body, "Why?");
 }
@@ -79,14 +79,14 @@ fn full_review_round() {
         .add_thread(&env.file, 2, 2, "Is this needed?", "scott")
         .unwrap();
     assert_eq!(
-        reviews.view(&env.file, false).unwrap()[0].state,
+        reviews.view(&env.file, false).unwrap().threads[0].state,
         State::Current
     );
 
     // Agent edits the file; the thread goes stale.
     fs::write(&env.file, "# Plan\nstep one, revised\nstep two\n").unwrap();
     assert_eq!(
-        reviews.view(&env.file, false).unwrap()[0].state,
+        reviews.view(&env.file, false).unwrap().threads[0].state,
         State::Outdated
     );
 
@@ -94,10 +94,10 @@ fn full_review_round() {
     reviews
         .resolve(&env.file, "c1", "claude", Some("Dropped it."))
         .unwrap();
-    assert!(reviews.view(&env.file, false).unwrap().is_empty());
+    assert!(reviews.view(&env.file, false).unwrap().threads.is_empty());
 
     // Including resolved shows the thread with both comments.
-    let all = reviews.view(&env.file, true).unwrap();
+    let all = reviews.view(&env.file, true).unwrap().threads;
     assert_eq!(all.len(), 1);
     let thread = &all[0].thread;
     assert!(matches!(thread.status, Status::Resolved { .. }));

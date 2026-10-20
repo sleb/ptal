@@ -55,7 +55,7 @@ pub struct Loaded {
 /// [`crate::Error::FileUnreadable`] plus any store error.
 pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<Loaded> {
     let lines = file_lines(file)?;
-    let threads = reviews.view(file, true)?;
+    let threads = reviews.view(file, true)?.threads;
     Ok(Loaded { lines, threads })
 }
 
@@ -213,7 +213,7 @@ fn answer<C: Clock>(
         Ok(thread) => Event::Saved {
             id: thread.id,
             done,
-            threads: reviews.view(file, true).unwrap_or_default(),
+            threads: reviews.view(file, true).unwrap_or_default().threads,
         },
         Err(error) => Event::SaveFailed(error.to_string()),
     };

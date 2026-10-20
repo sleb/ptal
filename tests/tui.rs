@@ -139,7 +139,7 @@ fn commenting_on_a_line_and_quitting_leaves_a_thread_for_the_cli() {
     let flow = sb.press(&mut app, &["j", "j", "enter", "h", "i", "ctrl+s", "q"]);
 
     assert_eq!(flow, ControlFlow::Break(()));
-    let threads = sb.reviews.view(&sb.file, false).unwrap();
+    let threads = sb.reviews.view(&sb.file, false).unwrap().threads;
     assert_eq!(threads.len(), 1);
     let thread = &threads[0].thread;
     assert_eq!((thread.anchor.start_line, thread.anchor.end_line), (3, 3));
@@ -233,7 +233,7 @@ fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
     let rendered = screen(&app);
     assert!(rendered.contains("└invalid line range"), "{rendered}");
     assert!(rendered.contains("│ok"), "{rendered}");
-    assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
+    assert!(sb.reviews.view(&sb.file, true).unwrap().threads.is_empty());
 }
 
 #[test]
@@ -253,7 +253,7 @@ fn a_failed_range_save_shows_the_error_under_the_range_title() {
     );
     assert!(rendered.contains("│ok"), "{rendered}");
     assert!(rendered.contains("└invalid line range"), "{rendered}");
-    assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
+    assert!(sb.reviews.view(&sb.file, true).unwrap().threads.is_empty());
 }
 
 #[test]
@@ -543,7 +543,7 @@ fn x_resolves_the_selected_thread_and_it_leaves_the_default_listing() {
 
     assert_eq!(flow, ControlFlow::Continue(()));
     assert_eq!(cli_comments(&sb)["threads"].as_array().unwrap().len(), 0);
-    let all = sb.reviews.view(&sb.file, true).unwrap();
+    let all = sb.reviews.view(&sb.file, true).unwrap().threads;
     assert!(
         matches!(&all[0].thread.status, ptal::model::Status::Resolved { resolved_by, .. } if resolved_by == "scott"),
         "{:?}",
@@ -591,6 +591,7 @@ fn shape(sb: &Sandbox) -> Vec<(usize, String)> {
     sb.reviews
         .view(&sb.file, true)
         .unwrap()
+        .threads
         .iter()
         .map(|v| {
             let status = match v.thread.status {
@@ -702,7 +703,7 @@ fn a_markdown_file_shows_highlighted_and_a_comment_still_quotes_the_raw_line() {
     let flow = sb.press(&mut app, &["enter", "h", "i", "ctrl+s"]);
 
     assert_eq!(flow, ControlFlow::Continue(()));
-    let threads = sb.reviews.view(&sb.file, false).unwrap();
+    let threads = sb.reviews.view(&sb.file, false).unwrap().threads;
     assert_eq!(threads[0].thread.anchor.quote, "# Title");
     assert_eq!(looks_highlighted(&app), (true, true));
 }
@@ -764,7 +765,7 @@ fn esc_cancels_a_selection_and_nothing_is_written() {
     assert_eq!(app.mode(), &Mode::Normal);
     assert_eq!(sb.press(&mut app, &["q"]), ControlFlow::Break(()));
 
-    assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
+    assert!(sb.reviews.view(&sb.file, true).unwrap().threads.is_empty());
     assert!(!sb.data.exists(), "no review data was written");
 }
 
@@ -868,7 +869,7 @@ fn a_failed_save_keeps_the_whole_multi_line_draft() {
         app.mode()
     );
     assert!(app.status().unwrap().contains("invalid line range"));
-    assert!(sb.reviews.view(&sb.file, true).unwrap().is_empty());
+    assert!(sb.reviews.view(&sb.file, true).unwrap().threads.is_empty());
 }
 
 fn reversed_columns(app: &App) -> Vec<(u16, u16)> {
@@ -923,7 +924,7 @@ fn a_comment_after_a_search_jump_anchors_on_the_line_the_cursor_is_on() {
     )
     .is_continue();
 
-    let threads = sb.reviews.view(&sb.file, true).unwrap();
+    let threads = sb.reviews.view(&sb.file, true).unwrap().threads;
     assert_eq!(threads.len(), 1);
     assert_eq!(threads[0].thread.anchor.start_line, 3);
 }
