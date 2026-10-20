@@ -273,7 +273,7 @@ fn drawn(text: &str) -> String {
 const TAB_WIDTH: usize = 4;
 
 /// `text` with each tab replaced by [`TAB_WIDTH`] spaces, as it is drawn.
-fn expand_tabs(text: &str) -> String {
+pub(super) fn expand_tabs(text: &str) -> String {
     text.replace('\t', &" ".repeat(TAB_WIDTH))
 }
 
