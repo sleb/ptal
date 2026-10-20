@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 |---|---|
 | `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State`, the review log (`Entry`, `Event`, `Side`, `Verdict`), its derived `ReviewState`, and the human's last look (`Review::last_look`) |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
-| `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state, changes since the human's last look), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review`, `wait` |
+| `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state, changes since the human's last look), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review`, `wait`, `against` (writes against the content shown), `stamp` |
 | `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff`, `wait` |
 | `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, hand off (`H`), close with a verdict (`C`), reopen the review (`O`), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
@@ -212,7 +212,8 @@ Option<bytes>` take no lock: rename makes each read a consistent snapshot. A
 review with no `review.json` loads as empty without touching disk.
 `reader(file) -> ReviewReader` resolves the review's location once;
 `ReviewReader::load()` then reads only `review.json` (`load` is
-`reader(file)?.load()`), so a poller survives the reviewed file briefly
+`reader(file)?.load()`) and `ReviewReader::bytes()` its raw bytes (`None`
+before the first write), so a poller survives the reviewed file briefly
 missing while an editor saves it by rename.
 `content_hash(bytes)` is the one hashing rule, shared with `review`.
 
@@ -224,12 +225,13 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 
 - `add_thread(file, start, end, body, author)` — anchors a new open thread to
   lines `start..=end` of the file as it is now, storing the quote.
-- `view(file, include_resolved) -> View { revision, lines, threads, review,
-  changes }` — threads in id order, open only by default, each with its
+- `view(file, include_resolved) -> View { revision, sha256, lines, threads,
+  review, changes }` — threads in id order, open only by default, each with its
   anchor's lines mapped to the file as it is now and a computed `state`;
   `revision` is the current content's id, or `None` if nothing has been
   written against it yet; `review` is the `ReviewStatus`; `changes` are the
-  `anchor::Change` hunks since the human's last look (`Review::last_look`).
+  `anchor::Change` hunks since the human's last look (`Review::last_look`);
+  `sha256` is the content hash of that read.
   One read of the file serves all of them.
 - `resolve`, `reply` and `reopen` return the thread with its lines mapped to
   the content they read (the stored anchor is unchanged); `add_thread`'s
@@ -257,6 +259,18 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 - `reopen_review(file, side, author, note?) -> ReviewStatus` — either side
   brings a closed review back, on the human's turn. On an active review it
   is `NotClosed`.
+- `against(sha256) -> Against` — the writes that depend on what a front end
+  showed: `add_thread`, `hand_off` and `close`, each refused with
+  `FileChanged` (writing nothing) when the file now hashes differently from
+  `sha256` (a `View.sha256`). The TUI makes these three through it, so a
+  hand-off or close records the content shown as the last look and a new
+  thread lands on the lines shown. `reply`, `resolve` and `reopen` are by
+  id and stay unguarded; the plain methods take no hash (the CLI's agent
+  reads the file itself).
+- `stamp(file) -> Stamp` — the SHA-256 of the file's bytes and of
+  `review.json`'s bytes (`ReviewReader::bytes`), so a poller can tell that
+  either changed without a full `view`. Hashes, not mtimes: mtime
+  granularity can miss a same-second, same-length write. Never writes.
 - `wait(file, timeout?, &dyn Ticker) -> Waited { reason, review }` — blocks
   until it is not the human's turn: `Woke::Turn` on the agent's turn,
   `Woke::Closed` when closed, `Woke::Timeout` once `timeout` passes on the
@@ -329,11 +343,13 @@ quotes and where each thread is.
   is allocated only after the thread is found, so a failed write never burns
   one. `hand_off` checks author, file, then the turn under the lock;
   `close` checks author, verdict, file, then whether it is closed;
-  `reopen_review` checks author, file, then whether it is closed.
+  `reopen_review` checks author, file, then whether it is closed. Through
+  `against`, `FileChanged` is checked right after the file is read, before
+  the range, the turn or whether the review is closed.
 
 **Contract:** returns typed results and typed errors (`NotFound`,
 `AlreadyOpen`, `AlreadyResolved`, `NotYourTurn`, `MissingVerdict`,
-`NotClosed`, `AlreadyClosed`, `InvalidRange`, `FileUnreadable`, `Locked`,
+`NotClosed`, `AlreadyClosed`, `FileChanged`, `InvalidRange`, `FileUnreadable`, `Locked`,
 `UnsupportedSchema`, `EmptyAuthor`, `EmptyBody`, `Io`, `Corrupt`). No printing, no terminal awareness. This is the
 API both front ends share. Mapping errors to exit codes belongs to `cli`.
 
@@ -820,7 +836,10 @@ hand-off or close.
   each log entry's revision and snapshot; `wait` with a fake ticker
   (returns at once when closed or on the agent's turn, a hand-off or close
   from another handle inside `sleep`, timeouts on the ticker's clock, the
-  file removed mid-wait, never writes).
+  file removed mid-wait, never writes); `against` refusing stale content
+  with `review.json` byte-identical, behaving as the plain methods on the
+  current content, its error precedence, and a guarded hand-off's last look;
+  `stamp` changing with the file or `review.json` and never writing.
 - `tests/core.rs`: concurrent writers, cross-handle reads, a full review
   round, and a whole turn round (hand-off, hand-back, close, reopen) through
   separate handles, its log and state read back from disk.

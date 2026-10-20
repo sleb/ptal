@@ -38,6 +38,11 @@ pub enum Error {
     #[error("review is already closed")]
     AlreadyClosed,
 
+    /// The file changed since the content a front end showed, so a write
+    /// made against it is refused.
+    #[error("the file changed: look again")]
+    FileChanged,
+
     /// The requested line range is not valid for the file.
     #[error("invalid line range {start}-{end}: {reason}")]
     InvalidRange {

@@ -59,6 +59,7 @@ impl Failure {
                 Error::MissingVerdict => ("missing_verdict", EXIT_CALLER),
                 Error::NotClosed => ("not_closed", EXIT_CALLER),
                 Error::AlreadyClosed => ("already_closed", EXIT_CALLER),
+                Error::FileChanged => ("file_changed", EXIT_CALLER),
                 Error::FileUnreadable { .. } => ("file_unreadable", EXIT_RUNTIME),
                 Error::Locked => ("locked", EXIT_RUNTIME),
                 Error::UnsupportedSchema { .. } => ("unsupported_schema", EXIT_RUNTIME),
@@ -295,7 +296,7 @@ Exit codes:
   0  success
   2  fix the invocation: usage, missing_author, not_found, invalid_range,
      empty_body, already_open, already_resolved, not_your_turn,
-     missing_verdict, not_closed, already_closed
+     missing_verdict, not_closed, already_closed, file_changed
   1  runtime failure: file_unreadable, locked, unsupported_schema, io,
      corrupt, no_data_dir, not_a_terminal, terminal
 
@@ -942,6 +943,7 @@ mod tests {
             (Failure::Core(Error::MissingVerdict), "missing_verdict", 2),
             (Failure::Core(Error::NotClosed), "not_closed", 2),
             (Failure::Core(Error::AlreadyClosed), "already_closed", 2),
+            (Failure::Core(Error::FileChanged), "file_changed", 2),
         ]
     }
 

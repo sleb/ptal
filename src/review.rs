@@ -109,6 +109,9 @@ pub struct View {
     /// The current content's revision id, or `None` if no write has been
     /// made against this content yet.
     pub revision: Option<String>,
+    /// The [`content_hash`] of the bytes read for this view: what a front
+    /// end that shows [`lines`](View::lines) passes to [`Reviews::against`].
+    pub sha256: String,
     /// The file's lines as read for this view, split by [`str::lines`]
     /// (`\n` or `\r\n`, a final newline ignored): exactly the lines
     /// `add_thread` quotes from and the threads are mapped to, so a front end
@@ -198,6 +201,72 @@ pub struct HandedOff {
     pub waiting: Vec<String>,
 }
 
+/// A fingerprint of a reviewed file and its review: see [`Reviews::stamp`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stamp {
+    file: String,
+    review: Option<String>,
+}
+
+/// Writes made against content a front end showed: see
+/// [`Reviews::against`].
+#[derive(Debug, Clone, Copy)]
+pub struct Against<'a, C> {
+    reviews: &'a Reviews<C>,
+    seen: &'a str,
+}
+
+impl<C: Clock> Against<'_, C> {
+    /// [`Reviews::add_thread`] on the lines that were shown.
+    ///
+    /// # Errors
+    /// As [`Reviews::add_thread`], with [`Error::FileChanged`] checked
+    /// after the file is read and before the range.
+    pub fn add_thread(
+        &self,
+        file: &Path,
+        start: u32,
+        end: u32,
+        body: &str,
+        author: &str,
+    ) -> Result<Thread> {
+        self.reviews
+            .add_thread_seen(Some(self.seen), file, start, end, body, author)
+    }
+
+    /// [`Reviews::hand_off`], recording the content shown.
+    ///
+    /// # Errors
+    /// As [`Reviews::hand_off`], with [`Error::FileChanged`] checked after
+    /// the file is read and before the turn.
+    pub fn hand_off(
+        &self,
+        file: &Path,
+        side: Side,
+        author: &str,
+        note: Option<&str>,
+    ) -> Result<HandedOff> {
+        self.reviews
+            .hand_off_seen(Some(self.seen), file, side, author, note)
+    }
+
+    /// [`Reviews::close`], recording the content shown.
+    ///
+    /// # Errors
+    /// As [`Reviews::close`], with [`Error::FileChanged`] checked after the
+    /// file is read and before whether the review is closed.
+    pub fn close(
+        &self,
+        file: &Path,
+        author: &str,
+        verdict: Option<Verdict>,
+        note: Option<&str>,
+    ) -> Result<ReviewStatus> {
+        self.reviews
+            .close_seen(Some(self.seen), file, author, verdict, note)
+    }
+}
+
 /// Review operations over a [`Store`].
 #[derive(Debug, Clone)]
 pub struct Reviews<C = SystemClock> {
@@ -248,11 +317,25 @@ impl<C: Clock> Reviews<C> {
         body: &str,
         author: &str,
     ) -> Result<Thread> {
+        self.add_thread_seen(None, file, start, end, body, author)
+    }
+
+    /// [`Reviews::add_thread`], refused with [`Error::FileChanged`] when
+    /// `seen` is set and the file read no longer hashes to it.
+    fn add_thread_seen(
+        &self,
+        seen: Option<&str>,
+        file: &Path,
+        start: u32,
+        end: u32,
+        body: &str,
+        author: &str,
+    ) -> Result<Thread> {
         require_author(author)?;
         if body.trim().is_empty() {
             return Err(Error::EmptyBody);
         }
-        let content = Content::read(file)?;
+        let content = Content::read(file)?.seen(seen)?;
         let lines = content.lines();
         let quote =
             quote_of(&lines, start, end).ok_or_else(|| invalid_range(&lines, start, end))?;
@@ -339,9 +422,60 @@ impl<C: Clock> Reviews<C> {
         Ok(View {
             revision: review.revision_id(&content.sha256).map(String::from),
             lines: content.text.lines().map(String::from).collect(),
+            sha256: content.sha256.clone(),
             threads,
             review: ReviewStatus::of(&review),
             changes,
+        })
+    }
+
+    /// The writes that depend on what a front end showed, made against the
+    /// content hashing to `sha256` (a [`View::sha256`]).
+    ///
+    /// Each refuses with [`Error::FileChanged`], writing nothing, when the
+    /// file now reads differently, so a hand-off or close records the
+    /// content that was shown as the human's last look, and a new thread
+    /// lands on the lines that were shown.
+    ///
+    /// # Examples
+    /// ```
+    /// # use ptal::{Error, model::Side, review::Reviews, store::Store};
+    /// # let dir = tempfile::tempdir()?;
+    /// # let file = dir.path().join("plan.md");
+    /// # std::fs::write(&file, "one\n")?;
+    /// let reviews = Reviews::new(Store::new(dir.path().join("data")));
+    /// let shown = reviews.view(&file, true)?;
+    /// std::fs::write(&file, "ONE\n")?;
+    ///
+    /// let refused = reviews.against(&shown.sha256).hand_off(&file, Side::Human, "scott", None);
+    /// assert!(matches!(refused, Err(Error::FileChanged)));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn against<'a>(&'a self, sha256: &'a str) -> Against<'a, C> {
+        Against {
+            reviews: self,
+            seen: sha256,
+        }
+    }
+
+    /// A cheap fingerprint of `file` and its review, to tell whether either
+    /// changed since the last look without a full [`Reviews::view`].
+    ///
+    /// The hashes of the file's bytes and of `review.json`'s bytes: unlike
+    /// mtimes, they can't miss a same-second, same-length write. Never
+    /// writes.
+    ///
+    /// # Errors
+    /// [`Error::FileUnreadable`], or a store error reading `review.json`.
+    pub fn stamp(&self, file: &Path) -> Result<Stamp> {
+        let bytes = fs::read(file).map_err(|source| Error::FileUnreadable {
+            path: file.to_path_buf(),
+            source,
+        })?;
+        let review = self.store.reader(file)?.bytes()?;
+        Ok(Stamp {
+            file: content_hash(&bytes),
+            review: review.as_deref().map(content_hash),
         })
     }
 
@@ -604,9 +738,22 @@ impl<C: Clock> Reviews<C> {
         author: &str,
         note: Option<&str>,
     ) -> Result<HandedOff> {
+        self.hand_off_seen(None, file, side, author, note)
+    }
+
+    /// [`Reviews::hand_off`], refused with [`Error::FileChanged`] when
+    /// `seen` is set and the file read no longer hashes to it.
+    fn hand_off_seen(
+        &self,
+        seen: Option<&str>,
+        file: &Path,
+        side: Side,
+        author: &str,
+        note: Option<&str>,
+    ) -> Result<HandedOff> {
         require_author(author)?;
-        let content = Content::read(file)?;
-        let stamp = Stamp {
+        let content = Content::read(file)?.seen(seen)?;
+        let signature = Signature {
             side,
             author,
             created_at: self.clock.now(),
@@ -617,7 +764,7 @@ impl<C: Clock> Reviews<C> {
             if review.state() != ReviewState::Turn(side) {
                 return Err(Error::NotYourTurn);
             }
-            stamp.log(review, snapshots, &content, Event::HandOff);
+            signature.log(review, snapshots, &content, Event::HandOff);
             let waiting = review
                 .threads
                 .iter()
@@ -669,10 +816,23 @@ impl<C: Clock> Reviews<C> {
         verdict: Option<Verdict>,
         note: Option<&str>,
     ) -> Result<ReviewStatus> {
+        self.close_seen(None, file, author, verdict, note)
+    }
+
+    /// [`Reviews::close`], refused with [`Error::FileChanged`] when `seen`
+    /// is set and the file read no longer hashes to it.
+    fn close_seen(
+        &self,
+        seen: Option<&str>,
+        file: &Path,
+        author: &str,
+        verdict: Option<Verdict>,
+        note: Option<&str>,
+    ) -> Result<ReviewStatus> {
         require_author(author)?;
         let verdict = verdict.ok_or(Error::MissingVerdict)?;
-        let content = Content::read(file)?;
-        let stamp = Stamp {
+        let content = Content::read(file)?.seen(seen)?;
+        let signature = Signature {
             side: Side::Human,
             author,
             created_at: self.clock.now(),
@@ -683,7 +843,7 @@ impl<C: Clock> Reviews<C> {
             if let ReviewState::Closed(_) = review.state() {
                 return Err(Error::AlreadyClosed);
             }
-            stamp.log(review, snapshots, &content, Event::Close { verdict });
+            signature.log(review, snapshots, &content, Event::Close { verdict });
             Ok(ReviewStatus::of(review))
         })
     }
@@ -721,7 +881,7 @@ impl<C: Clock> Reviews<C> {
     ) -> Result<ReviewStatus> {
         require_author(author)?;
         let content = Content::read(file)?;
-        let stamp = Stamp {
+        let signature = Signature {
             side,
             author,
             created_at: self.clock.now(),
@@ -732,7 +892,7 @@ impl<C: Clock> Reviews<C> {
             let ReviewState::Closed(_) = review.state() else {
                 return Err(Error::NotClosed);
             };
-            stamp.log(review, snapshots, &content, Event::Reopen);
+            signature.log(review, snapshots, &content, Event::Reopen);
             Ok(ReviewStatus::of(review))
         })
     }
@@ -772,14 +932,14 @@ fn new_comment(
 
 /// Who writes a log entry, when, and with what note: everything about it
 /// that is known before the review is locked.
-struct Stamp<'a> {
+struct Signature<'a> {
     side: Side,
     author: &'a str,
     created_at: String,
     note: Option<&'a str>,
 }
 
-impl Stamp<'_> {
+impl Signature<'_> {
     /// Append an `event` entry to `review`'s log, recording the revision of
     /// `content` (snapshotted if new) and the review's `next_id`. A blank
     /// note is no note. Call this only once the operation can no longer fail.
@@ -816,6 +976,17 @@ impl Content {
         })?;
         let sha256 = content_hash(text.as_bytes());
         Ok(Self { text, sha256 })
+    }
+
+    /// This content, unless `seen` is set and it hashes differently.
+    ///
+    /// # Errors
+    /// [`Error::FileChanged`].
+    fn seen(self, seen: Option<&str>) -> Result<Self> {
+        match seen {
+            Some(sha) if sha != self.sha256 => Err(Error::FileChanged),
+            _ => Ok(self),
+        }
     }
 
     fn lines(&self) -> Vec<&str> {
@@ -2582,5 +2753,184 @@ mod tests {
             .wait(&fx.file, SECOND, &FakeTicker::idle())
             .unwrap();
         assert_eq!(fx.review_json(), bytes);
+    }
+
+    // --- writes against the content a front end showed ---
+
+    fn sha_now(fx: &Fixture) -> String {
+        content_hash(&fs::read(&fx.file).unwrap())
+    }
+
+    #[test]
+    fn view_carries_the_hash_of_the_content_it_read() {
+        let fx = fixture();
+
+        let view = fx.reviews.view(&fx.file, true).unwrap();
+
+        assert_eq!(view.sha256, sha_now(&fx));
+    }
+
+    #[test]
+    fn writes_against_stale_content_are_file_changed_and_write_nothing() {
+        let fx = fixture();
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        let seen = sha_now(&fx);
+        fs::write(&fx.file, EDITED).unwrap();
+        let bytes = fx.review_json();
+        let stale = fx.reviews.against(&seen);
+
+        let results = [
+            stale.add_thread(&fx.file, 1, 1, "x", "scott").map(drop),
+            stale
+                .hand_off(&fx.file, Side::Human, "scott", None)
+                .map(drop),
+            stale
+                .close(&fx.file, "scott", Some(Verdict::Approved), None)
+                .map(drop),
+        ];
+
+        for result in results {
+            assert!(matches!(result, Err(Error::FileChanged)), "{result:?}");
+        }
+        assert_eq!(fx.review_json(), bytes);
+        assert_eq!(snapshot_of(&fx, EDITED), None);
+    }
+
+    #[test]
+    fn writes_against_the_current_content_behave_as_the_plain_ones() {
+        let guarded = fixture();
+        let plain = fixture();
+        let sha = sha_now(&guarded);
+        let against = guarded.reviews.against(&sha);
+
+        assert_eq!(
+            against
+                .add_thread(&guarded.file, 2, 3, "Why?", "scott")
+                .unwrap(),
+            plain
+                .reviews
+                .add_thread(&plain.file, 2, 3, "Why?", "scott")
+                .unwrap()
+        );
+        assert_eq!(
+            against
+                .hand_off(&guarded.file, Side::Human, "scott", Some("Go"))
+                .unwrap(),
+            plain
+                .reviews
+                .hand_off(&plain.file, Side::Human, "scott", Some("Go"))
+                .unwrap()
+        );
+        assert_eq!(
+            against
+                .close(&guarded.file, "scott", Some(Verdict::Dropped), None)
+                .unwrap(),
+            plain
+                .reviews
+                .close(&plain.file, "scott", Some(Verdict::Dropped), None)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn a_guarded_write_checks_author_and_file_before_file_changed_then_the_rest() {
+        let fx = fixture();
+        let stale = fx.reviews.against("not the hash");
+        let missing = fx.file.with_file_name("nope.md");
+
+        assert!(matches!(
+            stale.add_thread(&fx.file, 1, 1, "x", " "),
+            Err(Error::EmptyAuthor)
+        ));
+        assert!(matches!(
+            stale.close(&fx.file, "scott", None, None),
+            Err(Error::MissingVerdict)
+        ));
+        assert!(matches!(
+            stale.hand_off(&missing, Side::Human, "scott", None),
+            Err(Error::FileUnreadable { .. })
+        ));
+        assert!(matches!(
+            stale.add_thread(&fx.file, 9, 9, "x", "scott"),
+            Err(Error::FileChanged)
+        ));
+        assert!(matches!(
+            stale.hand_off(&fx.file, Side::Agent, "claude", None),
+            Err(Error::FileChanged)
+        ));
+
+        let current = sha_now(&fx);
+        let fresh = fx.reviews.against(&current);
+        assert!(matches!(
+            fresh.add_thread(&fx.file, 9, 9, "x", "scott"),
+            Err(Error::InvalidRange { .. })
+        ));
+        assert!(matches!(
+            fresh.hand_off(&fx.file, Side::Agent, "claude", None),
+            Err(Error::NotYourTurn)
+        ));
+    }
+
+    #[test]
+    fn a_guarded_hand_off_records_the_content_shown_as_the_last_look() {
+        let fx = fixture();
+        let shown = fx.reviews.view(&fx.file, true).unwrap();
+
+        fx.reviews
+            .against(&shown.sha256)
+            .hand_off(&fx.file, Side::Human, "scott", None)
+            .unwrap();
+        fs::write(&fx.file, EDITED).unwrap();
+
+        assert_eq!(
+            changes_now(&fx),
+            expected_changes("one\ntwo\nthree\nfour\n", EDITED)
+        );
+    }
+
+    // --- the change stamp ---
+
+    #[test]
+    fn the_stamp_changes_when_the_file_or_the_review_changes_and_not_otherwise() {
+        let fx = fixture();
+        let other = Reviews::with_clock(fx.store.clone(), later_now as fn() -> String);
+        let first = fx.reviews.stamp(&fx.file).unwrap();
+
+        assert_eq!(fx.reviews.stamp(&fx.file).unwrap(), first);
+        fs::write(&fx.file, EDITED).unwrap();
+        let edited = fx.reviews.stamp(&fx.file).unwrap();
+        assert_ne!(edited, first);
+        other.add_thread(&fx.file, 1, 1, "Hmm", "claude").unwrap();
+        let written = fx.reviews.stamp(&fx.file).unwrap();
+        assert_ne!(written, edited);
+        assert_eq!(fx.reviews.stamp(&fx.file).unwrap(), written);
+    }
+
+    #[test]
+    fn the_stamp_never_writes() {
+        let fx = fixture();
+        fx.reviews.stamp(&fx.file).unwrap();
+        assert_eq!(fx.review_json(), None);
+
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        fs::write(&fx.file, EDITED).unwrap();
+        let bytes = fx.review_json();
+        fx.reviews.stamp(&fx.file).unwrap();
+        assert_eq!(fx.review_json(), bytes);
+        assert_eq!(snapshot_of(&fx, EDITED), None);
+    }
+
+    #[test]
+    fn the_stamp_of_a_missing_file_is_unreadable() {
+        let fx = fixture();
+
+        assert!(matches!(
+            fx.reviews.stamp(&fx.file.with_file_name("nope.md")),
+            Err(Error::FileUnreadable { .. })
+        ));
     }
 }

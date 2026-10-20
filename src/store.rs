@@ -211,6 +211,21 @@ impl ReviewReader {
     pub fn load(&self) -> Result<Review> {
         read_review(&self.review_path, &self.canonical)
     }
+
+    /// The raw bytes of `review.json`, or `None` if none has been saved.
+    ///
+    /// # Errors
+    /// [`Error::Io`].
+    pub fn bytes(&self) -> Result<Option<Vec<u8>>> {
+        match fs::read(&self.review_path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(Error::Io {
+                path: self.review_path.clone(),
+                source,
+            }),
+        }
+    }
 }
 
 /// File contents staged for snapshotting by a [`Store::with_review`]
