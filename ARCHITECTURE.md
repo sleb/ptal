@@ -595,8 +595,11 @@ Its parts:
   spaces). A well-formed markdown table shows aligned, in place; one too
   wide for the view wraps its cells inside their columns. Each table line is
   still one number, glyph and highlight, over all of its rows. Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim),
-  then the line number, then `│`; the glyph and number show on a line's first
-  row only, continuation rows keep just the `│`. The cursor highlight covers
+  then a change glyph in its own column, `┃` (green) on a line added or
+  edited since the human's last look and `-` (red) where text was removed,
+  then the line number, then `│`; the glyphs and number show on a line's first
+  row only, continuation rows keep just the `│`. Both glyphs are patched over
+  the row's style, so they keep the cursor background. The cursor highlight covers
   every row of every selected line (`App::selection()`: the cursor line, or
   the whole `Visual` range, also while its comment box is open), wrapped and
   table rows included; the moving end gets no separate mark. A highlighted
@@ -615,7 +618,8 @@ Its parts:
   Footer: path (or the last save message, on one row as on the comment
   box's border),
   `L<line>/<total>`, `visual <a>-<b>` in `Visual` (1-based, ascending),
-  `N outdated` (open threads only), key hints, the whole row `wrap::cut` to
+  `N outdated` (open threads only), `N changes` (hunks since the last
+  look, `1 change` for one, nothing when there are none), key hints, the whole row `wrap::cut` to
   the terminal width, so a footer too wide ends in `…`. The input box is titled
   `Comment on line N as <author>`, `Comment on lines A-B as <author>` for a
   range, `Reply to <id> as <author>`, `Hand off to the agent (note

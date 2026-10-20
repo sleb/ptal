@@ -12,6 +12,7 @@ use ratatui::widgets::{Block, Widget};
 use super::app::{App, BANNER_ROWS, Marker, Mode, OVERLAY_CHROME_ROWS, Overlay, ScreenRow, Target};
 use super::draft::Draft;
 use super::wrap;
+use crate::anchor::ChangeKind;
 use crate::model::Verdict;
 
 /// Draw `app` onto `frame`. Reads state only; never mutates it.
@@ -128,6 +129,19 @@ fn draw_file(app: &App, buf: &mut Buffer, area: Rect) {
             let (glyph, color) = glyph(marker);
             buf.set_stringn(row.x, row.y, glyph, 1, style.patch(color));
         }
+        if let Some(kind) = app.change(line).filter(|_| first) {
+            let (glyph, color) = change_glyph(kind);
+            buf.set_stringn(row.x + 1, row.y, glyph, 1, style.patch(color));
+        }
+    }
+}
+
+/// The gutter's second column for a line changed since the human's last
+/// look. Like [`glyph`], the shape differs, not just the color.
+fn change_glyph(kind: ChangeKind) -> (&'static str, Style) {
+    match kind {
+        ChangeKind::Changed => ("┃", Style::new().fg(Color::Green)),
+        ChangeKind::Removed => ("-", Style::new().fg(Color::Red)),
     }
 }
 
@@ -207,6 +221,11 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
     }
     if app.outdated() > 0 {
         parts.push(format!("{} outdated", app.outdated()));
+    }
+    match app.changes() {
+        0 => {}
+        1 => parts.push("1 change".to_string()),
+        n => parts.push(format!("{n} changes")),
     }
     if let Some(query) = app.active_search() {
         parts.push(format!("/{query}"));
@@ -902,6 +921,93 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:sea�
                 banner_row(W)
             )
         );
+    }
+
+    use crate::anchor::{Change, ChangeKind, LineRange};
+
+    fn change(start: u32, end: u32, kind: ChangeKind) -> Change {
+        Change {
+            range: LineRange { start, end },
+            kind,
+        }
+    }
+
+    #[test]
+    fn changed_lines_and_removal_points_are_marked_and_counted() {
+        let threads = [
+            open_thread("c1", (2, 2), State::Current),
+            open_thread("c2", (5, 5), State::Outdated),
+        ];
+        let app = app_with(lines(12), &threads, 8).with_changes(vec![
+            change(2, 3, ChangeKind::Changed),
+            change(5, 5, ChangeKind::Removed),
+        ]);
+
+        let screen = screen(&draw(&app, W, 8));
+
+        assert_eq!(
+            screen,
+            format!(
+                "{}
+   1│line 1
+●┃ 2│line 2
+ ┃ 3│line 3
+   4│line 4
+●- 5│line 5
+   6│line 6
+plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s…",
+                banner_row(W)
+            )
+        );
+    }
+
+    #[test]
+    fn change_glyphs_differ_in_color_and_keep_the_cursor_background() {
+        let app = app_with(lines(4), &[], 8).with_changes(vec![
+            change(1, 1, ChangeKind::Changed),
+            change(3, 3, ChangeKind::Removed),
+        ]);
+
+        let terminal = draw(&app, W, 8);
+
+        let buffer = terminal.backend().buffer();
+        let cell = |n: u16| &buffer[(1, n + 1)];
+        assert_eq!(cell(0).fg, Color::Green);
+        assert_eq!(cell(0).bg, Color::DarkGray, "the cursor line");
+        assert_eq!(cell(2).symbol(), "-");
+        assert_eq!(cell(2).fg, Color::Red);
+        assert_eq!(cell(2).bg, Color::Reset);
+    }
+
+    #[test]
+    fn a_wrapped_changed_line_is_marked_on_its_first_row_only() {
+        let lines = vec!["aaaa bbbb cccc dddd".to_string(), "x".to_string()];
+        let app = App::open(lines, &[], "scott", (14, 6))
+            .labeled("plan.md")
+            .with_changes(vec![change(1, 1, ChangeKind::Changed)]);
+
+        let screen = screen(&draw(&app, 14, 6));
+
+        let rows: Vec<&str> = screen.lines().skip(1).take(3).collect();
+        assert_eq!(rows, [" ┃1│aaaa bbbb", "   │cccc dddd", "  2│x"]);
+    }
+
+    #[test]
+    fn one_change_is_counted_in_the_singular() {
+        let app = app_with(lines(3), &[], 8).with_changes(vec![change(2, 2, ChangeKind::Changed)]);
+
+        let screen = screen(&draw(&app, W, 8));
+
+        assert!(screen.contains("L1/3  1 change  enter:"), "{screen}");
+    }
+
+    #[test]
+    fn without_changes_the_footer_has_no_change_count() {
+        let app = app_with(lines(3), &[], 8);
+
+        let screen = screen(&draw(&app, W, 8));
+
+        assert!(!screen.contains("change"), "{screen}");
     }
 
     #[test]
