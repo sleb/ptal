@@ -35,7 +35,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State`, the review log (`Entry`, `Event`, `Side`, `Verdict`) and its derived `ReviewState` |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
 | `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review` |
-| `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
+| `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff` |
 | `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Help` modes, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor` | Built: `map_range`, `Diff`, `clamp` (Myers line diff via `similar`) |
@@ -241,9 +241,10 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
   brings a closed review back, on the human's turn. On an active review it
   is `NotClosed`.
 
-`ReviewStatus { turn, verdict, latest }` is the review's state as front ends
-see it: `turn` is `None` exactly when the review is closed, `verdict` is
-`Some` exactly then, and `latest` is the last log entry, if any.
+`ReviewStatus { state, latest }` is the review's state as front ends see
+it: the `ReviewState` and the last log entry, if any. It serializes as
+`{"turn", "verdict", "latest"}`: `turn` is `null` exactly when the review is
+closed, and `verdict` is set exactly then.
 
 `View.lines` is the file's lines from the same read the threads were mapped
 against, so a front end that displays them shows exactly what `add_thread`
@@ -312,7 +313,7 @@ with the process facts (store, clock, `PTAL_AUTHOR`, TTY flags) injected via
 `Env`, so every path is testable in-process; `main` only fills `Env` from the
 real process.
 
-Commands: `comments`, `add`, `resolve`, `reply`, `reopen`. Bare `ptal <file>` launches the TUI
+Commands: `comments`, `add`, `resolve`, `reply`, `reopen`, `handoff`. Bare `ptal <file>` launches the TUI
 (`args_conflicts_with_subcommands`; a file named like a subcommand is written
 `./name`). `run` splits into `run_command` and `launch_tui`; the latter
 refuses everything it can before the terminal is touched: no TTY on stdin and
@@ -330,16 +331,26 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   original quote), and its flat list of `comments`, each with its `revision`
   (resolved threads add `resolved_by`/`resolved_at`/`resolved_revision`). Default is
   open threads; `--all` includes resolved. Threads are in id order. Replies are
-  flat: there is no reply tree yet.
+  flat: there is no reply tree yet. A top-level `review` is the
+  `ReviewStatus`: `turn`, `verdict`, and `latest`, the last log entry in its
+  on-disk shape. Only the latest entry is printed; the full log stays on
+  disk.
 - `add`, `reply`, `resolve` and `reopen` print `{"file", "thread"}` (no
   `state`: it is a read-time concept). The printed anchor's lines are mapped
   to the file as it is now, like `comments`, so the CLI never shows unmapped
   lines; `anchor.revision` stays the revision the thread was created on. Resolving a resolved thread fails with
   `already_resolved` and reopening an open thread with `already_open` (both
   exit `2`).
-- There is no `waiting_on` field. A thread is waiting on an agent when its
-  last comment's `author` is not the agent's `--as` name (exact match); the
-  help says so and tells agents to use one stable name.
+- `handoff <file> [--side human|agent] [--note]` prints `{"file", "review",
+  "waiting"}`; `reopen <file>` with no thread id reopens the review and
+  prints `{"file", "review"}`. The CLI acts as the agent; `--side human`
+  overrides it on these two (a flag, not an environment variable, so an
+  agent can't inherit it). `--side` on a thread reopen is `usage`: threads
+  have no side. There is no CLI close; only the human closes, in the TUI.
+- Threads carry no `waiting_on` field. A thread is waiting on an agent when
+  its last comment's `author` is not the agent's `--as` name (exact match);
+  the help says so and tells agents to use one stable name. A hand-off's
+  `waiting` applies the same rule to the author handing off.
 - Errors are one line on stderr, `{"error": {"code", "message"}}` (readable
   text on a TTY stderr unless `--json`). The code-to-exit mapping is the
   `Failure::classify` table, pinned by a unit test and documented in

@@ -12,7 +12,7 @@ threads. You re-open ptal and see what changed. Comments, replies, and resolved
 state persist across rounds and revisions.
 
 > **Status:** core library, the agent CLI (`comments`, `add`, `resolve`, `reply`,
-> `reopen`), and a TUI implemented: scroll a file (long lines wrap, markdown
+> `reopen`, `handoff`), and a TUI implemented: scroll a file (long lines wrap, markdown
 > tables align, markdown structure is highlighted), comment on a line or a
 > selected range, read threads and the agent's replies, jump between threads,
 > search, write multi-line comments, reply, resolve, reopen, `?` lists the
@@ -167,6 +167,8 @@ ptal add plan.md --lines 12-14 "Why not X?" --as claude
 ptal reply plan.md c3 "Which of the two do you mean?" --as claude
 ptal resolve plan.md c3 --as claude --note "Done, see step 2."
 ptal reopen plan.md c3 --as scott --note "Not fixed."
+ptal handoff plan.md --as claude --note "Addressed all but c4."   # your turn, human
+ptal reopen plan.md --as claude   # a closed review, when asked to revise again
 ptal --help                    # the full agent guide: workflow, JSON shape, exit codes
 ```
 

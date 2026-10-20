@@ -23,7 +23,7 @@ acceptance criteria and link here instead of restating commands.
 | Search the file | n/a (the agent greps the file itself) | `/` opens a prompt (Normal or Visual); typing searches incrementally from where `/` was pressed and moves the cursor to the first matching line after it, `backspace` edits, `enter` keeps the position and makes the query the active search, `esc` or `ctrl+c` restores cursor and view. Smart-case. `n` / `N` jump to the next / previous matching line, wrapping; `esc` in Normal clears the search. Matches are highlighted; the footer shows `/query` | none |
 | Quit | n/a (process exits) | `q`, or `ctrl+c` in Normal mode (in Visual mode they only leave the selection) | none |
 | List open threads | `ptal comments <file>` | Gutter glyph on covered lines: `●` open, `◆` waiting on you (last comment not by `$USER`), `○` resolved only | `view(include_resolved=false)` |
-| Read thread text | `comments` output: the file's current `revision`, and per thread id, status, `state`, range, quote, comments; `revision` fields say which version of the file the anchor, each comment and a resolve referred to | `enter` on a threaded line opens the thread panel: status, `outdated`, quote, every comment with author, time and body | `view` |
+| Read thread text | `comments` output: the file's current `revision`, the review's state (`review`), and per thread id, status, `state`, range, quote, comments; `revision` fields say which version of the file the anchor, each comment and a resolve referred to | `enter` on a threaded line opens the thread panel: status, `outdated`, quote, every comment with author, time and body | `view` |
 | Open a thread's conversation | n/a | In the panel: `tab`/`shift+tab` select among the line's threads (wraps), `j`/`k` (`↓`/`↑`) scroll, `r` replies, `x` resolves, `o` reopens the selected thread, `esc` (or `q`, `ctrl+c`) closes | none |
 | Jump between threads | n/a | `]` / `[`: next / previous threaded line, no wrap | none |
 | List resolved threads | `ptal comments <file> --all` | Shown in the panel (`resolved by <name>`, dimmed) and as `○` in the gutter | `view(include_resolved=true)` |
@@ -33,6 +33,10 @@ acceptance criteria and link here instead of restating commands.
 | Resolve a thread | `ptal resolve <file> <id> --as <name> [--note "..."]` (`already_resolved` if resolved) | `x` in the thread panel resolves the selected thread (no note; already resolved: footer says so) | `resolve` |
 | Reply to a thread | `ptal reply <file> <id> "text" --as <name>` (reopens a resolved thread) | `r` in the thread panel replies to the selected thread (the box says `Reply to <id>`); `ctrl+s` saves, `esc` (or `ctrl+c`) cancels as for a new comment | `reply` |
 | Reopen a thread | `ptal reopen <file> <id> --as <name> [--note "..."]` (`already_open` if open) | `o` in the thread panel reopens the selected resolved thread (no note; already open: footer says so) | `reopen` |
+| See whose turn it is | `review` in `comments`: `turn` (`human`, `agent`, or `null` when closed), `verdict` (`approved`, `dropped`, or `null`), and `latest`, the last hand-off, close or reopen with its side, author, time, revision, `next_id` and note; on a TTY, a `turn: agent` or `closed: approved` header and the latest note | Planned (#35) | `view` |
+| Hand off | `ptal handoff <file> --as <name> [--note "..."]`, as the agent (`--side human` to act as the human); prints `{"file", "review", "waiting"}`, where `waiting` lists open threads whose last comment isn't yours; `not_your_turn` if the side doesn't hold the turn or the review is closed | Planned (#35) | `hand_off` |
+| Close a review | n/a: only the human closes | Planned (#35) | `close` |
+| Reopen a review | `ptal reopen <file> --as <name> [--note "..."]` (no thread id), as the agent (`--side human` to act as the human); prints `{"file", "review"}`; back to the human's turn; `not_closed` if active | Planned (#35) | `reopen_review` |
 | See whether a thread is stale | `state: "current" \| "outdated"` in `comments`; the range is where the anchored text is now (edits above move it), `outdated` once an anchored line is edited or removed, at a best guess with the original quote | `outdated` in the thread panel; the footer counts open outdated threads (`N outdated`); the gutter and panel follow the same mapped range | `view` |
 | Learn the tool | `ptal --help` (workflow, conversation model, JSON shape, exit codes); `ptal <command> --help` has an example | `?` in Normal mode or the thread panel opens a full-screen key listing, grouped by mode (`?`, `esc`, `q` or `ctrl+c` close it; `j`/`k`, `ctrl+d`/`ctrl+u`, `PgDn`/`PgUp`, `g`/`G`, `Home`/`End` scroll it); the footer ends with `?:help` when it fits | none |
 
@@ -76,7 +80,7 @@ the TUI runs.
 ## Bare `ptal <file>` and subcommand names
 
 `ptal <file>` opens the TUI. A first argument that is exactly `comments`,
-`add`, `resolve`, `reply`, `reopen` or `help` is the subcommand; to open a file with one of those names,
+`add`, `resolve`, `reply`, `reopen`, `handoff` or `help` is the subcommand; to open a file with one of those names,
 write `./comments`. With no arguments, `ptal` prints help and exits `2`. The
 `--json` flag is accepted with a file and has no effect on the TUI. Unlike
 the agent commands, the TUI takes its author from `$USER` only (never
@@ -85,6 +89,8 @@ the terminal is taken over.
 
 ## Deliberate asymmetries
 
+- **Only the human closes a review.** The CLI has no close command; the
+  agent reads the verdict and note from `comments`.
 - **Navigation and quitting** are TUI-only; the agent has no cursor.
 - **The TUI reads threads, adds threads on a line or a line range, replies,
   resolves and reopens.** Notes on resolve/reopen are CLI-only for now. A thread covers its range

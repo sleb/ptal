@@ -72,27 +72,37 @@ pub struct View {
 /// A review's overall state as shown to front ends: whose turn it is, or
 /// the verdict if closed, and the latest log entry.
 ///
-/// `turn` is `None` exactly when the review is closed, and `verdict` is
-/// `Some` exactly then. `latest` is `None` for a review with no hand-off,
-/// close or reopen yet.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// On the wire, `{"turn", "verdict", "latest"}`: `turn` is `null` exactly
+/// when the review is closed, and `verdict` is set exactly then. `latest`
+/// is `null` for a review with no hand-off, close or reopen yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewStatus {
-    pub turn: Option<Side>,
-    pub verdict: Option<Verdict>,
+    pub state: ReviewState,
     pub latest: Option<Entry>,
 }
 
 impl ReviewStatus {
     /// The state of `review`, derived from its log.
     fn of(review: &Review) -> Self {
-        let (turn, verdict) = match review.state() {
-            ReviewState::Turn(side) => (Some(side), None),
-            ReviewState::Closed(verdict) => (None, Some(verdict)),
-        };
         Self {
-            turn,
-            verdict,
+            state: review.state(),
             latest: review.log.last().cloned(),
+        }
+    }
+
+    /// The side expected to act next, or `None` when closed.
+    pub fn turn(&self) -> Option<Side> {
+        match self.state {
+            ReviewState::Turn(side) => Some(side),
+            ReviewState::Closed(_) => None,
+        }
+    }
+
+    /// The verdict, or `None` while the review is active.
+    pub fn verdict(&self) -> Option<Verdict> {
+        match self.state {
+            ReviewState::Turn(_) => None,
+            ReviewState::Closed(verdict) => Some(verdict),
         }
     }
 }
@@ -101,6 +111,26 @@ impl Default for ReviewStatus {
     /// A fresh review: the human's turn, nothing logged.
     fn default() -> Self {
         Self::of(&Review::new(""))
+    }
+}
+
+impl Serialize for ReviewStatus {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            turn: Option<Side>,
+            verdict: Option<Verdict>,
+            latest: &'a Option<Entry>,
+        }
+        Wire {
+            turn: self.turn(),
+            verdict: self.verdict(),
+            latest: &self.latest,
+        }
+        .serialize(serializer)
     }
 }
 
@@ -441,7 +471,7 @@ impl<C: Clock> Reviews<C> {
     /// reviews.add_thread(&file, 1, 1, "Why?", "scott")?;
     ///
     /// let handed = reviews.hand_off(&file, Side::Human, "scott", Some("Over to you"))?;
-    /// assert_eq!(handed.review.turn, Some(Side::Agent));
+    /// assert_eq!(handed.review.turn(), Some(Side::Agent));
     /// assert!(handed.waiting.is_empty(), "scott has the last word on c1");
     ///
     /// let back = reviews.hand_off(&file, Side::Agent, "claude", None)?;
@@ -509,8 +539,8 @@ impl<C: Clock> Reviews<C> {
     /// let reviews = Reviews::new(Store::new(dir.path().join("data")));
     ///
     /// let status = reviews.close(&file, "scott", Some(Verdict::Approved), Some("Ship it"))?;
-    /// assert_eq!(status.verdict, Some(Verdict::Approved));
-    /// assert_eq!(status.turn, None);
+    /// assert_eq!(status.verdict(), Some(Verdict::Approved));
+    /// assert_eq!(status.turn(), None);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn close(
@@ -560,7 +590,7 @@ impl<C: Clock> Reviews<C> {
     /// reviews.close(&file, "scott", Some(Verdict::Dropped), None)?;
     ///
     /// let status = reviews.reopen_review(&file, Side::Agent, "claude", Some("Revising"))?;
-    /// assert_eq!(status.turn, Some(Side::Human));
+    /// assert_eq!(status.turn(), Some(Side::Human));
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn reopen_review(
@@ -1727,8 +1757,7 @@ mod tests {
         assert_eq!(
             handed.review,
             ReviewStatus {
-                turn: Some(Side::Agent),
-                verdict: None,
+                state: ReviewState::Turn(Side::Agent),
                 latest: Some(entry),
             }
         );
@@ -1747,7 +1776,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(state(&fx), ReviewState::Turn(Side::Human));
-        assert_eq!(handed.review.turn, Some(Side::Human));
+        assert_eq!(handed.review.state, ReviewState::Turn(Side::Human));
         let latest = handed.review.latest.unwrap();
         assert_eq!(
             (latest.side, latest.author.as_str()),
@@ -1928,7 +1957,7 @@ mod tests {
                     note: Some("Done".into()),
                 }
             );
-            assert_eq!((status.turn, status.verdict), (None, Some(verdict)));
+            assert_eq!(status.state, ReviewState::Closed(verdict));
         }
     }
 
@@ -2025,7 +2054,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(state(&fx), ReviewState::Turn(Side::Human));
-            assert_eq!((status.turn, status.verdict), (Some(Side::Human), None));
+            assert_eq!(status.state, ReviewState::Turn(Side::Human));
             let latest = status.latest.unwrap();
             assert_eq!(latest.event, Event::Reopen);
             assert_eq!(latest.side, side);

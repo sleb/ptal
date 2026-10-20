@@ -8,12 +8,12 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
 use crate::error::Error;
-use crate::model::{Anchor, State, Status, Thread};
-use crate::review::{Clock, Reviews, SystemClock, ThreadView, View};
+use crate::model::{Anchor, ReviewState, Side, State, Status, Thread, Verdict};
+use crate::review::{Clock, HandedOff, ReviewStatus, Reviews, SystemClock, ThreadView, View};
 use crate::store::Store;
 use crate::tui;
 
@@ -126,7 +126,13 @@ Examples:
 const REOPEN_EXAMPLE: &str = "\
 Examples:
   ptal reopen plan.md c3 --as scott
-  ptal reopen plan.md c3 --as scott --note \"Not fixed: still fails on empty input.\"";
+  ptal reopen plan.md c3 --as scott --note \"Not fixed: still fails on empty input.\"
+  ptal reopen plan.md --as claude --note \"Revising per chat.\"   # the review";
+
+const HANDOFF_EXAMPLE: &str = "\
+Examples:
+  ptal handoff plan.md --as claude
+  ptal handoff plan.md --as claude --note \"Addressed everything but c4.\"";
 
 const WORKFLOW: &str = "\
 Review a throwaway text file. A human comments on lines in the TUI, opened
@@ -142,6 +148,7 @@ Workflow:
   4. ptal reply <file> <id> \"<body>\" --as <name>
      ptal resolve <file> <id> --as <name> [--note \"what changed\"]
      ptal reopen <file> <id> --as <name> [--note \"why\"]
+  5. ptal handoff <file> --as <name> [--note \"what you did\"]   when done
 
 Threads are conversations. `ptal reply` adds a comment to a thread;
 `ptal resolve` closes it, and its --note is recorded as a comment;
@@ -152,6 +159,21 @@ reopening an open one with already_open); nothing is written.
 A thread is waiting on you when its last comment is not yours: its author
 differs from your --as name (exact match), so use the same --as name every
 time. Only open threads are listed by default.
+
+Turns: a review is on the human's turn or yours, or closed, and `turn` in
+`comments` says whose move it is. The human hands off to you from the TUI,
+often with a note (`latest`); when you are done, `ptal handoff` hands the
+turn back, with an optional --note. Only the side holding the turn can hand
+off: otherwise it fails with not_your_turn and nothing is written. The turn
+is a signal, not a lock: comment, reply, resolve and reopen at any time.
+
+Only the human closes a review, with a verdict: \"approved\" means take the
+next step with the file as it stands (publish, commit, implement), even with
+threads still open; \"dropped\" means don't. A closed review has no turn.
+When the human asks you to revise a closed review, reopen it with
+`ptal reopen <file> --as <name>` (no thread id): it returns to the human's
+turn. Reopening an active review fails with not_closed. `handoff` and the
+review `reopen` act as the agent; --side human acts as the human instead.
 
 `ptal add <file> --lines <N|A-B> \"<body>\" --as <name>` starts a new thread
 on a line or range; to answer an existing thread, use `ptal reply`.
@@ -168,7 +190,16 @@ prints one document:
                 \"quote\": \"...\"},
      \"comments\": [{\"id\", \"author\", \"body\", \"created_at\", \"revision\"}],
      \"resolved_by\", \"resolved_at\", \"resolved_revision\"   (resolved only)
-   }]}
+   }],
+   \"review\": {
+     \"turn\": \"human\" | \"agent\" | null,          (null when closed)
+     \"verdict\": \"approved\" | \"dropped\" | null,  (set when closed)
+     \"latest\": null | {
+       \"event\": \"hand_off\" | \"close\" | \"reopen\", \"verdict\" (close only),
+       \"side\": \"human\" | \"agent\", \"author\", \"created_at\", \"revision\",
+       \"next_id\": 7,   (comment ids below c7 came before it)
+       \"note\"          (if any)
+     }}}
 
 Lines are where the anchored text is in the file now: edits above a thread
 move it. `state` is \"outdated\" when an anchored line was edited or removed;
@@ -176,12 +207,15 @@ the thread is then shown at a best guess, with its original `quote`, so your
 own edits can cause it.
 
 A revision (r1, r2, ...) is a version of the file that a write was made
-against. The `revision` fields say which version a thread, comment or resolve
-referred to; the top-level `revision` is the file's current one, or null if
-nothing has been written against it yet.
+against. The `revision` fields say which version a thread, comment, resolve
+or hand-off referred to; the top-level `revision` is the file's current one,
+or null if nothing has been written against it yet.
 
 `add`, `reply`, `resolve` and `reopen` print {\"file\", \"thread\"} (no `state`;
 lines are mapped the same way).
+`handoff` prints {\"file\", \"review\", \"waiting\": [\"c3\"]}: `waiting` lists
+the open threads whose last comment isn't yours. `reopen <file>` with no id
+prints {\"file\", \"review\"}.
 
 Author: write commands need --as <name> or the PTAL_AUTHOR environment
 variable. ptal never guesses one.
@@ -270,19 +304,52 @@ enum Command {
         #[arg(long = "as", value_name = "NAME")]
         author: Option<String>,
     },
-    /// Reopen a resolved thread.
+    /// Reopen a resolved thread, or with no id a closed review.
     #[command(after_long_help = REOPEN_EXAMPLE)]
     Reopen {
         file: PathBuf,
-        /// Thread id, e.g. `c3`.
-        id: String,
+        /// Thread id, e.g. `c3`; leave it out to reopen the review.
+        id: Option<String>,
         /// Who is reopening; falls back to `PTAL_AUTHOR`.
         #[arg(long = "as", value_name = "NAME")]
         author: Option<String>,
-        /// Leave a comment saying why.
+        /// Say why: a comment on the thread, or the review reopen's note.
+        #[arg(long)]
+        note: Option<String>,
+        /// Which side reopens the review (default agent); threads have none.
+        #[arg(long, value_enum)]
+        side: Option<SideArg>,
+    },
+    /// Hand the turn to the other side.
+    #[command(after_long_help = HANDOFF_EXAMPLE)]
+    Handoff {
+        file: PathBuf,
+        /// Who is handing off; falls back to `PTAL_AUTHOR`.
+        #[arg(long = "as", value_name = "NAME")]
+        author: Option<String>,
+        /// Which side is handing off.
+        #[arg(long, value_enum, default_value_t = SideArg::Agent)]
+        side: SideArg,
+        /// A note for the other side.
         #[arg(long)]
         note: Option<String>,
     },
+}
+
+/// `--side`: which side the CLI acts as. The agent unless told otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SideArg {
+    Human,
+    Agent,
+}
+
+impl From<SideArg> for Side {
+    fn from(side: SideArg) -> Self {
+        match side {
+            SideArg::Human => Side::Human,
+            SideArg::Agent => Side::Agent,
+        }
+    }
 }
 
 /// Parse `A-B` or a bare `N` (sugar for `N-N`). Range validity against the
@@ -326,6 +393,9 @@ enum Output {
     Threads(View),
     /// A write's result: the updated thread and what was done to it.
     Thread(Thread, Verb),
+    HandedOff(HandedOff),
+    /// A reopened review.
+    Reopened(ReviewStatus),
 }
 
 /// What a write command did, for the readable rendering.
@@ -344,10 +414,15 @@ impl Output {
                 "file": file,
                 "revision": view.revision,
                 "threads": view.threads,
+                "review": view.review,
             }),
             Output::Thread(thread, _) => {
                 json!({ "file": file, "thread": thread })
             }
+            Output::HandedOff(HandedOff { review, waiting }) => {
+                json!({ "file": file, "review": review, "waiting": waiting })
+            }
+            Output::Reopened(review) => json!({ "file": file, "review": review }),
         };
         format!("{value}\n")
     }
@@ -355,7 +430,13 @@ impl Output {
     /// Presentation only, not a contract.
     fn to_text(&self) -> String {
         match self {
-            Output::Threads(view) => render_text(&view.threads),
+            Output::Threads(view) => {
+                format!(
+                    "{}\n{}",
+                    render_status(&view.review),
+                    render_text(&view.threads)
+                )
+            }
             Output::Thread(thread, Verb::Added) => {
                 let Anchor {
                     start_line,
@@ -370,8 +451,53 @@ impl Output {
                 format!("{} replied ({reply})\n", thread.id)
             }
             Output::Thread(thread, Verb::Reopened) => format!("{} reopened\n", thread.id),
+            Output::HandedOff(HandedOff { review, waiting }) => {
+                let mut line = format!("handed off: {}", state_line(review));
+                if !waiting.is_empty() {
+                    line.push_str(&format!(" (waiting on you: {})", waiting.join(", ")));
+                }
+                line + "\n"
+            }
+            Output::Reopened(review) => format!("reopened: {}\n", state_line(review)),
         }
     }
+}
+
+/// `human's turn`, `agent's turn` or `closed: <verdict>`.
+fn state_line(review: &ReviewStatus) -> String {
+    match review.state {
+        ReviewState::Turn(side) => format!("{}'s turn", side_name(side)),
+        ReviewState::Closed(verdict) => format!("closed: {}", verdict_name(verdict)),
+    }
+}
+
+fn side_name(side: Side) -> &'static str {
+    match side {
+        Side::Human => "human",
+        Side::Agent => "agent",
+    }
+}
+
+fn verdict_name(verdict: Verdict) -> &'static str {
+    match verdict {
+        Verdict::Approved => "approved",
+        Verdict::Dropped => "dropped",
+    }
+}
+
+/// Readable state header: `turn: <side>` or `closed: <verdict>`, then each
+/// line of the latest note under its author.
+fn render_status(review: &ReviewStatus) -> String {
+    let mut text = match review.state {
+        ReviewState::Turn(side) => format!("turn: {}\n", side_name(side)),
+        ReviewState::Closed(_) => format!("{}\n", state_line(review)),
+    };
+    if let Some(entry) = &review.latest {
+        for line in entry.note.iter().flat_map(|note| note.lines()) {
+            text.push_str(&format!("  {}: {line}\n", entry.author));
+        }
+    }
+    text
 }
 
 /// Readable listing: a header per thread, the quote, then the comments.
@@ -470,7 +596,8 @@ fn run_command<C: Clock>(
         | Command::Add { file, .. }
         | Command::Resolve { file, .. }
         | Command::Reply { file, .. }
-        | Command::Reopen { file, .. } => file,
+        | Command::Reopen { file, .. }
+        | Command::Handoff { file, .. } => file,
     };
     let output = dispatch(command, env)?;
     let canonical = std::fs::canonicalize(file).map_err(|source| {
@@ -554,13 +681,41 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
         }
         Command::Reopen {
             file,
-            id,
+            id: Some(id),
             author: flag,
             note,
+            side,
         } => {
+            if side.is_some() {
+                return Err(Failure::Usage(
+                    "--side applies only to reopening the review: threads have no side".to_string(),
+                ));
+            }
             let author = author(flag)?;
             let thread = reviews.reopen(file, id, &author, note.as_deref())?;
             Ok(Output::Thread(thread, Verb::Reopened))
+        }
+        Command::Reopen {
+            file,
+            id: None,
+            author: flag,
+            note,
+            side,
+        } => {
+            let author = author(flag)?;
+            let side = side.unwrap_or(SideArg::Agent).into();
+            let review = reviews.reopen_review(file, side, &author, note.as_deref())?;
+            Ok(Output::Reopened(review))
+        }
+        Command::Handoff {
+            file,
+            author: flag,
+            side,
+            note,
+        } => {
+            let author = author(flag)?;
+            let handed = reviews.hand_off(file, (*side).into(), &author, note.as_deref())?;
+            Ok(Output::HandedOff(handed))
         }
     }
 }
@@ -619,6 +774,7 @@ pub fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Side, Verdict};
     use crate::store::Store;
     use std::io;
     use std::path::PathBuf;
@@ -812,6 +968,23 @@ mod tests {
         }
     }
 
+    impl Fixture {
+        /// The core, as the TUI drives it, on the fixture's store.
+        fn reviews(&self) -> Reviews<fn() -> String> {
+            Reviews::with_clock(
+                Store::new(&self.data),
+                (|| NOW.to_string()) as fn() -> String,
+            )
+        }
+
+        /// A human hand-off through the core, as the TUI writes it.
+        fn human_hands_off(&self, note: Option<&str>) {
+            self.reviews()
+                .hand_off(&self.file, Side::Human, "scott", note)
+                .unwrap();
+        }
+    }
+
     fn fixture_with_two_threads() -> Fixture {
         let fx = fixture("one\ntwo\nthree\n");
         let reviews =
@@ -877,6 +1050,7 @@ mod tests {
                     "comments": [{"id": "c2", "author": "scott", "body": "Why?", "created_at": NOW, "revision": "r1"}],
                     "state": "current",
                 }],
+                "review": {"turn": "human", "verdict": null, "latest": null},
             })
         );
     }
@@ -962,7 +1136,12 @@ mod tests {
 
         assert_eq!(
             out.json(),
-            serde_json::json!({"file": fx.canonical(), "revision": null, "threads": []})
+            serde_json::json!({
+                "file": fx.canonical(),
+                "revision": null,
+                "threads": [],
+                "review": {"turn": "human", "verdict": null, "latest": null},
+            })
         );
     }
 
@@ -1402,6 +1581,8 @@ mod tests {
         assert_eq!(
             out.stdout,
             "\
+turn: human
+
 c1  resolved by claude  current  lines 2-2
   > one
   scott: Typo?
@@ -1421,7 +1602,7 @@ c2  open  outdated  lines 3-4
 
         let out = fx.run_with(&["comments", "FILE"], &fx.env(None, true));
 
-        assert_eq!(out.stdout, "no threads\n");
+        assert_eq!(out.stdout, "turn: human\n\nno threads\n");
     }
 
     #[test]
@@ -1649,7 +1830,7 @@ c2  open  outdated  lines 3-4
     fn every_subcommand_help_has_an_example() {
         let fx = fixture("one\n");
 
-        for command in ["comments", "add", "resolve", "reply", "reopen"] {
+        for command in ["comments", "add", "resolve", "reply", "reopen", "handoff"] {
             let help = fx.run(&[command, "--help"]).stdout;
             assert!(help.contains("Example"), "{command}:\n{help}");
             assert!(
@@ -1657,6 +1838,210 @@ c2  open  outdated  lines 3-4
                 "{command}:\n{help}"
             );
         }
+    }
+
+    // ---- turns, closing, reopening the review -----------------------------
+
+    #[test]
+    fn comments_reports_the_latest_hand_off_in_the_review_object() {
+        let fx = fixture_with_two_threads();
+        fx.human_hands_off(Some("Over to you"));
+
+        let review = &fx.run(&["comments", "FILE"]).json()["review"];
+
+        assert_eq!(
+            *review,
+            serde_json::json!({
+                "turn": "agent",
+                "verdict": null,
+                "latest": {
+                    "event": "hand_off",
+                    "side": "human",
+                    "author": "scott",
+                    "created_at": NOW,
+                    "revision": "r1",
+                    "next_id": 3,
+                    "note": "Over to you",
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn handoff_during_the_agents_turn_hands_back_and_lists_what_is_waiting() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["reply", "FILE", "c2", "Because", "--as", "claude"]);
+        fx.human_hands_off(None);
+
+        let out = fx.run(&["handoff", "FILE", "--as", "claude", "--note", "Revised"]);
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        let json = out.json();
+        assert_eq!(json["file"], fx.canonical());
+        assert_eq!(json["waiting"], serde_json::json!(["c1"]));
+        assert_eq!(json["review"]["turn"], "human");
+        assert_eq!(json["review"]["latest"]["side"], "agent");
+        assert_eq!(json["review"]["latest"]["note"], "Revised");
+        let listed = fx.run(&["comments", "FILE"]).json();
+        assert_eq!(listed["review"], json["review"]);
+    }
+
+    #[test]
+    fn handoff_out_of_turn_or_without_an_author_fails_and_writes_nothing() {
+        let fx = fixture_with_two_threads();
+        let before = fx.review_bytes();
+
+        for (args, code) in [
+            (&["handoff", "FILE", "--as", "claude"][..], "not_your_turn"),
+            (&["handoff", "FILE"], "missing_author"),
+        ] {
+            let out = fx.run(args);
+            assert_eq!(out.code, 2, "{args:?}");
+            assert_eq!(out.stdout, "", "{args:?}");
+            assert_eq!(out.error_code(), code, "{args:?}");
+        }
+        assert_eq!(fx.review_bytes(), before);
+    }
+
+    #[test]
+    fn handoff_side_human_acts_as_the_human() {
+        let fx = fixture("one\n");
+
+        let out = fx.run(&["handoff", "FILE", "--as", "scott", "--side", "human"]);
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        let review = &out.json()["review"];
+        assert_eq!(review["turn"], "agent");
+        assert_eq!(review["latest"]["side"], "human");
+        let back = fx.run(&["handoff", "FILE", "--as", "claude", "--side", "agent"]);
+        assert_eq!(back.json()["review"]["latest"]["side"], "agent");
+    }
+
+    #[test]
+    fn a_bad_side_or_a_side_on_a_thread_reopen_is_usage() {
+        let fx = fixture_with_two_threads();
+        fx.run(&["resolve", "FILE", "c1", "--as", "claude"]);
+        let before = fx.review_bytes();
+
+        for args in [
+            &["handoff", "FILE", "--as", "x", "--side", "robot"][..],
+            &["reopen", "FILE", "c1", "--as", "x", "--side", "agent"],
+        ] {
+            let out = fx.run(args);
+            assert_eq!(out.code, 2, "{args:?}");
+            assert_eq!(out.error_code(), "usage", "{args:?}");
+        }
+        assert_eq!(fx.review_bytes(), before);
+    }
+
+    #[test]
+    fn reopen_without_an_id_reopens_a_closed_review() {
+        let fx = fixture_with_two_threads();
+        fx.reviews()
+            .close(&fx.file, "scott", Some(Verdict::Approved), Some("Ship it"))
+            .unwrap();
+        let closed = fx.run(&["comments", "FILE"]).json();
+        assert_eq!(closed["review"]["turn"], serde_json::Value::Null);
+        assert_eq!(closed["review"]["verdict"], "approved");
+        assert_eq!(closed["review"]["latest"]["note"], "Ship it");
+
+        let out = fx.run(&["reopen", "FILE", "--as", "claude", "--note", "Revising"]);
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        let json = out.json();
+        assert_eq!(json["file"], fx.canonical());
+        assert_eq!(json["review"]["turn"], "human");
+        assert_eq!(json["review"]["verdict"], serde_json::Value::Null);
+        assert_eq!(json["review"]["latest"]["event"], "reopen");
+        assert_eq!(json["review"]["latest"]["side"], "agent");
+        assert!(json.get("thread").is_none());
+    }
+
+    #[test]
+    fn reopening_an_active_review_is_not_closed() {
+        let fx = fixture_with_two_threads();
+        let before = fx.review_bytes();
+
+        let out = fx.run(&["reopen", "FILE", "--as", "claude"]);
+
+        assert_eq!(out.code, 2);
+        assert_eq!(out.stdout, "");
+        assert_eq!(out.error_code(), "not_closed");
+        assert_eq!(fx.review_bytes(), before);
+    }
+
+    #[test]
+    fn comments_on_a_tty_leads_with_the_turn_and_the_latest_note() {
+        let fx = fixture("one\n");
+        fx.human_hands_off(Some("Look at c1\nand c2"));
+        let tty = fx.env(None, true);
+
+        let agent = fx.run_with(&["comments", "FILE"], &tty);
+        fx.reviews()
+            .close(&fx.file, "scott", Some(Verdict::Dropped), None)
+            .unwrap();
+        let closed = fx.run_with(&["comments", "FILE"], &tty);
+
+        assert_eq!(
+            agent.stdout,
+            "turn: agent\n  scott: Look at c1\n  scott: and c2\n\nno threads\n"
+        );
+        assert_eq!(closed.stdout, "closed: dropped\n\nno threads\n");
+    }
+
+    #[test]
+    fn handoff_and_review_reopen_on_a_tty_print_one_line() {
+        let fx = fixture_with_two_threads();
+        let tty = fx.env(None, true);
+        fx.human_hands_off(None);
+
+        let waiting = fx.run_with(&["handoff", "FILE", "--as", "claude"], &tty);
+        fx.run(&["handoff", "FILE", "--as", "scott", "--side", "human"]);
+        fx.run(&["reply", "FILE", "c1", "ok", "--as", "claude"]);
+        fx.run(&["reply", "FILE", "c2", "ok", "--as", "claude"]);
+        let none = fx.run_with(&["handoff", "FILE", "--as", "claude"], &tty);
+        fx.reviews()
+            .close(&fx.file, "scott", Some(Verdict::Approved), None)
+            .unwrap();
+        let reopened = fx.run_with(&["reopen", "FILE", "--as", "claude"], &tty);
+
+        assert_eq!(
+            waiting.stdout,
+            "handed off: human's turn (waiting on you: c1, c2)\n"
+        );
+        assert_eq!(none.stdout, "handed off: human's turn\n");
+        assert_eq!(reopened.stdout, "reopened: human's turn\n");
+    }
+
+    #[test]
+    fn top_level_help_teaches_turns_hand_offs_and_closing() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let resolve = help.find("ptal resolve").expect("workflow resolve step");
+        let handoff = help.find("ptal handoff").expect("workflow hand-off step");
+        assert!(resolve < handoff, "hand off after answering:\n{help}");
+        let step = help[handoff..].lines().next().unwrap();
+        assert!(step.contains("--as"), "{step}");
+        let turns = paragraph_with(&help, &["`turn`", "not_your_turn"]);
+        assert!(turns.contains("signal, not a lock"), "{turns}");
+        let closing = paragraph_with(&help, &["approved", "dropped"]);
+        for needle in ["ptal reopen <file>", "not_closed", "--side"] {
+            assert!(closing.contains(needle), "{needle}: {closing}");
+        }
+        let shape = paragraph_with(&help, &["\"review\""]);
+        for field in [
+            "\"turn\"",
+            "\"verdict\"",
+            "\"latest\"",
+            "hand_off",
+            "next_id",
+        ] {
+            assert!(shape.contains(field), "{field}: {shape}");
+        }
+        let outputs = paragraph_with(&help, &["\"waiting\""]);
+        assert!(outputs.contains("handoff"), "{outputs}");
     }
 
     // ---- bare `ptal <file>` (the TUI) --------------------------------------
