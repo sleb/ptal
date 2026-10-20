@@ -849,9 +849,9 @@ mod tests {
                 "file": fx.canonical(),
                 "threads": [{
                     "id": "c2",
-                    "anchor": {"start_line": 2, "end_line": 3, "quote": "two\nthree"},
+                    "anchor": {"revision": "r1", "start_line": 2, "end_line": 3, "quote": "two\nthree"},
                     "status": "open",
-                    "comments": [{"id": "c2", "author": "scott", "body": "Why?", "created_at": NOW}],
+                    "comments": [{"id": "c2", "author": "scott", "body": "Why?", "created_at": NOW, "revision": "r1"}],
                     "state": "current",
                 }],
             })
@@ -945,9 +945,9 @@ mod tests {
                 "file": fx.canonical(),
                 "thread": {
                     "id": "c1",
-                    "anchor": {"start_line": 2, "end_line": 3, "quote": "two\nthree"},
+                    "anchor": {"revision": "r1", "start_line": 2, "end_line": 3, "quote": "two\nthree"},
                     "status": "open",
-                    "comments": [{"id": "c1", "author": "scott", "body": "Why?", "created_at": NOW}],
+                    "comments": [{"id": "c1", "author": "scott", "body": "Why?", "created_at": NOW, "revision": "r1"}],
                 },
             })
         );

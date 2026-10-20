@@ -220,13 +220,24 @@ below, so a front end that displays the file shows exactly what
   its text differs from `quote`. There is no mapping between versions of the
   file: inserting lines above an anchor makes it `outdated`.
 - A mutation that fails (unknown id, bad range, empty author or body) changes
-  nothing.
+  nothing, snapshots included.
+- Every write reads the file once, outside the lock, and records the revision
+  it was made against, inside the lock: it keeps the snapshot and assigns the
+  next ordinal if the content is new. `add_thread` sets `anchor.revision` and
+  the comment's `revision`; `reply` sets the comment's; `resolve` sets
+  `resolved_revision` and the note's; `reopen` sets only its note's (a reopen
+  itself is not recorded). Reads hash the file but never write.
+- A thread anchored before revisions existed (`anchor.revision` absent) is
+  anchored to the revision of the first write after the upgrade, "the file as
+  first seen"; its old comments keep no revision.
 - Every message has a non-empty `author` and `body`.
 - `resolve` on a resolved thread is `AlreadyResolved` and `reopen` on an open
   thread is `AlreadyOpen`: both write nothing, so a note is dropped.
-- Error precedence: `reply` checks author, body, then thread id; `resolve`
-  and `reopen` check author, thread id, then status. An id is allocated only after the
-  thread is found, so a failed write never burns one.
+- Error precedence: `reply` checks author, body, file, then thread id;
+  `resolve` and `reopen` check author, file, thread id, then status. A file
+  that is missing or not UTF-8 fails every write with `FileUnreadable`. An id
+  is allocated only after the thread is found, so a failed write never burns
+  one.
 
 **Contract:** returns typed results and typed errors (`NotFound`,
 `AlreadyOpen`, `AlreadyResolved`, `InvalidRange`, `FileUnreadable`, `Locked`,

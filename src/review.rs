@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use crate::error::{Error, Result};
 use crate::model::{Anchor, Comment, Review, State, Status, Thread};
-use crate::store::Store;
+use crate::store::{Snapshots, Store, content_hash};
 
 /// Source of timestamps, injected so tests are deterministic.
 pub trait Clock {
@@ -68,7 +68,8 @@ impl<C: Clock> Reviews<C> {
 
     /// Start a thread on lines `start..=end` (1-based) of `file`.
     ///
-    /// The anchor's quote is read from the file as it is now.
+    /// The anchor's quote is read from the file as it is now, and the
+    /// thread is anchored to that content's revision (snapshotted if new).
     ///
     /// # Errors
     /// [`Error::EmptyAuthor`], [`Error::EmptyBody`], [`Error::FileUnreadable`],
@@ -99,17 +100,19 @@ impl<C: Clock> Reviews<C> {
         if body.trim().is_empty() {
             return Err(Error::EmptyBody);
         }
-        let lines = file_lines(file)?;
+        let content = Content::read(file)?;
+        let lines = content.lines();
         let quote =
             quote_of(&lines, start, end).ok_or_else(|| invalid_range(&lines, start, end))?;
         let created_at = self.clock.now();
 
-        self.store.with_review(file, |review, _| {
+        self.store.with_review(file, |review, snapshots| {
+            let revision = record_revision(review, snapshots, &content);
             let id = review.next_comment_id();
             let thread = Thread {
                 id: id.clone(),
                 anchor: Anchor {
-                    revision: None,
+                    revision: Some(revision.clone()),
                     start_line: start,
                     end_line: end,
                     quote,
@@ -120,7 +123,7 @@ impl<C: Clock> Reviews<C> {
                     author: author.to_string(),
                     body: body.to_string(),
                     created_at,
-                    revision: None,
+                    revision: Some(revision),
                 }],
             };
             review.threads.push(thread.clone());
@@ -172,12 +175,13 @@ impl<C: Clock> Reviews<C> {
     /// Resolve thread `id`, optionally appending `note` as a comment by
     /// `author`.
     ///
-    /// A blank note adds no comment.
+    /// A blank note adds no comment. The resolve (`resolved_revision`) and
+    /// the note record the revision of the file as it is now.
     ///
     /// # Errors
-    /// [`Error::EmptyAuthor`], [`Error::NotFound`] if no thread has this id,
-    /// [`Error::AlreadyResolved`] if the thread is not open, plus any store
-    /// error, checked in that order. Nothing is written on error, so a note
+    /// [`Error::EmptyAuthor`], [`Error::FileUnreadable`], [`Error::NotFound`]
+    /// if no thread has this id, [`Error::AlreadyResolved`] if the thread is
+    /// not open, plus any store error, checked in that order. Nothing is written on error, so a note
     /// on a resolved thread is dropped, not appended.
     ///
     /// # Examples
@@ -203,19 +207,21 @@ impl<C: Clock> Reviews<C> {
     ) -> Result<Thread> {
         require_author(author)?;
         let note = note.filter(|n| !n.trim().is_empty());
+        let content = Content::read(file)?;
         let now = self.clock.now();
 
-        self.store.with_review(file, |review, _| {
+        self.store.with_review(file, |review, snapshots| {
             let index = find_thread(review, id)?;
             if review.threads[index].status != Status::Open {
                 return Err(Error::AlreadyResolved(id.to_string()));
             }
-            let note_comment = note.map(|body| new_comment(review, author, body, &now));
+            let revision = record_revision(review, snapshots, &content);
+            let note_comment = note.map(|body| new_comment(review, author, body, &now, &revision));
             let thread = &mut review.threads[index];
             thread.status = Status::Resolved {
                 resolved_by: author.to_string(),
                 resolved_at: now,
-                resolved_revision: None,
+                resolved_revision: Some(revision),
             };
             thread.comments.extend(note_comment);
             Ok(thread.clone())
@@ -225,12 +231,14 @@ impl<C: Clock> Reviews<C> {
     /// Reopen resolved thread `id`, optionally appending `note` as a comment
     /// by `author`.
     ///
-    /// The resolution record is dropped. A blank note adds no comment.
+    /// The resolution record is dropped. A blank note adds no comment; a
+    /// note records the revision of the file as it is now (a reopen itself
+    /// is not recorded, so one without a note records none).
     ///
     /// # Errors
-    /// [`Error::EmptyAuthor`], [`Error::NotFound`] if no thread has this id,
-    /// [`Error::AlreadyOpen`] if the thread is not resolved, plus any store
-    /// error, checked in that order. Nothing is written on error, so a note
+    /// [`Error::EmptyAuthor`], [`Error::FileUnreadable`], [`Error::NotFound`]
+    /// if no thread has this id, [`Error::AlreadyOpen`] if the thread is not
+    /// resolved, plus any store error, checked in that order. Nothing is written on error, so a note
     /// on an open thread is dropped, not appended.
     ///
     /// # Examples
@@ -257,14 +265,16 @@ impl<C: Clock> Reviews<C> {
     ) -> Result<Thread> {
         require_author(author)?;
         let note = note.filter(|n| !n.trim().is_empty());
+        let content = Content::read(file)?;
         let now = self.clock.now();
 
-        self.store.with_review(file, |review, _| {
+        self.store.with_review(file, |review, snapshots| {
             let index = find_thread(review, id)?;
             if review.threads[index].status == Status::Open {
                 return Err(Error::AlreadyOpen(id.to_string()));
             }
-            let note_comment = note.map(|body| new_comment(review, author, body, &now));
+            let revision = record_revision(review, snapshots, &content);
+            let note_comment = note.map(|body| new_comment(review, author, body, &now, &revision));
             let thread = &mut review.threads[index];
             thread.status = Status::Open;
             thread.comments.extend(note_comment);
@@ -275,11 +285,13 @@ impl<C: Clock> Reviews<C> {
     /// Append a comment by `author` to thread `id`.
     ///
     /// Replying to a resolved thread reopens it in the same write; no
-    /// separate "reopened" comment is added. The body is stored verbatim.
+    /// separate "reopened" comment is added. The body is stored verbatim,
+    /// and the comment records the revision of the file as it is now.
     ///
     /// # Errors
-    /// [`Error::EmptyAuthor`], [`Error::EmptyBody`], [`Error::NotFound`] if
-    /// no thread has this id, plus any store error, checked in that order.
+    /// [`Error::EmptyAuthor`], [`Error::EmptyBody`], [`Error::FileUnreadable`],
+    /// [`Error::NotFound`] if no thread has this id, plus any store error,
+    /// checked in that order.
     /// Nothing is written on error.
     ///
     /// # Examples
@@ -302,11 +314,13 @@ impl<C: Clock> Reviews<C> {
         if body.trim().is_empty() {
             return Err(Error::EmptyBody);
         }
+        let content = Content::read(file)?;
         let created_at = self.clock.now();
 
-        self.store.with_review(file, |review, _| {
+        self.store.with_review(file, |review, snapshots| {
             let index = find_thread(review, id)?;
-            let comment = new_comment(review, author, body, &created_at);
+            let revision = record_revision(review, snapshots, &content);
+            let comment = new_comment(review, author, body, &created_at, &revision);
             let thread = &mut review.threads[index];
             thread.comments.push(comment);
             thread.status = Status::Open;
@@ -315,16 +329,64 @@ impl<C: Clock> Reviews<C> {
     }
 }
 
-/// A comment with the next free id. The id counter advances, so call this
-/// only once the operation can no longer fail.
-fn new_comment(review: &mut Review, author: &str, body: &str, created_at: &str) -> Comment {
+/// A comment with the next free id, written against `revision`. The id
+/// counter advances, so call this only once the operation can no longer fail.
+fn new_comment(
+    review: &mut Review,
+    author: &str,
+    body: &str,
+    created_at: &str,
+    revision: &str,
+) -> Comment {
     Comment {
         id: review.next_comment_id(),
         author: author.to_string(),
         body: body.to_string(),
         created_at: created_at.to_string(),
-        revision: None,
+        revision: Some(revision.to_string()),
     }
+}
+
+/// The file as read once for an operation: its text, and the hash that
+/// names its revision. The quote and the snapshot come from the same bytes.
+struct Content {
+    text: String,
+    sha256: String,
+}
+
+impl Content {
+    /// # Errors
+    /// [`Error::FileUnreadable`] if the file is missing, unreadable, or not
+    /// UTF-8.
+    fn read(file: &Path) -> Result<Self> {
+        let text = fs::read_to_string(file).map_err(|source| Error::FileUnreadable {
+            path: file.to_path_buf(),
+            source,
+        })?;
+        let sha256 = content_hash(text.as_bytes());
+        Ok(Self { text, sha256 })
+    }
+
+    fn lines(&self) -> Vec<String> {
+        self.text.lines().map(String::from).collect()
+    }
+}
+
+/// Record that a write is made against `content`: keep its snapshot and
+/// return its revision id, assigning one if it is new.
+///
+/// Threads anchored before revisions existed (`anchor.revision` is `None`)
+/// are anchored to this revision: the file as first seen after the upgrade.
+fn record_revision(review: &mut Review, snapshots: &mut Snapshots, content: &Content) -> String {
+    snapshots.keep(content.text.as_bytes());
+    let revision = review.revision_for(&content.sha256);
+    for thread in &mut review.threads {
+        thread
+            .anchor
+            .revision
+            .get_or_insert_with(|| revision.clone());
+    }
+    revision
 }
 
 /// Index of thread `id` in `review`.
@@ -364,11 +426,7 @@ fn require_author(author: &str) -> Result<()> {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn file_lines(file: &Path) -> Result<Vec<String>> {
-    let text = fs::read_to_string(file).map_err(|source| Error::FileUnreadable {
-        path: file.to_path_buf(),
-        source,
-    })?;
-    Ok(text.lines().map(String::from).collect())
+    Ok(Content::read(file)?.lines())
 }
 
 /// Lines `start..=end` (1-based) of `lines` joined by `\n`, or `None` if the
@@ -398,6 +456,7 @@ mod tests {
     use super::*;
     use crate::error::Error;
     use crate::model::{Anchor, Comment, State, Status};
+    use crate::store::content_hash;
     use std::fs;
     use std::path::PathBuf;
 
@@ -495,7 +554,7 @@ mod tests {
         assert_eq!(
             thread.anchor,
             Anchor {
-                revision: None,
+                revision: Some("r1".into()),
                 start_line: 2,
                 end_line: 3,
                 quote: "two\nthree".into()
@@ -509,7 +568,7 @@ mod tests {
                 author: "scott".into(),
                 body: "Why?".into(),
                 created_at: NOW.into(),
-                revision: None,
+                revision: Some("r1".into()),
             }]
         );
         assert_eq!(fx.store.load(&fx.file).unwrap().threads, vec![thread]);
@@ -675,7 +734,7 @@ mod tests {
             Status::Resolved {
                 resolved_by: "claude".into(),
                 resolved_at: NOW.into(),
-                resolved_revision: None,
+                resolved_revision: Some("r1".into()),
             }
         );
         assert_eq!(thread.comments.len(), 1);
@@ -699,7 +758,7 @@ mod tests {
                 author: "claude".into(),
                 body: "Done".into(),
                 created_at: NOW.into(),
-                revision: None,
+                revision: Some("r1".into()),
             }
         );
         let next = fx.reviews.add_thread(&fx.file, 2, 2, "y", "scott").unwrap();
@@ -804,7 +863,7 @@ mod tests {
                 author: "claude".into(),
                 body: "Because.".into(),
                 created_at: LATER.into(),
-                revision: None,
+                revision: Some("r1".into()),
             }
         );
         assert_eq!(thread.comments.len(), 2);
@@ -910,7 +969,7 @@ mod tests {
                 author: "scott".into(),
                 body: "Wrong guess".into(),
                 created_at: NOW.into(),
-                revision: None,
+                revision: Some("r1".into()),
             }
         );
 
@@ -966,8 +1025,157 @@ mod tests {
             Status::Resolved {
                 resolved_by: "codex".into(),
                 resolved_at: NOW.into(),
-                resolved_revision: None,
+                resolved_revision: Some("r1".into()),
             }
         );
+    }
+
+    // --- revisions recorded by writes ---
+
+    fn snapshot_of(fx: &Fixture, content: &str) -> Option<Vec<u8>> {
+        fx.store
+            .load_revision(&fx.file, &content_hash(content.as_bytes()))
+            .unwrap()
+    }
+
+    #[test]
+    fn add_thread_records_its_revision_and_snapshots_the_file() {
+        let fx = fixture();
+
+        let thread = fx.reviews.add_thread(&fx.file, 2, 2, "x", "s").unwrap();
+
+        assert_eq!(thread.anchor.revision.as_deref(), Some("r1"));
+        assert_eq!(thread.comments[0].revision.as_deref(), Some("r1"));
+        let review = fx.store.load(&fx.file).unwrap();
+        let sha = content_hash(b"one\ntwo\nthree\nfour\n");
+        assert_eq!(review.revision_id(&sha), Some("r1"));
+        assert_eq!(
+            snapshot_of(&fx, "one\ntwo\nthree\nfour\n").as_deref(),
+            Some(&b"one\ntwo\nthree\nfour\n"[..])
+        );
+    }
+
+    #[test]
+    fn reply_resolve_and_reopen_record_the_revision_they_were_made_against() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "s").unwrap();
+
+        fs::write(&fx.file, "one\ntwo\n").unwrap();
+        let replied = fx.reviews.reply(&fx.file, "c1", "r", "claude").unwrap();
+        assert_eq!(replied.comments[1].revision.as_deref(), Some("r2"));
+
+        fs::write(&fx.file, "one\n").unwrap();
+        let resolved = fx
+            .reviews
+            .resolve(&fx.file, "c1", "claude", Some("done"))
+            .unwrap();
+        assert!(matches!(
+            &resolved.status,
+            Status::Resolved { resolved_revision: Some(r), .. } if r == "r3"
+        ));
+        assert_eq!(resolved.comments[2].revision.as_deref(), Some("r3"));
+
+        fs::write(&fx.file, "ONE\n").unwrap();
+        let reopened = fx
+            .reviews
+            .reopen(&fx.file, "c1", "scott", Some("no"))
+            .unwrap();
+        assert_eq!(reopened.comments[3].revision.as_deref(), Some("r4"));
+        assert_eq!(reopened.anchor.revision.as_deref(), Some("r1"));
+    }
+
+    #[test]
+    fn going_back_to_earlier_content_returns_to_its_revision() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "s").unwrap();
+
+        fs::write(&fx.file, "B\n").unwrap();
+        let b = fx.reviews.reply(&fx.file, "c1", "b", "s").unwrap();
+        fs::write(&fx.file, "one\ntwo\nthree\nfour\n").unwrap();
+        let a = fx.reviews.reply(&fx.file, "c1", "a", "s").unwrap();
+
+        assert_eq!(b.comments[1].revision.as_deref(), Some("r2"));
+        assert_eq!(a.comments[2].revision.as_deref(), Some("r1"));
+        let dir = fx.store.review_dir(&fx.file).unwrap();
+        assert_eq!(fs::read_dir(dir.join("revisions")).unwrap().count(), 2);
+        assert_eq!(fx.store.load(&fx.file).unwrap().revisions.len(), 2);
+    }
+
+    #[test]
+    fn a_failed_write_records_no_revision() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "s").unwrap();
+        fs::write(&fx.file, "changed\n").unwrap();
+
+        assert!(fx.reviews.reply(&fx.file, "c99", "x", "s").is_err());
+        assert!(fx.reviews.reopen(&fx.file, "c1", "s", None).is_err());
+
+        assert_eq!(fx.store.load(&fx.file).unwrap().revisions.len(), 1);
+        assert_eq!(snapshot_of(&fx, "changed\n"), None);
+    }
+
+    /// A `review.json` in the shape written before revisions existed.
+    fn write_legacy_review(fx: &Fixture) {
+        let dir = fx.store.review_dir(&fx.file).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        let canonical = fs::canonicalize(&fx.file).unwrap();
+        let json = serde_json::json!({
+            "schema_version": 1,
+            "path": canonical,
+            "next_id": 2,
+            "threads": [{
+                "id": "c1",
+                "anchor": { "start_line": 2, "end_line": 2, "quote": "two" },
+                "status": "open",
+                "comments": [{
+                    "id": "c1", "author": "scott", "body": "x", "created_at": NOW
+                }]
+            }]
+        });
+        fs::write(dir.join("review.json"), json.to_string()).unwrap();
+    }
+
+    #[test]
+    fn first_write_after_the_upgrade_anchors_legacy_threads_to_its_revision() {
+        let fx = fixture();
+        write_legacy_review(&fx);
+
+        let thread = fx.reviews.reply(&fx.file, "c1", "hi", "claude").unwrap();
+
+        assert_eq!(thread.anchor.revision.as_deref(), Some("r1"));
+        assert_eq!(thread.comments[0].revision, None);
+        assert_eq!(thread.comments[1].revision.as_deref(), Some("r1"));
+    }
+
+    #[test]
+    fn viewing_never_writes() {
+        let fx = fixture();
+
+        fx.reviews.view(&fx.file, true).unwrap();
+        fx.store.load(&fx.file).unwrap();
+
+        assert!(!fx.store.review_dir(&fx.file).unwrap().exists());
+    }
+
+    #[test]
+    fn writes_on_a_non_utf8_file_are_unreadable_before_the_id_is_checked() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "s").unwrap();
+        let bytes = fx.review_json();
+        fs::write(&fx.file, [0xff, 0xfe]).unwrap();
+
+        let results = [
+            fx.reviews.reply(&fx.file, "c99", "x", "s"),
+            fx.reviews.resolve(&fx.file, "c99", "s", None),
+            fx.reviews.reopen(&fx.file, "c99", "s", None),
+        ];
+
+        for result in results {
+            assert!(
+                matches!(result, Err(Error::FileUnreadable { .. })),
+                "{result:?}"
+            );
+        }
+        assert_eq!(fx.review_json(), bytes);
     }
 }
