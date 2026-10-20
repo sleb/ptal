@@ -33,7 +33,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | Component | State |
 |---|---|
 | `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State` |
-| `store` | Built: data dir, atomic `review.json`, lock, schema check |
+| `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
 | `review` | Built: `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
 | `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Help` modes, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), `?` help overlay, `…` marks cut-off one-row text |
@@ -152,8 +152,9 @@ lines.
 ```
 <data>/<slug>-<hash8>/        slug = file name sanitized to [A-Za-z0-9._-];
                               hash8 = of the canonical absolute path
-  review.json                 Review (schema_version, path, next_id, threads)
+  review.json                 Review (schema_version, path, next_id, revisions, threads)
   review.lock                 advisory lock file; never renamed or replaced
+  revisions/<sha256>          raw bytes of each revision written against
 ```
 
 **Invariants**
@@ -170,13 +171,21 @@ lines.
 - A `review.json` with a newer `schema_version` is refused (`UnsupportedSchema`)
   and left untouched.
 - An unchanged review is not rewritten.
+- A snapshot is named by the SHA-256 of the file's raw bytes (so a change of
+  line endings alone is a new revision), written as `<sha>.tmp`, fsynced, then
+  renamed into place. An existing snapshot is never rewritten, and none is
+  ever removed. The reviewed file itself is only ever read.
+- Snapshots kept by a transaction are written after its closure returns `Ok`
+  and **before** `review.json` is renamed, all under the lock: a reader that
+  sees `rN` in `review.json` always finds its snapshot.
 
-**Contract:** `with_review(file, |&mut Review| -> Result<R>) -> Result<R>` is
-the only mutation primitive; an `Err` from the closure writes nothing.
-`load(file)` takes no lock: rename makes each read a consistent snapshot. A
+**Contract:** `with_review(file, |&mut Review, &mut Snapshots| -> Result<R>)
+-> Result<R>` is the only mutation primitive; `Snapshots::keep(bytes)` stages
+a snapshot and returns its hash, and an `Err` from the closure writes nothing,
+snapshots included. `load(file)` and `load_revision(file, sha) ->
+Option<bytes>` take no lock: rename makes each read a consistent snapshot. A
 review with no `review.json` loads as empty without touching disk.
-
-*Deferred:* `revisions/` snapshots.
+`content_hash(bytes)` is the one hashing rule, shared with `review`.
 
 ### `review`
 **Role:** the application core and the **only write path**. Each operation is
@@ -599,7 +608,9 @@ state or `review`.
 
 - `model`: round-trip and a golden-JSON test pinning the wire shape.
 - `store`: data-dir and review-dir naming, stale-temp recovery, schema
-  refusal, lock contention.
+  refusal, lock contention; snapshots hold exact bytes, are not written on
+  `Err` or `Locked`, are never rewritten, and leave the reviewed file's bytes
+  and mtime alone.
 - `review`: one test per rule, with an injected clock; editing the file between
   calls to exercise `state`.
 - `tests/core.rs`: concurrent writers, cross-handle reads, a full review round.

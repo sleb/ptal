@@ -104,7 +104,7 @@ impl<C: Clock> Reviews<C> {
             quote_of(&lines, start, end).ok_or_else(|| invalid_range(&lines, start, end))?;
         let created_at = self.clock.now();
 
-        self.store.with_review(file, |review| {
+        self.store.with_review(file, |review, _| {
             let id = review.next_comment_id();
             let thread = Thread {
                 id: id.clone(),
@@ -205,7 +205,7 @@ impl<C: Clock> Reviews<C> {
         let note = note.filter(|n| !n.trim().is_empty());
         let now = self.clock.now();
 
-        self.store.with_review(file, |review| {
+        self.store.with_review(file, |review, _| {
             let index = find_thread(review, id)?;
             if review.threads[index].status != Status::Open {
                 return Err(Error::AlreadyResolved(id.to_string()));
@@ -259,7 +259,7 @@ impl<C: Clock> Reviews<C> {
         let note = note.filter(|n| !n.trim().is_empty());
         let now = self.clock.now();
 
-        self.store.with_review(file, |review| {
+        self.store.with_review(file, |review, _| {
             let index = find_thread(review, id)?;
             if review.threads[index].status == Status::Open {
                 return Err(Error::AlreadyOpen(id.to_string()));
@@ -304,7 +304,7 @@ impl<C: Clock> Reviews<C> {
         }
         let created_at = self.clock.now();
 
-        self.store.with_review(file, |review| {
+        self.store.with_review(file, |review, _| {
             let index = find_thread(review, id)?;
             let comment = new_comment(review, author, body, &created_at);
             let thread = &mut review.threads[index];

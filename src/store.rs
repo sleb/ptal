@@ -6,6 +6,8 @@
 //! <data>/<slug>-<hash8>/
 //!   review.json   the [`Review`]; replaced atomically, never edited in place
 //!   review.lock   advisory lock guarding every read-modify-write
+//!   revisions/
+//!     <sha256>    raw bytes of each revision written against; never rewritten
 //! ```
 //!
 //! `hash8` is derived from the canonical absolute path of the reviewed file,
@@ -25,6 +27,7 @@ use crate::model::{Review, SCHEMA_VERSION};
 const REVIEW_FILE: &str = "review.json";
 const TEMP_FILE: &str = "review.json.tmp";
 const LOCK_FILE: &str = "review.lock";
+const REVISIONS_DIR: &str = "revisions";
 const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -101,9 +104,8 @@ impl Store {
         if slug.is_empty() {
             slug.push_str("file");
         }
-        let digest = Sha256::digest(canonical.as_os_str().as_encoded_bytes());
-        let hash8: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
-        self.root.join(format!("{slug}-{hash8}"))
+        let hash = content_hash(canonical.as_os_str().as_encoded_bytes());
+        self.root.join(format!("{slug}-{}", &hash[..8]))
     }
 
     /// Read the review of `file`; empty if none has been saved yet.
@@ -119,11 +121,34 @@ impl Store {
         read_review(&self.dir_for(&canonical).join(REVIEW_FILE), &canonical)
     }
 
+    /// The snapshot of the revision whose content hashes to `sha256`, or
+    /// `None` if there is none.
+    ///
+    /// Takes no lock: snapshots are written by rename before the
+    /// `review.json` that names them, and never removed.
+    ///
+    /// # Errors
+    /// [`Error::FileUnreadable`] if `file` cannot be canonicalized, or
+    /// [`Error::Io`].
+    pub fn load_revision(&self, file: &Path, sha256: &str) -> Result<Option<Vec<u8>>> {
+        let path = self
+            .dir_for(&canonical(file)?)
+            .join(REVISIONS_DIR)
+            .join(sha256);
+        match fs::read(&path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(Error::Io { path, source }),
+        }
+    }
+
     /// Run `f` as one read-modify-write transaction on the review of `file`.
     ///
-    /// Holds an exclusive lock for the duration. If `f` returns `Err`, nothing
-    /// is written, and an unchanged review is not rewritten. Otherwise the new
-    /// review is written atomically.
+    /// Holds an exclusive lock for the duration. `f` may [`Snapshots::keep`]
+    /// file contents. If `f` returns `Err`, nothing is written, and an
+    /// unchanged review is not rewritten. Otherwise each kept snapshot is
+    /// written, then the new review, each atomically and all under the lock,
+    /// so any revision a reader finds in `review.json` has its snapshot.
     ///
     /// # Errors
     /// Anything [`Store::load`] returns, [`Error::Locked`] if the lock could
@@ -131,7 +156,7 @@ impl Store {
     pub fn with_review<R>(
         &self,
         file: &Path,
-        f: impl FnOnce(&mut Review) -> Result<R>,
+        f: impl FnOnce(&mut Review, &mut Snapshots) -> Result<R>,
     ) -> Result<R> {
         let canonical = canonical(file)?;
         let dir = self.dir_for(&canonical);
@@ -144,11 +169,80 @@ impl Store {
         let review_path = dir.join(REVIEW_FILE);
         let before = read_review(&review_path, &canonical)?;
         let mut review = before.clone();
-        let out = f(&mut review)?;
+        let mut snapshots = Snapshots::default();
+        let out = f(&mut review, &mut snapshots)?;
+        snapshots.write(&dir.join(REVISIONS_DIR))?;
         if review != before {
             write_atomic(&dir, &review)?;
         }
         Ok(out)
+    }
+}
+
+/// File contents staged for snapshotting by a [`Store::with_review`]
+/// transaction. Nothing is written unless the transaction succeeds.
+#[derive(Debug, Default)]
+pub struct Snapshots {
+    staged: Vec<(String, Vec<u8>)>,
+}
+
+impl Snapshots {
+    /// Stage `bytes` as a snapshot and return their [`content_hash`].
+    pub fn keep(&mut self, bytes: &[u8]) -> String {
+        let sha = content_hash(bytes);
+        if !self.staged.iter().any(|(s, _)| *s == sha) {
+            self.staged.push((sha.clone(), bytes.to_vec()));
+        }
+        sha
+    }
+
+    /// Write each staged snapshot that is not on disk yet: temp file, fsync,
+    /// rename. An existing snapshot is never rewritten.
+    fn write(self, dir: &Path) -> Result<()> {
+        if self.staged.is_empty() {
+            return Ok(());
+        }
+        let io_err = |path: &Path| {
+            let path = path.to_path_buf();
+            move |source| Error::Io { path, source }
+        };
+        fs::create_dir_all(dir).map_err(io_err(dir))?;
+        for (sha, bytes) in self.staged {
+            let target = dir.join(&sha);
+            if target.exists() {
+                continue;
+            }
+            let temp = dir.join(format!("{sha}.tmp"));
+            let mut file = File::create(&temp).map_err(io_err(&temp))?;
+            file.write_all(&bytes).map_err(io_err(&temp))?;
+            file.sync_all().map_err(io_err(&temp))?;
+            drop(file);
+            fs::rename(&temp, &target).map_err(io_err(&target))?;
+        }
+        sync_dir(dir);
+        Ok(())
+    }
+}
+
+/// Lowercase hex SHA-256 of `bytes`: a revision's identity.
+///
+/// # Examples
+/// ```
+/// # use ptal::store::content_hash;
+/// assert_eq!(content_hash(b"").len(), 64);
+/// assert_ne!(content_hash(b"a\n"), content_hash(b"a\r\n"));
+/// ```
+pub fn content_hash(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Persist renames in `dir`; best effort, not every platform allows it.
+fn sync_dir(dir: &Path) {
+    if let Ok(d) = File::open(dir) {
+        let _ = d.sync_all();
     }
 }
 
@@ -207,10 +301,7 @@ fn write_atomic(dir: &Path, review: &Review) -> Result<()> {
     file.sync_all().map_err(io_err(&temp))?;
     drop(file);
     fs::rename(&temp, &target).map_err(io_err(&target))?;
-    // Persist the rename itself; best effort, not every platform allows it.
-    if let Ok(d) = File::open(dir) {
-        let _ = d.sync_all();
-    }
+    sync_dir(dir);
     Ok(())
 }
 
@@ -415,7 +506,7 @@ mod tests {
         let fx = fixture();
         let id = fx
             .store
-            .with_review(&fx.file, |r| Ok(r.next_comment_id()))
+            .with_review(&fx.file, |r, _| Ok(r.next_comment_id()))
             .unwrap();
 
         let review = fx.store.load(&fx.file).unwrap();
@@ -436,7 +527,7 @@ mod tests {
         fs::write(dir.join("review.json.tmp"), "{ half a wri").unwrap();
 
         fx.store
-            .with_review(&fx.file, |r| Ok(r.next_comment_id()))
+            .with_review(&fx.file, |r, _| Ok(r.next_comment_id()))
             .unwrap();
 
         let text = fs::read_to_string(dir.join("review.json")).unwrap();
@@ -471,7 +562,9 @@ mod tests {
         fs::write(dir.join("review.json"), &future).unwrap();
 
         let loaded = fx.store.load(&fx.file);
-        let written = fx.store.with_review(&fx.file, |r| Ok(r.next_comment_id()));
+        let written = fx
+            .store
+            .with_review(&fx.file, |r, _| Ok(r.next_comment_id()));
 
         for result in [loaded.map(|_| ()), written.map(|_| ())] {
             assert!(matches!(
@@ -491,7 +584,7 @@ mod tests {
     fn closure_error_writes_nothing() {
         let fx = fixture();
 
-        let result: crate::error::Result<()> = fx.store.with_review(&fx.file, |r| {
+        let result: crate::error::Result<()> = fx.store.with_review(&fx.file, |r, _| {
             r.next_comment_id();
             Err(Error::EmptyBody)
         });
@@ -505,14 +598,14 @@ mod tests {
     fn closure_error_leaves_existing_review_unchanged() {
         let fx = fixture();
         fx.store
-            .with_review(&fx.file, |r| Ok(r.next_comment_id()))
+            .with_review(&fx.file, |r, _| Ok(r.next_comment_id()))
             .unwrap();
         let dir = fx.store.review_dir(&fx.file).unwrap();
         let before = fs::read(dir.join("review.json")).unwrap();
 
         let _ = fx
             .store
-            .with_review(&fx.file, |r| -> crate::error::Result<()> {
+            .with_review(&fx.file, |r, _| -> crate::error::Result<()> {
                 r.next_comment_id();
                 Err(Error::EmptyBody)
             });
@@ -534,7 +627,7 @@ mod tests {
             let file = &fx.file;
             let handle = s.spawn(move || {
                 holder
-                    .with_review(file, |_| {
+                    .with_review(file, |_, _| {
                         locked_tx.send(()).unwrap();
                         release_rx.recv().unwrap();
                         Ok(())
@@ -543,23 +636,181 @@ mod tests {
             });
             locked_rx.recv().unwrap();
 
-            let blocked = waiter.with_review(&fx.file, |_| Ok(()));
+            let blocked = waiter.with_review(&fx.file, |_, _| Ok(()));
             assert!(matches!(blocked, Err(Error::Locked)));
 
             release_tx.send(()).unwrap();
             handle.join().unwrap();
         });
 
-        waiter.with_review(&fx.file, |_| Ok(())).unwrap();
+        waiter.with_review(&fx.file, |_, _| Ok(())).unwrap();
     }
 
     #[test]
     fn unchanged_review_is_not_written() {
         let fx = fixture();
 
-        fx.store.with_review(&fx.file, |_| Ok(())).unwrap();
+        fx.store.with_review(&fx.file, |_, _| Ok(())).unwrap();
 
         let dir = fx.store.review_dir(&fx.file).unwrap();
         assert!(!dir.join("review.json").exists());
+    }
+
+    // --- snapshots ---
+
+    fn snapshot_path(fx: &Fixture, bytes: &[u8]) -> std::path::PathBuf {
+        let dir = fx.store.review_dir(&fx.file).unwrap();
+        dir.join("revisions").join(content_hash(bytes))
+    }
+
+    #[test]
+    fn content_hash_is_lowercase_hex_sha256() {
+        assert_eq!(
+            content_hash(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn kept_content_is_snapshotted_with_exactly_those_bytes() {
+        let fx = fixture();
+
+        let sha = fx
+            .store
+            .with_review(&fx.file, |r, snapshots| {
+                r.next_comment_id();
+                Ok(snapshots.keep(b"one\r\ntwo\n"))
+            })
+            .unwrap();
+
+        assert_eq!(sha, content_hash(b"one\r\ntwo\n"));
+        let path = snapshot_path(&fx, b"one\r\ntwo\n");
+        assert_eq!(fs::read(&path).unwrap(), b"one\r\ntwo\n");
+        assert_eq!(
+            fx.store.load_revision(&fx.file, &sha).unwrap().as_deref(),
+            Some(&b"one\r\ntwo\n"[..])
+        );
+    }
+
+    #[test]
+    fn closure_error_after_keep_writes_no_snapshot_and_no_review() {
+        let fx = fixture();
+
+        let result: crate::error::Result<()> = fx.store.with_review(&fx.file, |r, snapshots| {
+            snapshots.keep(b"one\n");
+            r.next_comment_id();
+            Err(Error::EmptyBody)
+        });
+
+        assert!(matches!(result, Err(Error::EmptyBody)));
+        let dir = fx.store.review_dir(&fx.file).unwrap();
+        assert!(!dir.join("revisions").exists());
+        assert!(!dir.join("review.json").exists());
+    }
+
+    #[test]
+    fn keeping_the_same_content_twice_leaves_one_unrewritten_file() {
+        let fx = fixture();
+        let keep = |fx: &Fixture| {
+            fx.store
+                .with_review(&fx.file, |r, snapshots| {
+                    r.next_comment_id();
+                    Ok(snapshots.keep(b"same"))
+                })
+                .unwrap()
+        };
+        keep(&fx);
+        let path = snapshot_path(&fx, b"same");
+        let first = fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+
+        keep(&fx);
+
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), first);
+        let entries = fs::read_dir(path.parent().unwrap()).unwrap().count();
+        assert_eq!(entries, 1);
+    }
+
+    #[test]
+    fn locked_review_writes_no_snapshot() {
+        let fx = fixture();
+        let holder = Store::new(&fx.data);
+        let waiter = Store::new(&fx.data).with_lock_timeout(Duration::from_millis(50));
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+
+        std::thread::scope(|s| {
+            let file = &fx.file;
+            let handle = s.spawn(move || {
+                holder
+                    .with_review(file, |_, _| {
+                        locked_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        Ok(())
+                    })
+                    .unwrap();
+            });
+            locked_rx.recv().unwrap();
+
+            let blocked = waiter.with_review(&fx.file, |r, snapshots| {
+                r.next_comment_id();
+                Ok(snapshots.keep(b"never"))
+            });
+            assert!(matches!(blocked, Err(Error::Locked)));
+            assert!(!snapshot_path(&fx, b"never").exists());
+
+            release_tx.send(()).unwrap();
+            handle.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn stale_snapshot_temp_file_is_overwritten() {
+        let fx = fixture();
+        let path = snapshot_path(&fx, b"fresh");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let temp = path.with_extension("tmp");
+        fs::write(&temp, "half a wri").unwrap();
+
+        fx.store
+            .with_review(&fx.file, |r, snapshots| {
+                r.next_comment_id();
+                Ok(snapshots.keep(b"fresh"))
+            })
+            .unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"fresh");
+        assert!(!temp.exists());
+    }
+
+    #[test]
+    fn load_revision_of_an_unknown_hash_is_none() {
+        let fx = fixture();
+
+        assert_eq!(
+            fx.store
+                .load_revision(&fx.file, &content_hash(b"x"))
+                .unwrap(),
+            None
+        );
+        assert!(!fx.data.exists());
+    }
+
+    #[test]
+    fn snapshotting_never_touches_the_reviewed_file() {
+        let fx = fixture();
+        let bytes = fs::read(&fx.file).unwrap();
+        let mtime = fs::metadata(&fx.file).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+
+        fx.store
+            .with_review(&fx.file, |r, snapshots| {
+                r.next_comment_id();
+                Ok(snapshots.keep(&bytes))
+            })
+            .unwrap();
+
+        assert_eq!(fs::read(&fx.file).unwrap(), bytes);
+        assert_eq!(fs::metadata(&fx.file).unwrap().modified().unwrap(), mtime);
     }
 }
