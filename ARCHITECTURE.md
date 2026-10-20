@@ -442,9 +442,11 @@ Depends on `review` and `model` (and the crate-wide `error`), never on
 Its parts:
 
 - `tui::app`: `App` state (`lines`, their `tables` rows from `tui::table`
-  at `text_width()`, recomputed on open and on resize, their `stylings` from
-  `tui::highlight`, computed once by `App::highlighted(true)` since the file
-  never changes in a session, `cursor`, `top`, terminal `cols` and
+  at `text_width()`, recomputed on open, on resize and when a re-read changes
+  the lines, their `stylings` from `tui::highlight`, computed by
+  `App::highlighted(true)` and again when a re-read changes the lines (the
+  `highlight` flag remembers which), `seen`, the content hash of the lines
+  shown, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
   outdated ones, the `review`'s `ReviewStatus`, the `changes` since the
   human's last look (`View.changes`, one `anchor::Change` per hunk; `change(line)`
@@ -478,7 +480,7 @@ Its parts:
   one cell for a cursor after a full row), at least 1, capped at
   `min(10, rows / 2 - 2)` (at least 1), plus its 2 border rows; the view
   shrinks to stay above it. A thread covers its range as
-  `view` maps it to the file read at open (or after a save), whatever its
+  `view` maps it to the file as last re-read, whatever its
   `state`, so an outdated thread sits at its best-guess lines; `Marker = Waiting | Open | Resolved` is derived
   per line (waiting > open > resolved). Waiting means open and last comment
   not by `author`. The panel's thread set is recomputed from the threads and
@@ -492,9 +494,23 @@ Its parts:
   not. `render` draws from it, and the view clamp in `update` counts the
   same rows; `lines()` stays the raw file.
   `Event` is `Key | Resize | Saved { id, done, reread } |
-  ReviewSaved { message, reread } | SaveFailed | Paste(text)` (the
-  terminal's bracketed paste), where `reread` is the `Reread { threads,
-  review, changes }` the driver read back after the write, and
+  ReviewSaved { message, reread } | SaveFailed | Refreshed(reread) |
+  Paste(text)` (the terminal's bracketed paste), where `reread` is the
+  `Reread { lines, sha256, threads, review, changes }` (one `View`) the
+  driver read back after the write, or after noticing the other side's
+  writes for `Refreshed`. All three apply it the same way: when the lines
+  changed, the cursor, `top`, a Visual (or a box from Visual) `anchor` and
+  the search prompt's `anchor`, `origin` and `hit` are mapped through an
+  `anchor::Diff` from the old lines to the new (inserted lines above you
+  leave you on the same text; an edited line goes to the best guess), then
+  clamped, so an anchor past a shrunk file is clamped with the cursor;
+  mapping from no lines (the app is built from an empty view, then
+  `with_reread`) starts at the top. Tables and styling are recomputed. The
+  panel keeps its selected thread by id (if the id left the line the index
+  is clamped, and the panel closes when no threads are left). A draft is
+  never touched; a close box's `confirm_asked` is cleared (its open-thread
+  count may be stale), `discard_asked` and `status` are kept. `Refreshed`
+  changes nothing else, and
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
   always the thread id; `Effect` is `Add { start, end, body } | Reply { id,
   body } | Resolve { id } | Reopen { id } | HandOff { note } | Close {
@@ -509,9 +525,8 @@ Its parts:
   returns nothing, a second `ctrl+s` sends `Close`, and any other key clears
   it. A close with no verdict is still sent, as `verdict: None`, so the
   core's `MissingVerdict` is the one rule. `O` sends `ReopenReview` at once.
-  The TUI never checks the turn itself: its state can be stale until live
-  refresh (#36), so the core decides and a refusal shows like any failed
-  write. `ReviewSaved` stores the re-read threads, state and changes (a
+  The TUI never checks the turn itself: its state can be a refresh behind,
+  so the core decides and a refusal shows like any failed write. `ReviewSaved` stores the re-read threads, state and changes (a
   hand-off or close makes the current content the last look, so its changes
   are empty and the markers clear), returns to
   Normal and shows `message` in the footer.
@@ -749,8 +764,7 @@ line taller than the view; a hanging indent for wrapped list items; real tab
 stops; inline markup in laid-out table cells (a laid-out table gets only its
 header line's bold); `NO_COLOR` for the TUI's chrome as well;
 GFM padding of ragged table rows; pipes inside inline code in a cell; tables
-inside lists or blockquotes; polling the file and `review.json` mtimes and re-syncing; draft
-survival across a re-sync; mapping the cursor through `anchor`;
+inside lists or blockquotes;
 editing threads; notes on resolve/reopen from the TUI. Until live refresh exists,
 the screen shows the file as read at open, while `add_thread` quotes the file
 as it is at save time.
@@ -784,7 +798,7 @@ the module.
   cursor owns `bg`).
 - Off when `NO_COLOR` is set and non-empty, decided once in `cli`; the TUI's
   own chrome (cursor, gutter glyphs) keeps its colors.
-- Styling is computed once per session (the file is read once); a resize
+- Styling is recomputed only when a re-read changes the lines; a resize
   only re-wraps.
 
 *Deferred:* highlighting code inside fenced blocks by language (`syntect` or
@@ -878,7 +892,11 @@ hand-off or close.
   `tui::highlight` has examples per element (nesting, emphasis across a line
   break, unclosed fences, quoted lists) plus a property over a fixed corpus:
   one styling per line, spans in bounds and on `char` boundaries, and the
-  styled line's text is the raw line; `tui::app` checks that screen rows,
+  styled line's text is the raw line; `tui::app` applies re-reads (lines
+inserted above the cursor, an edited cursor line, a shrink mid-selection,
+drafts in every box kept, the close confirm cleared, the panel kept by
+thread id, banner, markers, tables and styling recomputed, the search
+origin mapped) and checks that screen rows,
   the clamp and key effects are identical with highlighting on and off;
   `tests/tui.rs` runs scripted rounds through `step` against a real
   `Reviews` (single-line and Visual range comments checked through the real

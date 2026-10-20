@@ -37,7 +37,7 @@ use ratatui::crossterm::terminal::{
 
 use crate::error::Result;
 use crate::model::{Side, Thread};
-use crate::review::{Clock, ReviewStatus, Reviews};
+use crate::review::{Clock, ReviewStatus, Reviews, View};
 
 use app::{App, Done, Effect, Event, Reread, update};
 use render::render;
@@ -48,7 +48,6 @@ use render::render;
 /// Loading is split from [`Loaded::into_app`] so that a missing file is
 /// reported before the terminal is queried or touched.
 pub struct Loaded {
-    lines: Vec<String>,
     view: Reread,
 }
 
@@ -59,15 +58,21 @@ pub struct Loaded {
 /// [`crate::Error::FileUnreadable`] plus any store error.
 pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<Loaded> {
     // One read: the lines shown are the ones the threads are mapped to.
-    let view = reviews.view(file, true)?;
     Ok(Loaded {
-        lines: view.lines,
-        view: Reread {
+        view: reviews.view(file, true)?.into(),
+    })
+}
+
+impl From<View> for Reread {
+    fn from(view: View) -> Self {
+        Reread {
+            lines: view.lines,
+            sha256: view.sha256,
             threads: view.threads,
             review: view.review,
             changes: view.changes,
-        },
-    })
+        }
+    }
 }
 
 impl Loaded {
@@ -75,11 +80,10 @@ impl Loaded {
     /// its markdown structure highlighted when `file` is markdown
     /// ([`highlight::is_markdown`]) and `color` is wanted.
     pub fn into_app(self, file: &Path, author: &str, size: (u16, u16), color: bool) -> App {
-        App::open(self.lines, &self.view.threads, author, size)
-            .with_review(self.view.review)
-            .with_changes(self.view.changes)
+        App::open(Vec::new(), &[], author, size)
             .labeled(file.display().to_string())
             .highlighted(color && highlight::is_markdown(file))
+            .with_reread(self.view)
     }
 }
 
@@ -260,14 +264,17 @@ pub fn step<C: Clock>(
 /// the screen loses its markers rather than offering a retry that would
 /// duplicate the comment, and keeps the `current` review state rather than
 /// showing a fresh review's.
-fn reread<C: Clock>(reviews: &Reviews<C>, file: &Path, current: &ReviewStatus) -> Reread {
+fn reread<C: Clock>(
+    reviews: &Reviews<C>,
+    file: &Path,
+    app: &App,
+    current: &ReviewStatus,
+) -> Reread {
     match reviews.view(file, true) {
-        Ok(view) => Reread {
-            threads: view.threads,
-            review: view.review,
-            changes: view.changes,
-        },
+        Ok(view) => view.into(),
         Err(_) => Reread {
+            lines: app.lines().to_vec(),
+            sha256: app.seen().to_string(),
             review: current.clone(),
             ..Reread::default()
         },
@@ -287,7 +294,7 @@ fn answer<C: Clock>(
         Ok(thread) => Event::Saved {
             id: thread.id,
             done,
-            reread: reread(reviews, file, app.review()),
+            reread: reread(reviews, file, app, app.review()),
         },
         Err(error) => Event::SaveFailed(error.to_string()),
     };
@@ -308,7 +315,7 @@ fn answer_review<C: Clock>(
     let event = match written {
         Ok((message, written)) => Event::ReviewSaved {
             message,
-            reread: reread(reviews, file, &written),
+            reread: reread(reviews, file, app, &written),
         },
         Err(error) => Event::SaveFailed(error.to_string()),
     };
@@ -327,8 +334,10 @@ mod tests {
     /// Whether `path`, opened with `color`, shows its `# Title` bold.
     fn heading_is_bold(path: &str, color: bool) -> bool {
         let loaded = Loaded {
-            lines: vec!["# Title".into()],
-            view: Reread::default(),
+            view: Reread {
+                lines: vec!["# Title".into()],
+                ..Reread::default()
+            },
         };
         let app = loaded.into_app(Path::new(path), "scott", (40, 5), color);
         let row = &app.screen_rows()[0].text;
@@ -440,17 +449,26 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_re_read_keeps_the_review_state_it_had() {
+    fn a_failed_re_read_keeps_the_review_state_and_the_text_it_had() {
         let tmp = tempfile::tempdir().unwrap();
         let reviews = Reviews::new(crate::store::Store::new(tmp.path().join("data")));
         let current = ReviewStatus {
             state: crate::model::ReviewState::Turn(Side::Agent),
             latest: None,
         };
+        let app = App::open(vec!["one".into()], &[], "scott", (40, 5)).with_reread(Reread {
+            lines: vec!["one".into()],
+            sha256: "shown".into(),
+            ..Reread::default()
+        });
 
-        let reread = reread(&reviews, &tmp.path().join("gone.md"), &current);
+        let reread = reread(&reviews, &tmp.path().join("gone.md"), &app, &current);
 
         assert!(reread.threads.is_empty());
         assert_eq!(reread.review, current);
+        assert_eq!(
+            (reread.lines, reread.sha256.as_str()),
+            (vec!["one".to_string()], "shown")
+        );
     }
 }
