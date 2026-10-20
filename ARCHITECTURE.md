@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 |---|---|
 | `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State`, the review log (`Entry`, `Event`, `Side`, `Verdict`), its derived `ReviewState`, and the human's last look (`Review::last_look`) |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
-| `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review` |
+| `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state, changes since the human's last look), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review` |
 | `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff` |
 | `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, hand off (`H`), close with a verdict (`C`), reopen the review (`O`), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
@@ -221,12 +221,13 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 
 - `add_thread(file, start, end, body, author)` — anchors a new open thread to
   lines `start..=end` of the file as it is now, storing the quote.
-- `view(file, include_resolved) -> View { revision, lines, threads, review }`
-  — threads in id order, open only by default, each with its anchor's lines
-  mapped to the file as it is now and a computed `state`; `revision` is the
-  current content's id, or `None` if nothing has been written against it
-  yet; `review` is the `ReviewStatus`. One read of the file serves all of
-  them.
+- `view(file, include_resolved) -> View { revision, lines, threads, review,
+  changes }` — threads in id order, open only by default, each with its
+  anchor's lines mapped to the file as it is now and a computed `state`;
+  `revision` is the current content's id, or `None` if nothing has been
+  written against it yet; `review` is the `ReviewStatus`; `changes` are the
+  `anchor::Change` hunks since the human's last look (`Review::last_look`).
+  One read of the file serves all of them.
 - `resolve`, `reply` and `reopen` return the thread with its lines mapped to
   the content they read (the stored anchor is unchanged); `add_thread`'s
   range is as given, since it anchors to the current content.
@@ -280,6 +281,11 @@ quotes and where each thread is.
   or unreadable (deleted or damaged by hand) is `outdated` at its stored
   range clamped to the file; it is still listed, and mapping never fails a
   read or a write.
+- `View.changes` diff the last look's snapshot against the same read as
+  `lines`, reusing the mapper's diff for that revision. They are derived from
+  the log, never stored: empty with no last look, or when its snapshot is
+  missing or unreadable (no error). Viewing is not a look, since reads never
+  write. They are for the TUI only; `comments` JSON does not carry them.
 - A mutation that fails (unknown id, bad range, empty author or body) changes
   nothing, snapshots included.
 - Every write reads the file once, outside the lock, and records the revision

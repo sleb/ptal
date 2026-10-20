@@ -1854,6 +1854,18 @@ c2  open  outdated  lines 3-4
     }
 
     #[test]
+    fn comments_has_no_changes_since_the_last_look_for_the_agent() {
+        let fx = fixture_with_two_threads();
+        fx.human_hands_off(None);
+        fs::write(&fx.file, "zero\none\nTWO\nthree\n").unwrap();
+
+        let json = fx.run(&["comments", "FILE"]).json();
+
+        let keys: Vec<&String> = json.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["file", "review", "revision", "threads"]);
+    }
+
+    #[test]
     fn handoff_during_the_agents_turn_hands_back_and_lists_what_is_waiting() {
         let fx = fixture_with_two_threads();
         fx.run(&["reply", "FILE", "c2", "Because", "--as", "claude"]);
