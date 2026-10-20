@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 |---|---|
 | `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State`, the review log (`Entry`, `Event`, `Side`, `Verdict`) and its derived `ReviewState` |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
-| `review` | Built: `add_thread`, `view` (anchors mapped across revisions), `resolve`, `reply`, `reopen` |
+| `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
 | `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Help` modes, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
@@ -208,11 +208,12 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 
 - `add_thread(file, start, end, body, author)` — anchors a new open thread to
   lines `start..=end` of the file as it is now, storing the quote.
-- `view(file, include_resolved) -> View { revision, threads }` — threads in
-  id order, open only by default, each with its anchor's lines mapped to the
-  file as it is now and a computed `state`; `revision` is the current
-  content's id, or `None` if nothing has been written against it yet. One
-  read of the file serves both.
+- `view(file, include_resolved) -> View { revision, lines, threads, review }`
+  — threads in id order, open only by default, each with its anchor's lines
+  mapped to the file as it is now and a computed `state`; `revision` is the
+  current content's id, or `None` if nothing has been written against it
+  yet; `review` is the `ReviewStatus`. One read of the file serves all of
+  them.
 - `resolve`, `reply` and `reopen` return the thread with its lines mapped to
   the content they read (the stored anchor is unchanged); `add_thread`'s
   range is as given, since it anchors to the current content.
@@ -231,6 +232,14 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
   open threads whose last comment isn't by `author` (exact match), the same
   "waiting on you" rule the TUI's gutter uses. A hand-off by the side
   without the turn, or on a closed review, is `NotYourTurn`.
+- `close(file, author, verdict?, note?) -> ReviewStatus` — the human ends
+  the review with a `close` entry, during either side's turn. Open threads
+  stay open. `verdict` is an `Option` so a front end can pass on an
+  unchosen one: `None` is `MissingVerdict`. Closing a closed review is
+  `AlreadyClosed`, so a verdict never changes under an agent acting on it.
+- `reopen_review(file, side, author, note?) -> ReviewStatus` — either side
+  brings a closed review back, on the human's turn. On an active review it
+  is `NotClosed`.
 
 `ReviewStatus { turn, verdict, latest }` is the review's state as front ends
 see it: `turn` is `None` exactly when the review is closed, `verdict` is
@@ -265,14 +274,16 @@ quotes and where each thread is.
   the comment's `revision`; `reply` sets the comment's; `resolve` sets
   `resolved_revision` and the note's; `reopen` sets only its note's (a reopen
   itself is not recorded, so one without a note keeps no snapshot and
-  assigns no ordinal). Reads hash the file but never write.
+  assigns no ordinal); `hand_off`, `close` and `reopen_review` set their log
+  entry's. Reads hash the file but never write.
 - A thread anchored before revisions existed (`anchor.revision` absent) is
   anchored to the revision of the first write after the upgrade, "the file as
   first seen"; its old comments keep no revision.
 - Every message has a non-empty `author` and `body`.
-- The turn is a signal, not a lock: no write but `hand_off` reads it, and
-  no other write moves it. Comments, replies, resolves and reopens succeed
-  during either side's turn, or on a closed review, and leave the log alone.
+- The turn is a signal, not a lock: no thread write reads it or moves it.
+  Comments, replies, resolves and reopens succeed during either side's turn,
+  or on a closed review, and leave the log alone; they never reopen a
+  closed review.
 - A log entry records the revision of the file as it is now, like any other
   write, and the review's `next_id`. A blank note is no note.
 - `resolve` on a resolved thread is `AlreadyResolved` and `reopen` on an open
@@ -281,10 +292,13 @@ quotes and where each thread is.
   `resolve` and `reopen` check author, file, thread id, then status. A file
   that is missing or not UTF-8 fails every write with `FileUnreadable`. An id
   is allocated only after the thread is found, so a failed write never burns
-  one. `hand_off` checks author, file, then the turn under the lock.
+  one. `hand_off` checks author, file, then the turn under the lock;
+  `close` checks author, verdict, file, then whether it is closed;
+  `reopen_review` checks author, file, then whether it is closed.
 
 **Contract:** returns typed results and typed errors (`NotFound`,
-`AlreadyOpen`, `AlreadyResolved`, `NotYourTurn`, `InvalidRange`, `FileUnreadable`, `Locked`,
+`AlreadyOpen`, `AlreadyResolved`, `NotYourTurn`, `MissingVerdict`,
+`NotClosed`, `AlreadyClosed`, `InvalidRange`, `FileUnreadable`, `Locked`,
 `UnsupportedSchema`, `EmptyAuthor`, `EmptyBody`, `Io`, `Corrupt`). No printing, no terminal awareness. This is the
 API both front ends share. Mapping errors to exit codes belongs to `cli`.
 

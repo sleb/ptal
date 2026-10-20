@@ -65,6 +65,8 @@ pub struct View {
     /// that displays them shows what gets anchored.
     pub lines: Vec<String>,
     pub threads: Vec<ThreadView>,
+    /// Whose turn it is, or the verdict, and the latest log entry.
+    pub review: ReviewStatus,
 }
 
 /// A review's overall state as shown to front ends: whose turn it is, or
@@ -244,6 +246,7 @@ impl<C: Clock> Reviews<C> {
             revision: review.revision_id(&content.sha256).map(String::from),
             lines: content.text.lines().map(String::from).collect(),
             threads,
+            review: ReviewStatus::of(&review),
         })
     }
 
@@ -477,6 +480,111 @@ impl<C: Clock> Reviews<C> {
                 review: ReviewStatus::of(review),
                 waiting,
             })
+        })
+    }
+
+    /// Close the review as the human `author`, with `verdict` and an
+    /// optional `note`.
+    ///
+    /// Only the human closes, at any time: during either side's turn. Open
+    /// threads don't block `approved`; they stay open as they are. A closed
+    /// review has no turn, and further thread writes don't reopen it. Appends
+    /// a `close` entry recording the revision of the file as it is now.
+    ///
+    /// `verdict` is an `Option` so that a front end can pass on a close
+    /// whose verdict wasn't chosen and get [`Error::MissingVerdict`] back.
+    ///
+    /// # Errors
+    /// [`Error::EmptyAuthor`], [`Error::MissingVerdict`] for `None`,
+    /// [`Error::FileUnreadable`], plus any store error, then
+    /// [`Error::AlreadyClosed`] if the review is closed, checked in that
+    /// order. Nothing is written on error.
+    ///
+    /// # Examples
+    /// ```
+    /// # use ptal::{model::Verdict, review::Reviews, store::Store};
+    /// # let dir = tempfile::tempdir()?;
+    /// # let file = dir.path().join("plan.md");
+    /// # std::fs::write(&file, "one\n")?;
+    /// let reviews = Reviews::new(Store::new(dir.path().join("data")));
+    ///
+    /// let status = reviews.close(&file, "scott", Some(Verdict::Approved), Some("Ship it"))?;
+    /// assert_eq!(status.verdict, Some(Verdict::Approved));
+    /// assert_eq!(status.turn, None);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn close(
+        &self,
+        file: &Path,
+        author: &str,
+        verdict: Option<Verdict>,
+        note: Option<&str>,
+    ) -> Result<ReviewStatus> {
+        require_author(author)?;
+        let verdict = verdict.ok_or(Error::MissingVerdict)?;
+        let content = Content::read(file)?;
+        let stamp = Stamp {
+            side: Side::Human,
+            author,
+            created_at: self.clock.now(),
+            note,
+        };
+
+        self.store.with_review(file, |review, snapshots| {
+            if let ReviewState::Closed(_) = review.state() {
+                return Err(Error::AlreadyClosed);
+            }
+            stamp.log(review, snapshots, &content, Event::Close { verdict });
+            Ok(ReviewStatus::of(review))
+        })
+    }
+
+    /// Reopen a closed review as `author` on `side`, with an optional
+    /// `note`. Either side may; the review returns to the human's turn.
+    ///
+    /// Appends a `reopen` entry recording the revision of the file as it is
+    /// now.
+    ///
+    /// # Errors
+    /// [`Error::EmptyAuthor`], [`Error::FileUnreadable`], plus any store
+    /// error, then [`Error::NotClosed`] if the review is active, checked in
+    /// that order. Nothing is written on error.
+    ///
+    /// # Examples
+    /// ```
+    /// # use ptal::{model::{Side, Verdict}, review::Reviews, store::Store};
+    /// # let dir = tempfile::tempdir()?;
+    /// # let file = dir.path().join("plan.md");
+    /// # std::fs::write(&file, "one\n")?;
+    /// let reviews = Reviews::new(Store::new(dir.path().join("data")));
+    /// reviews.close(&file, "scott", Some(Verdict::Dropped), None)?;
+    ///
+    /// let status = reviews.reopen_review(&file, Side::Agent, "claude", Some("Revising"))?;
+    /// assert_eq!(status.turn, Some(Side::Human));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn reopen_review(
+        &self,
+        file: &Path,
+        side: Side,
+        author: &str,
+        note: Option<&str>,
+    ) -> Result<ReviewStatus> {
+        require_author(author)?;
+        let content = Content::read(file)?;
+        let stamp = Stamp {
+            side,
+            author,
+            created_at: self.clock.now(),
+            note,
+        };
+
+        self.store.with_review(file, |review, snapshots| {
+            let ReviewState::Closed(_) = review.state() else {
+                return Err(Error::NotClosed);
+            };
+            stamp.log(review, snapshots, &content, Event::Reopen);
+            Ok(ReviewStatus::of(review))
         })
     }
 
@@ -1787,5 +1895,225 @@ mod tests {
 
         assert_eq!(state(&fx), ReviewState::Turn(Side::Agent));
         assert_eq!(fx.store.load(&fx.file).unwrap().log.len(), 1);
+    }
+
+    // --- closing and reopening the review ---
+
+    #[test]
+    fn the_human_closes_during_either_turn_with_a_verdict() {
+        for (hand_off_first, verdict) in [(false, Verdict::Approved), (true, Verdict::Dropped)] {
+            let fx = fixture();
+            if hand_off_first {
+                fx.reviews
+                    .hand_off(&fx.file, Side::Human, "scott", None)
+                    .unwrap();
+            }
+
+            let status = fx
+                .reviews
+                .close(&fx.file, "scott", Some(verdict), Some("Done"))
+                .unwrap();
+
+            assert_eq!(state(&fx), ReviewState::Closed(verdict));
+            let latest = status.latest.clone().unwrap();
+            assert_eq!(
+                latest,
+                Entry {
+                    event: Event::Close { verdict },
+                    side: Side::Human,
+                    author: "scott".into(),
+                    created_at: NOW.into(),
+                    revision: "r1".into(),
+                    next_id: 1,
+                    note: Some("Done".into()),
+                }
+            );
+            assert_eq!((status.turn, status.verdict), (None, Some(verdict)));
+        }
+    }
+
+    #[test]
+    fn a_close_without_a_verdict_is_missing_verdict_and_writes_nothing() {
+        let fx = fixture();
+
+        assert!(matches!(
+            fx.reviews.close(&fx.file, "scott", None, Some("n")),
+            Err(Error::MissingVerdict)
+        ));
+        assert_eq!(fx.review_json(), None);
+    }
+
+    #[test]
+    fn closing_a_closed_review_is_already_closed_and_writes_nothing() {
+        let fx = fixture();
+        fx.reviews
+            .close(&fx.file, "scott", Some(Verdict::Approved), None)
+            .unwrap();
+        let bytes = fx.review_json();
+
+        assert!(matches!(
+            fx.reviews
+                .close(&fx.file, "scott", Some(Verdict::Dropped), None),
+            Err(Error::AlreadyClosed)
+        ));
+        assert_eq!(fx.review_json(), bytes);
+        assert_eq!(state(&fx), ReviewState::Closed(Verdict::Approved));
+    }
+
+    #[test]
+    fn close_error_precedence_is_author_then_verdict_then_file_then_state() {
+        let fx = fixture();
+        let missing = fx.file.with_file_name("nope.md");
+
+        assert!(matches!(
+            fx.reviews.close(&missing, " ", None, None),
+            Err(Error::EmptyAuthor)
+        ));
+        assert!(matches!(
+            fx.reviews.close(&missing, "scott", None, None),
+            Err(Error::MissingVerdict)
+        ));
+        assert!(matches!(
+            fx.reviews
+                .close(&missing, "scott", Some(Verdict::Approved), None),
+            Err(Error::FileUnreadable { .. })
+        ));
+    }
+
+    #[test]
+    fn approving_with_open_threads_leaves_them_open() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "scott").unwrap();
+
+        fx.reviews
+            .close(&fx.file, "scott", Some(Verdict::Approved), None)
+            .unwrap();
+
+        assert_eq!(fx.ids(false), ["c1"]);
+    }
+
+    #[test]
+    fn a_closed_review_accepts_thread_writes_and_stays_closed() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 1, 1, "x", "scott").unwrap();
+        fx.reviews
+            .close(&fx.file, "scott", Some(Verdict::Dropped), None)
+            .unwrap();
+
+        fx.reviews
+            .add_thread(&fx.file, 2, 2, "y", "claude")
+            .unwrap();
+        fx.reviews.reply(&fx.file, "c1", "z", "claude").unwrap();
+
+        assert_eq!(state(&fx), ReviewState::Closed(Verdict::Dropped));
+    }
+
+    #[test]
+    fn either_side_reopens_a_closed_review_on_the_humans_turn() {
+        for side in [Side::Human, Side::Agent] {
+            let fx = fixture();
+            fx.reviews
+                .hand_off(&fx.file, Side::Human, "scott", None)
+                .unwrap();
+            fx.reviews
+                .close(&fx.file, "scott", Some(Verdict::Approved), None)
+                .unwrap();
+
+            let status = fx
+                .reviews
+                .reopen_review(&fx.file, side, "someone", Some("Again"))
+                .unwrap();
+
+            assert_eq!(state(&fx), ReviewState::Turn(Side::Human));
+            assert_eq!((status.turn, status.verdict), (Some(Side::Human), None));
+            let latest = status.latest.unwrap();
+            assert_eq!(latest.event, Event::Reopen);
+            assert_eq!(latest.side, side);
+            assert_eq!(latest.note.as_deref(), Some("Again"));
+        }
+    }
+
+    #[test]
+    fn reopening_an_active_review_is_not_closed_and_writes_nothing() {
+        let fx = fixture();
+        fx.reviews
+            .hand_off(&fx.file, Side::Human, "scott", None)
+            .unwrap();
+        let bytes = fx.review_json();
+
+        assert!(matches!(
+            fx.reviews
+                .reopen_review(&fx.file, Side::Agent, "claude", None),
+            Err(Error::NotClosed)
+        ));
+        assert_eq!(fx.review_json(), bytes);
+    }
+
+    #[test]
+    fn reopen_review_error_precedence_is_author_then_file_then_state() {
+        let fx = fixture();
+        let missing = fx.file.with_file_name("nope.md");
+
+        assert!(matches!(
+            fx.reviews.reopen_review(&missing, Side::Agent, "", None),
+            Err(Error::EmptyAuthor)
+        ));
+        assert!(matches!(
+            fx.reviews
+                .reopen_review(&missing, Side::Agent, "claude", None),
+            Err(Error::FileUnreadable { .. })
+        ));
+        assert!(matches!(
+            fx.reviews
+                .reopen_review(&fx.file, Side::Agent, "claude", None),
+            Err(Error::NotClosed)
+        ));
+        assert_eq!(fx.review_json(), None);
+    }
+
+    #[test]
+    fn hand_off_close_and_reopen_each_record_the_revision_they_were_made_against() {
+        let fx = fixture();
+
+        fx.reviews
+            .hand_off(&fx.file, Side::Human, "scott", None)
+            .unwrap();
+        fs::write(&fx.file, "two\n").unwrap();
+        fx.reviews
+            .close(&fx.file, "scott", Some(Verdict::Approved), None)
+            .unwrap();
+        fs::write(&fx.file, "three\n").unwrap();
+        fx.reviews
+            .reopen_review(&fx.file, Side::Agent, "claude", None)
+            .unwrap();
+
+        let review = fx.store.load(&fx.file).unwrap();
+        let revisions: Vec<&str> = review.log.iter().map(|e| e.revision.as_str()).collect();
+        assert_eq!(revisions, ["r1", "r2", "r3"]);
+        for content in ["one\ntwo\nthree\nfour\n", "two\n", "three\n"] {
+            assert!(snapshot_of(&fx, content).is_some(), "{content:?}");
+        }
+    }
+
+    #[test]
+    fn view_reports_the_review_status_without_writing() {
+        let fx = fixture();
+        assert_eq!(
+            fx.reviews.view(&fx.file, true).unwrap().review,
+            ReviewStatus::default()
+        );
+        assert_eq!(fx.review_json(), None);
+
+        let handed = fx
+            .reviews
+            .hand_off(&fx.file, Side::Human, "scott", Some("n"))
+            .unwrap();
+        let bytes = fx.review_json();
+
+        assert_eq!(
+            fx.reviews.view(&fx.file, true).unwrap().review,
+            handed.review
+        );
+        assert_eq!(fx.review_json(), bytes);
     }
 }
