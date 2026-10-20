@@ -278,7 +278,10 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
   sleep, so a wait on a closed review or on the agent's turn returns at once
   and a hand-off between two waits can't be missed. It polls `review.json`
   every `POLL_INTERVAL` (250 ms) through a `store::ReviewReader` resolved
-  once, after checking the file is readable; it never writes. `Ticker {
+  once, after checking the file is readable; it never writes. An `Io`
+  error reading `review.json` is retried on the next poll, up to
+  `WAIT_READ_RETRIES` (20, about 5 s) in a row; any other error (a corrupt
+  or newer review) ends the wait at once. `Ticker {
   now, sleep }` is injected like the clock (`SystemTicker` for real), so
   tests hand off from inside a fake `sleep`. Polling, not file watching:
   `review.json` and editors' saves replace files by rename, which breaks
@@ -495,7 +498,7 @@ Its parts:
   same rows; `lines()` stays the raw file.
   `Event` is `Key | Resize | Saved { id, done, reread } |
   ReviewSaved { message, reread } | SaveFailed | Refreshed(reread) |
-  Paste(text)` (the terminal's bracketed paste), where `reread` is the
+  RefreshFailed(message) | Paste(text)` (the terminal's bracketed paste), where `reread` is the
   `Reread { lines, sha256, threads, review, changes }` (one `View`) the
   driver read back after the write, or after noticing the other side's
   writes for `Refreshed`. All three apply it the same way: when the lines
@@ -506,8 +509,11 @@ Its parts:
   clamped, so an anchor past a shrunk file is clamped with the cursor;
   mapping from no lines (the app is built from an empty view, then
   `with_reread`) starts at the top. Tables and styling are recomputed. The
-  panel keeps its selected thread by id (if the id left the line the index
-  is clamped, and the panel closes when no threads are left). A draft is
+  panel, and the panel a reply box returns to (`Back::Panel`), keep their
+  selected thread by id: at its new index on the cursor line, or, when the
+  thread now starts elsewhere, by moving the cursor to its first line; a
+  thread that is gone leaves the index to the clamp, and the panel closes
+  when the line has no threads left. A draft is
   never touched; a close box's `confirm_asked` is cleared (its open-thread
   count may be stale), `discard_asked` and `status` are kept. `Refreshed`
   changes nothing else, and
@@ -729,11 +735,14 @@ Its parts:
   it takes `Reviews::stamp` and, only when it differs from the `Watch`'s
   last one (`None` at first), runs a full `view` and sends
   `Event::Refreshed`. A stamp or view that fails (an editor's save briefly
-  removing the file) changes nothing and the next check retries; it never
-  writes. `run` is the loop on a `TerminalSession`: draw, `event::poll`
+  removing the file) changes nothing and the next check retries; after
+  `REFRESH_FAILURES_SHOWN` (4, about a second) failures in a row it sends
+  `Event::RefreshFailed("can't refresh: …")` once, which sets the footer
+  `status`. It never writes. `run` is the loop on a `TerminalSession`: draw, `event::poll`
   until the next check is due (`POLL_INTERVAL` after the last), `step` the
   event if one came, and `refresh` once the check is due, whether or not
-  keys arrived, so typing can't starve it. Setup turns on raw mode, the
+  keys arrived, so typing can't starve it. It redraws only after an event
+  or a check that changed the screen, not on every idle tick. Setup turns on raw mode, the
   alternate screen and bracketed paste (best-effort: a terminal that refuses
   it still runs, its pastes arriving as keys), so a paste arrives as one
   `Event::Paste` rather than as keys (a `q` or `ctrl+s` in it is text);

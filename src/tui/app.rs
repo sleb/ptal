@@ -205,6 +205,9 @@ pub enum Event {
     /// side's writes) and re-read it. Nothing is written; the mode, a draft
     /// and the footer are kept.
     Refreshed(Reread),
+    /// The driver's checks for the other side's writes have kept failing;
+    /// the message goes in the footer like a failed save's.
+    RefreshFailed(String),
     /// Text was pasted (the terminal's bracketed paste). In
     /// [`Mode::Input`] it goes into the draft in one step
     /// ([`Draft::paste`]); everywhere else it is ignored.
@@ -376,6 +379,11 @@ impl App {
     /// A view over `lines` on a terminal `cols` x `rows` cells, with gutter
     /// markers for `threads` (every thread, resolved ones too). `author` is
     /// who comments are written as, and whose last word is not "waiting".
+    ///
+    /// The content hash ([`App::seen`]) is empty until a [`Reread`] is
+    /// applied, so the driver's first guarded write from such an app is
+    /// refused and refreshes it. The TUI is always built through
+    /// [`super::Loaded::into_app`], which applies the view it read.
     pub fn open(
         lines: Vec<String>,
         threads: &[ThreadView],
@@ -477,13 +485,8 @@ impl App {
         self.threads = threads;
         self.set_review(review);
         self.changes = changes;
-        let index = selected.and_then(|id| {
-            self.threads_on(self.cursor)
-                .iter()
-                .position(|view| view.thread.id == id)
-        });
-        if let (Some(index), Mode::Panel { selected, .. }) = (index, &mut self.mode) {
-            *selected = index;
+        if let Some(id) = selected {
+            self.follow_thread(&id);
         }
         if let Mode::Input {
             target: Target::Close { confirm_asked, .. },
@@ -536,14 +539,51 @@ impl App {
         }
     }
 
-    /// The id of the thread selected in the panel, if it is open.
+    /// The id of the thread selected in the panel, if it is open or a box
+    /// opened from it will return to it.
     fn selected_thread_id(&self) -> Option<String> {
-        let Mode::Panel { selected, .. } = self.mode else {
+        let (Mode::Panel { selected, .. }
+        | Mode::Input {
+            back: Back::Panel { selected, .. },
+            ..
+        }) = self.mode
+        else {
             return None;
         };
         self.threads_on(self.cursor)
             .get(selected)
             .map(|view| view.thread.id.clone())
+    }
+
+    /// Keep the panel (or the panel a box returns to) on thread `id`: by
+    /// its new index on the cursor line, or, if it now covers other lines,
+    /// by moving the cursor to its first line. A thread that is gone leaves
+    /// the index to the clamp.
+    fn follow_thread(&mut self, id: &str) {
+        let on_cursor = |app: &Self| {
+            app.threads_on(app.cursor)
+                .iter()
+                .position(|view| view.thread.id == id)
+        };
+        let mut index = on_cursor(self);
+        if index.is_none()
+            && let Some(view) = self.threads.iter().find(|view| view.thread.id == id)
+        {
+            let first = usize::try_from(view.thread.anchor.start_line).unwrap_or(1);
+            self.cursor = first.saturating_sub(1).min(self.last_line());
+            index = on_cursor(self);
+        }
+        if let (Some(index), Mode::Panel { selected, .. })
+        | (
+            Some(index),
+            Mode::Input {
+                back: Back::Panel { selected, .. },
+                ..
+            },
+        ) = (index, &mut self.mode)
+        {
+            *selected = index;
+        }
     }
 
     /// The hash of the content on screen: what a hand-off, a close or a new
@@ -1304,6 +1344,10 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
         }
         Event::Refreshed(reread) => {
             app.reread(reread);
+            None
+        }
+        Event::RefreshFailed(message) => {
+            app.status = Some(message);
             None
         }
         Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -5237,6 +5281,38 @@ mod tests {
 
         refresh(&mut a, numbered(5), vec![]);
         assert_eq!(a.mode, Mode::Normal, "no threads left on the line");
+    }
+
+    #[test]
+    fn a_reply_box_from_the_panel_returns_to_its_thread_after_a_refresh() {
+        let c1 = view("c1", (1, 1), Status::Open, State::Current);
+        let c3 = view("c3", (1, 1), Status::Open, State::Current);
+        let mut a = App::open(numbered(5), &[c1.clone(), c3.clone()], "scott", (80, 20));
+        send(
+            &mut a,
+            [press(KeyCode::Enter), press(KeyCode::Tab), ch('r')],
+        );
+        typed(&mut a, "x");
+
+        let c2 = view("c2", (1, 1), Status::Open, State::Current);
+        refresh(&mut a, numbered(5), vec![c1, c2, c3]);
+        send(&mut a, [press(KeyCode::Esc), press(KeyCode::Esc)]);
+
+        assert_eq!(selected_id(&a).as_deref(), Some("c3"));
+    }
+
+    #[test]
+    fn the_panel_follows_its_thread_to_the_line_it_moved_to() {
+        let c1 = view("c1", (1, 1), Status::Open, State::Current);
+        let c2 = view("c2", (1, 1), Status::Open, State::Current);
+        let mut a = App::open(numbered(5), &[c1.clone(), c2], "scott", (80, 20));
+        send(&mut a, [press(KeyCode::Enter), press(KeyCode::Tab)]);
+
+        let moved = view("c2", (3, 3), Status::Open, State::Outdated);
+        refresh(&mut a, numbered(5), vec![c1, moved]);
+
+        assert_eq!(a.cursor(), 2);
+        assert_eq!(selected_id(&a).as_deref(), Some("c2"));
     }
 
     #[test]

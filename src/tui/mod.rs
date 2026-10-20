@@ -187,8 +187,12 @@ pub fn run<C: Clock>(
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut watch = Watch::default();
     let mut next_check = Instant::now();
+    let mut dirty = true;
     loop {
-        terminal.draw(|frame| render(&app, frame))?;
+        if dirty {
+            terminal.draw(|frame| render(&app, frame))?;
+            dirty = false;
+        }
         // Wait for a key only until the next check is due, and check
         // whether or not keys arrived, so fast typing can't starve it.
         if event::poll(next_check.saturating_duration_since(Instant::now()))? {
@@ -198,18 +202,27 @@ pub fn run<C: Clock>(
                 TermEvent::Paste(text) => Some(Event::Paste(text)),
                 _ => None,
             };
-            if let Some(event) = event
-                && step(&mut app, event, reviews, file, author).is_break()
-            {
-                return Ok(());
+            if let Some(event) = event {
+                if step(&mut app, event, reviews, file, author).is_break() {
+                    return Ok(());
+                }
+                dirty = true;
             }
         }
         if Instant::now() >= next_check {
-            refresh(&mut app, reviews, file, &mut watch);
+            let before = app.status().map(String::from);
+            // Redraw only when the check changed what is shown.
+            dirty |=
+                refresh(&mut app, reviews, file, &mut watch) || app.status() != before.as_deref();
             next_check = Instant::now() + POLL_INTERVAL;
         }
     }
 }
+
+/// How many checks in a row [`refresh`] lets fail silently before it says
+/// so in the footer: about a second, so an editor's save that briefly
+/// removes the file is never reported, but a corrupt review is.
+pub const REFRESH_FAILURES_SHOWN: u32 = 4;
 
 /// What [`refresh`] last saw on disk.
 #[derive(Debug, Clone, Default)]
@@ -217,6 +230,8 @@ pub struct Watch {
     /// The stamp of the last re-read; `None` before the first, so the first
     /// check always re-reads.
     stamp: Option<Stamp>,
+    /// Checks that failed since the last one that read.
+    failures: u32,
 }
 
 /// Show the other side's writes: when the file or its review changed on
@@ -224,25 +239,41 @@ pub struct Watch {
 /// as [`Event::Refreshed`]. Returns whether it did.
 ///
 /// Only reads. A check that can't read (the file briefly missing while an
-/// editor saves it) leaves the screen as it was, to try again next time.
+/// editor saves it) leaves the screen as it was, to try again next time;
+/// once [`REFRESH_FAILURES_SHOWN`] checks in a row have failed, the footer
+/// says why ([`Event::RefreshFailed`]), once per run of failures.
 pub fn refresh<C: Clock>(
     app: &mut App,
     reviews: &Reviews<C>,
     file: &Path,
     watch: &mut Watch,
 ) -> bool {
-    let Ok(stamp) = reviews.stamp(file) else {
-        return false;
-    };
-    if watch.stamp.as_ref() == Some(&stamp) {
-        return false;
+    let read = reviews.stamp(file).and_then(|stamp| {
+        if watch.stamp.as_ref() == Some(&stamp) {
+            Ok(None)
+        } else {
+            reviews.view(file, true).map(|view| Some((stamp, view)))
+        }
+    });
+    match read {
+        Ok(None) => {
+            watch.failures = 0;
+            false
+        }
+        Ok(Some((stamp, view))) => {
+            watch.failures = 0;
+            update(app, Event::Refreshed(view.into()));
+            watch.stamp = Some(stamp);
+            true
+        }
+        Err(error) => {
+            watch.failures = watch.failures.saturating_add(1);
+            if watch.failures == REFRESH_FAILURES_SHOWN {
+                update(app, Event::RefreshFailed(format!("can't refresh: {error}")));
+            }
+            false
+        }
     }
-    let Ok(view) = reviews.view(file, true) else {
-        return false;
-    };
-    update(app, Event::Refreshed(view.into()));
-    watch.stamp = Some(stamp);
-    true
 }
 
 /// Feed one event to `app` and perform whatever it asks for. This is the
@@ -370,7 +401,9 @@ fn failed<C: Clock>(
     file: &Path,
     error: &Error,
 ) -> ControlFlow<()> {
-    if let (Error::FileChanged, Ok(view)) = (error, reviews.view(file, true)) {
+    if let Error::FileChanged = error
+        && let Ok(view) = reviews.view(file, true)
+    {
         update(app, Event::Refreshed(view.into()));
     }
     update(app, Event::SaveFailed(error.to_string()));

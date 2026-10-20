@@ -1442,7 +1442,10 @@ fn the_tui_and_cli_processes_writing_at_once_lose_nothing() {
                     "{}",
                     String::from_utf8_lossy(&out.stderr)
                 );
-                fs::write(&sb.file, format!("{PLAN}edit {n}\n")).unwrap();
+                // Atomically, as editors save: the TUI never reads half a file.
+                let temp = sb.file.with_extension("tmp");
+                fs::write(&temp, format!("{PLAN}edit {n}\n")).unwrap();
+                fs::rename(&temp, &sb.file).unwrap();
             }
         });
         for n in 0..ROUNDS {
@@ -1487,4 +1490,35 @@ fn the_tui_and_cli_processes_writing_at_once_lose_nothing() {
         let snapshot = store.load_revision(&sb.file, &revision.sha256).unwrap();
         assert!(snapshot.is_some(), "{} has no snapshot", revision.id);
     }
+}
+
+#[test]
+fn a_refresh_that_keeps_failing_says_so_once() {
+    let sb = sandbox(PLAN);
+    sb.reviews
+        .add_thread(&sb.file, 1, 1, "Hmm", "scott")
+        .unwrap();
+    let mut app = sb.open();
+    let mut watch = Watch::default();
+    let saved = fs::read(review_json(&sb)).unwrap();
+    fs::write(review_json(&sb), "{").unwrap();
+
+    for _ in 1..ptal::tui::REFRESH_FAILURES_SHOWN {
+        assert!(!refresh(&mut app, &sb.reviews, &sb.file, &mut watch));
+        assert_eq!(app.status(), None, "a brief failure is not shown");
+    }
+    assert!(!refresh(&mut app, &sb.reviews, &sb.file, &mut watch));
+    let status = app.status().unwrap().to_string();
+    assert!(
+        status.starts_with("can't refresh: corrupt review file"),
+        "{status}"
+    );
+    let _ = sb.press(&mut app, &["j"]);
+    for _ in 0..ptal::tui::REFRESH_FAILURES_SHOWN {
+        refresh(&mut app, &sb.reviews, &sb.file, &mut watch);
+    }
+    assert_eq!(app.status(), None, "said once per failing run");
+
+    fs::write(review_json(&sb), saved).unwrap();
+    assert!(refresh(&mut app, &sb.reviews, &sb.file, &mut watch));
 }

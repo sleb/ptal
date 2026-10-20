@@ -48,6 +48,11 @@ impl<F: Fn() -> String> Clock for F {
 /// checks for the other side's writes.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How many reads of `review.json` in a row [`Reviews::wait`] lets fail
+/// with [`Error::Io`] before giving up: about five seconds of polls, to
+/// ride out a transient I/O error.
+pub const WAIT_READ_RETRIES: u32 = 20;
+
 /// A monotonic clock that can be slept on, injected so waiting is
 /// testable without real time passing.
 pub trait Ticker {
@@ -491,8 +496,10 @@ impl<C: Clock> Reviews<C> {
     /// waiting. Never writes.
     ///
     /// # Errors
-    /// [`Error::FileUnreadable`] at the start, then any store error from a
-    /// read.
+    /// [`Error::FileUnreadable`] at the start. An [`Error::Io`] reading
+    /// `review.json` is retried on the next poll, up to
+    /// [`WAIT_READ_RETRIES`] in a row; any other store error ends the wait
+    /// at once.
     ///
     /// # Examples
     /// ```
@@ -517,17 +524,32 @@ impl<C: Clock> Reviews<C> {
         Content::read(file)?;
         let reader = self.store.reader(file)?;
         let start = ticker.now();
+        let mut failed_reads = 0;
+        let mut last = ReviewStatus::default();
         loop {
-            let review = ReviewStatus::of(&reader.load()?);
-            let reason = match review.state {
-                ReviewState::Turn(Side::Agent) => Some(Woke::Turn),
-                ReviewState::Closed(_) => Some(Woke::Closed),
-                ReviewState::Turn(Side::Human) => None,
+            let reason = match reader.load() {
+                Ok(review) => {
+                    failed_reads = 0;
+                    last = ReviewStatus::of(&review);
+                    match last.state {
+                        ReviewState::Turn(Side::Agent) => Some(Woke::Turn),
+                        ReviewState::Closed(_) => Some(Woke::Closed),
+                        ReviewState::Turn(Side::Human) => None,
+                    }
+                }
+                Err(Error::Io { .. }) if failed_reads < WAIT_READ_RETRIES => {
+                    failed_reads += 1;
+                    None
+                }
+                Err(error) => return Err(error),
             };
             let left = timeout.map(|t| t.saturating_sub(ticker.now() - start));
             let reason = reason.or((left == Some(Duration::ZERO)).then_some(Woke::Timeout));
             if let Some(reason) = reason {
-                return Ok(Waited { reason, review });
+                return Ok(Waited {
+                    reason,
+                    review: last,
+                });
             }
             ticker.sleep(left.map_or(POLL_INTERVAL, |left| left.min(POLL_INTERVAL)));
         }
@@ -2735,6 +2757,71 @@ mod tests {
         let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
 
         assert_eq!(waited.reason, Woke::Turn);
+    }
+
+    fn review_json_path(fx: &Fixture) -> PathBuf {
+        fx.store.review_dir(&fx.file).unwrap().join("review.json")
+    }
+
+    #[test]
+    fn a_wait_rides_out_a_failed_read() {
+        let fx = fixture();
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        let path = review_json_path(&fx);
+        let saved = fs::read(&path).unwrap();
+        let human = Reviews::with_clock(fx.store.clone(), later_now as fn() -> String);
+        let ticker = FakeTicker::new(|n| match n {
+            1 => {
+                fs::remove_file(&path).unwrap();
+                fs::create_dir(&path).unwrap();
+            }
+            3 => {
+                fs::remove_dir(&path).unwrap();
+                fs::write(&path, &saved).unwrap();
+                human
+                    .hand_off(&fx.file, Side::Human, "scott", None)
+                    .unwrap();
+            }
+            _ => {}
+        });
+
+        let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Turn);
+    }
+
+    #[test]
+    fn a_wait_gives_up_when_reads_keep_failing() {
+        let fx = fixture();
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        let path = review_json_path(&fx);
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let ticker = FakeTicker::idle();
+
+        let result = fx.reviews.wait(&fx.file, None, &ticker);
+
+        assert!(matches!(result, Err(Error::Io { .. })), "{result:?}");
+        assert_eq!(ticker.sleeps.get(), WAIT_READ_RETRIES);
+    }
+
+    #[test]
+    fn a_corrupt_review_ends_a_wait_at_once() {
+        let fx = fixture();
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        fs::write(review_json_path(&fx), "{").unwrap();
+        let ticker = FakeTicker::idle();
+
+        let result = fx.reviews.wait(&fx.file, None, &ticker);
+
+        assert!(matches!(result, Err(Error::Corrupt { .. })), "{result:?}");
+        assert_eq!(ticker.sleeps.get(), 0);
     }
 
     #[test]
