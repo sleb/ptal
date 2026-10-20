@@ -751,21 +751,29 @@ state or `review`.
 
 ## Testing strategy
 
-- `model`: round-trip and a golden-JSON test pinning the wire shape.
+- `model`: round-trip and a golden-JSON test pinning the wire shape (the
+  log's entries included); a table test of `Review::state()` over logs.
 - `store`: data-dir and review-dir naming, stale-temp recovery, schema
   refusal, lock contention; snapshots hold exact bytes, are not written on
   `Err` or `Locked`, are never rewritten, and leave the reviewed file's bytes
   and mtime alone.
 - `review`: one test per rule, with an injected clock; editing the file between
   calls to exercise revisions and mapping (insert above, edit, delete, revert,
-  threads on different revisions, legacy anchors, a missing snapshot).
-- `tests/core.rs`: concurrent writers, cross-handle reads, a full review round.
+  threads on different revisions, legacy anchors, a missing snapshot); turns
+  by rule too: hand-off by either side, refusal out of turn or when closed
+  (with `review.json` byte-identical), `waiting`, close during either turn,
+  reopen by either side, error precedence, out-of-turn thread writes, and
+  each log entry's revision and snapshot.
+- `tests/core.rs`: concurrent writers, cross-handle reads, a full review
+  round, and a whole turn round (hand-off, hand-back, close, reopen) through
+  separate handles, its log and state read back from disk.
 - `anchor`: one example per diff shape plus properties checked exhaustively
   over every pair of texts of 0–4 lines over `{a, b, c}` and every range
   (identity, in-bounds, `Current` ⇒ identical text).
 - `cli`: in-process tests (golden JSON, TTY rendering, error table, help) in
   `src/cli.rs`; process tests in `tests/cli.rs` for streams, exit status, and
-  env. Schema conformance is deferred with `ptal schema`.
+  env, and turns passing between the library (as the TUI writes them) and
+  separate `ptal` processes. Schema conformance is deferred with `ptal schema`.
 - `tui`: scripted key events through `update` assert on state (including the search prompt, `n`/`N` and Visual search, and the help probe that ties `tui::keys::HELP` to the key handlers); `TestBackend`
   snapshots (inline expected strings) cover Normal, Visual, Panel and Input
   rendering, gutter glyphs and styles (including the selection highlight on
@@ -798,7 +806,11 @@ state or `review`.
   `tests/tui.rs` runs scripted rounds through `step` against a real
   `Reviews` (single-line and Visual range comments checked through the real
   `ptal comments`; a thread moving with lines inserted above it, then
-  outdated once its line is edited); the terminal guard and panic hook are tested with injected
+  outdated once its line is edited; a hand-off, a hand-back seen after the
+  next write, closing with and without a verdict, the approve confirmation,
+  reopening, refusals keeping the draft, and the state after a reload); the
+  banner and the review overlay are covered in `tui::render` and `tui::app`;
+  the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the
   panic hook is global). A real-terminal check (pty) is manual.
 
