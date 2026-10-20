@@ -1022,8 +1022,7 @@ fn state_name(state: ReviewState) -> String {
     match state {
         ReviewState::Turn(Side::Human) => "your turn".into(),
         ReviewState::Turn(Side::Agent) => "agent's turn".into(),
-        ReviewState::Closed(Verdict::Approved) => "closed: approved".into(),
-        ReviewState::Closed(Verdict::Dropped) => "closed: dropped".into(),
+        ReviewState::Closed(verdict) => format!("closed: {}", verdict.as_str()),
     }
 }
 
@@ -1047,15 +1046,11 @@ fn review_rows(review: &ReviewStatus, width: usize) -> Vec<keys::Row> {
     };
     let what = match entry.event {
         LogEvent::HandOff => "hand-off".to_string(),
-        LogEvent::Close { verdict } => format!("closed as {}", verdict_name(verdict)),
+        LogEvent::Close { verdict } => format!("closed as {}", verdict.as_str()),
         LogEvent::Reopen => "reopened".to_string(),
     };
-    let side = match entry.side {
-        Side::Human => "human",
-        Side::Agent => "agent",
-    };
     let about = [
-        format!("{what} by {} ({side})", entry.author),
+        format!("{what} by {} ({})", entry.author, entry.side.as_str()),
         format!("at {} on {}", entry.created_at, entry.revision),
     ];
     for line in about {
@@ -1076,13 +1071,6 @@ fn review_rows(review: &ReviewStatus, width: usize) -> Vec<keys::Row> {
         }
     }
     out
-}
-
-fn verdict_name(verdict: Verdict) -> &'static str {
-    match verdict {
-        Verdict::Approved => "approved",
-        Verdict::Dropped => "dropped",
-    }
 }
 
 /// Apply `event` to `app`; return the effect the driver must perform.

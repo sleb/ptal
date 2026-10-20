@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
 use crate::error::Error;
-use crate::model::{Anchor, ReviewState, Side, State, Status, Thread, Verdict};
+use crate::model::{Anchor, ReviewState, Side, State, Status, Thread};
 use crate::review::{Clock, HandedOff, ReviewStatus, Reviews, SystemClock, ThreadView, View};
 use crate::store::Store;
 use crate::tui;
@@ -466,22 +466,8 @@ impl Output {
 /// `human's turn`, `agent's turn` or `closed: <verdict>`.
 fn state_line(review: &ReviewStatus) -> String {
     match review.state {
-        ReviewState::Turn(side) => format!("{}'s turn", side_name(side)),
-        ReviewState::Closed(verdict) => format!("closed: {}", verdict_name(verdict)),
-    }
-}
-
-fn side_name(side: Side) -> &'static str {
-    match side {
-        Side::Human => "human",
-        Side::Agent => "agent",
-    }
-}
-
-fn verdict_name(verdict: Verdict) -> &'static str {
-    match verdict {
-        Verdict::Approved => "approved",
-        Verdict::Dropped => "dropped",
+        ReviewState::Turn(side) => format!("{}'s turn", side.as_str()),
+        ReviewState::Closed(verdict) => format!("closed: {}", verdict.as_str()),
     }
 }
 
@@ -489,7 +475,7 @@ fn verdict_name(verdict: Verdict) -> &'static str {
 /// line of the latest note under its author.
 fn render_status(review: &ReviewStatus) -> String {
     let mut text = match review.state {
-        ReviewState::Turn(side) => format!("turn: {}\n", side_name(side)),
+        ReviewState::Turn(side) => format!("turn: {}\n", side.as_str()),
         ReviewState::Closed(_) => format!("{}\n", state_line(review)),
     };
     if let Some(entry) = &review.latest {

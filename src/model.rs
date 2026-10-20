@@ -179,6 +179,14 @@ pub enum Side {
 }
 
 impl Side {
+    /// The side's name, as on the wire: `human` or `agent`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Side::Human => "human",
+            Side::Agent => "agent",
+        }
+    }
+
     /// The side across the review from this one.
     pub fn other(self) -> Self {
         match self {
@@ -196,6 +204,16 @@ pub enum Verdict {
     Approved,
     /// The agent doesn't.
     Dropped,
+}
+
+impl Verdict {
+    /// The verdict's name, as on the wire: `approved` or `dropped`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Verdict::Approved => "approved",
+            Verdict::Dropped => "dropped",
+        }
+    }
 }
 
 /// One entry of a review's [`log`](Review::log).
@@ -583,6 +601,16 @@ mod tests {
                 ..Review::new("/x")
             };
             assert_eq!(review.state(), expected, "{log:?}");
+        }
+    }
+
+    #[test]
+    fn names_are_the_wire_names() {
+        for side in [Side::Human, Side::Agent] {
+            assert_eq!(serde_json::to_value(side).unwrap(), side.as_str());
+        }
+        for verdict in [Verdict::Approved, Verdict::Dropped] {
+            assert_eq!(serde_json::to_value(verdict).unwrap(), verdict.as_str());
         }
     }
 

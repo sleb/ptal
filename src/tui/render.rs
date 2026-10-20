@@ -405,11 +405,7 @@ fn draw_input(
         Target::Reply(id) => format!("Reply to {id} as {}", app.author()),
         Target::HandOff => "Hand off to the agent (note optional)".to_string(),
         Target::Close { verdict, .. } => {
-            let verdict = match verdict {
-                Some(Verdict::Approved) => "approved",
-                Some(Verdict::Dropped) => "dropped",
-                None => "?",
-            };
+            let verdict = verdict.map_or("?", Verdict::as_str);
             format!("Close as {verdict} (tab: approved / dropped)")
         }
         Target::NewThread => match app.selection() {
