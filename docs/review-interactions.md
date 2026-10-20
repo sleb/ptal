@@ -584,13 +584,14 @@ Collected from the scenarios above, unanswered here on purpose:
   need recording? (A1, C2)
 - **Revision:** which revision is a thread, a comment, a resolve anchored
   to? Who authored a revision? Is a rewrite still the same review? (B2, B3,
-  C1, C4, D3)
+  C1, C4, D3) *Proposed: see [Revision](#revision).*
 - **Round:** first-class (numbered) or implied by hand-offs? (D2)
 - **Comment intent:** question, change request, nit; explicit or prose? (A4, C2)
 - **Verdict:** does approval with open threads block, and does a later edit
-  undo it? Which outcomes are there? (C2, C6) *Partly proposed: closing
-  carries the verdict, `approved` or `dropped`, and open threads don't
-  block `approved`; see [Turn](#turn) rule 12.*
+  undo it? Which outcomes are there? (C2, C6) *Answered in [Turn](#turn):
+  closing carries the verdict, `approved` or `dropped` (rule 12); open
+  threads don't block `approved` (rule 12); a later edit doesn't undo an
+  approval, only an explicit reopen does (rules 13, 14).*
 
 ---
 
@@ -789,5 +790,114 @@ next. Rules 1–9 describe an active review; rules
 - **#46:** "last look" could be the human's last hand-off rather than a
   separate marker. Left to that story.
 - **#45:** a hand-off records the revision once revisions exist.
-- **Not decided here:** whether a later edit undoes an approval
-  (Verdict); whether rounds are numbered from the log (Round).
+- **Not decided here:** whether rounds are numbered from the log (Round).
+
+### Revision
+
+**Definition.** A *revision* is one distinct content of the reviewed file,
+identified by the SHA-256 of its bytes and kept as a snapshot in the
+review's data dir. ptal never writes the file, so it doesn't create
+revisions; it *observes* them, whenever it reads the file. A review is a
+sequence of observed revisions plus the threads and turn log written
+against them.
+
+**Rules.**
+
+1. **Identity is content.** Same bytes, same revision. A file edited and
+   then reverted (A → B → A) is back on revision A, not a third one.
+   Snapshots are content-addressed, so a revisited content costs nothing.
+2. **Observed on every touch.** Every command and every TUI load or
+   refresh hashes the file; content not seen before is snapshotted, under
+   the review lock, before anything is written against it. Edits made
+   between two touches collapse into one revision: the review records what
+   was seen, not every keystroke.
+3. **Numbered for people, hashed for identity.** Each revision gets a
+   per-review ordinal the first time it is seen (`r1`, `r2`, ...), for
+   display and for `ptal` output. A revisited content keeps its first
+   ordinal.
+4. **Every write records the revision it saw.** A thread's anchor is
+   `{revision, start_line, end_line, quote}` on the revision current when
+   it was created. Each comment, resolve and reopen also records the
+   revision current when written, and so does each hand-off and close
+   ([Turn](#turn) rule 6). It is one short field per entry.
+5. **Anchors are immutable; positions are computed.** A thread's anchor
+   never changes after creation. Where it sits now is computed when
+   viewing, by mapping the anchor's range directly from its revision to
+   the current one (`anchor::map_range`, #45): `current` when every
+   anchored line is unchanged, otherwise `outdated` at a best-guess,
+   in-bounds position. Viewing never writes.
+6. **Revisions have no author.** ptal can't see who edited the file (C4:
+   the human in `$EDITOR`). Attribution comes from the turn log instead:
+   the revision on a hand-off is what its sender handed over, so "what
+   changed in the agent's turn" is the diff between the revision on the
+   human's hand-off and the one on the agent's hand-back.
+7. **Same path, same review.** Review identity stays the canonical path
+   (`store`). A rewrite, however large, is a new revision of the same
+   review (C1); its threads go `outdated`. Starting again on a closed
+   review is a reopen ([Turn](#turn) rule 14).
+8. **Snapshots live as long as the review.** Plan files are small and
+   throwaway; every observed revision is kept, so any anchor can always be
+   mapped and any two revisions diffed. No pruning.
+
+**The scenarios under this definition.**
+
+| Scenario | How revisions play out |
+|---|---|
+| A2 | Each of the agent's two resolves records its revision (rule 4), so the human can see that the first referred to `r2` and the second to `r3`, and what each changed. |
+| B2 | `c2`'s resolve records `r2`; "see step 3" is checkable as the diff from `c2`'s anchor revision to `r2`, even though the change is outside `c2`'s lines. |
+| B3 | The agent's insert makes `r2`. `c2`'s anchor (`r1`, L14) maps to L15 in `r2` and stays `current` (rule 5). The agent sees the mapped line in `ptal comments`. |
+| C1 | The rewrite is `r2` of the same review (rule 7); every thread maps `outdated` with its original quote, and the agent resolves or leaves them. |
+| C4 | The human's edit is observed as a new revision the next time either side touches the file (rule 2). It carries no author (rule 6); it falls inside the human's turn, between the agent's hand-back and the human's hand-off. |
+| C5 | The anchored lines are gone in `r2`; `c1` maps `outdated`, clamped in bounds, quote kept (rule 5). |
+| D3 | `c4` is anchored to `r2`, the others to `r1`; each maps from its own revision (rules 4, 5). |
+| E1, E2 | Out-of-turn writes record their revision like any other, so it is visible which version of the file a late comment was written against. |
+
+**Considered and dropped.**
+
+- **Sequential identity** (every observation, or every write, is a new
+  revision). A → B → A would show as three revisions with a spurious
+  diff, and re-reading an unchanged file would mint revisions.
+- **Hash only, no ordinal.** Hashes are unreadable in the TUI and in an
+  agent's notes ("resolved in `9f2c...`"). The ordinal costs one counter.
+- **Snapshot only at hand-offs.** Threads created mid-turn would anchor to
+  content ptal never kept, so they couldn't be mapped.
+- **Watch the file to catch every save** (#36 may watch for refresh
+  anyway). Intermediate saves aren't something anyone reviewed; snapshots
+  of them add revisions without adding meaning. Rule 2 records what each
+  side actually saw.
+- **Revision only on the thread, not on comments and resolves.** Leaves
+  A2's and B2's question ("which version did this resolve refer to?")
+  unanswerable, for one field per entry.
+- **Re-anchor a thread to each newer revision it maps `current` to.**
+  Turns viewing into a write, so `ptal comments` would need the lock and
+  could fail with `locked`. Mapping straight from the creation revision
+  gives the same answer for `current` lines, and an edit that is later
+  reverted maps back to `current`, which chained re-anchoring would lose.
+- **Map step by step through every intermediate revision.** Same
+  objection: once a step goes `outdated` there is no way back, though the
+  text may be identical again. The direct diff is simpler and pure.
+- **Author on revisions** (by who first observed them, or by turn holder).
+  Wrong for C4, where the human edits and the agent's CLI may be first to
+  read it; the turn log already says which side's turn a change fell in.
+- **A large rewrite starts a new review.** Any threshold is arbitrary, and
+  the old threads' history would be cut off from the plan they shaped.
+- **Pruning old snapshots.** Breaks mapping for threads anchored to them;
+  the files are too small for the space to matter.
+
+**What it means for open stories.**
+
+- **#45:** snapshots on every touch, under the lock (rule 2); ordinals
+  (rule 3); `revision` on anchors, comments, resolves and reopens (rule
+  4); direct mapping from the anchor's revision with no stored re-anchor
+  (rule 5); no pruning (rule 8). Existing reviews have no revisions: their
+  threads' anchors get the revision of the file as first seen after
+  upgrading, which is no worse than today. `schema_version` stays `1`.
+  `ptal comments` keeps its shape and gains the revision fields.
+- **#46:** "changes since my last look" is the diff from the revision on
+  the human's last hand-off (or close) to the current one, which needs
+  no separate marker. Whether the TUI's own last open also counts is left
+  to that story.
+- **#35:** each hand-off and close records its revision ([Turn](#turn)
+  rule 6).
+- **Not decided here:** whether rounds are numbered from hand-offs or
+  revisions (Round).
