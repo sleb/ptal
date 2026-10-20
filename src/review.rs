@@ -6,6 +6,8 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use jiff::Timestamp;
 use serde::Serialize;
@@ -40,6 +42,54 @@ impl<F: Fn() -> String> Clock for F {
     fn now(&self) -> String {
         self()
     }
+}
+
+/// How often [`Reviews::wait`] re-reads the review, and how often the TUI
+/// checks for the other side's writes.
+pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// A monotonic clock that can be slept on, injected so waiting is
+/// testable without real time passing.
+pub trait Ticker {
+    /// The current instant.
+    fn now(&self) -> Instant;
+    /// Block for `duration`.
+    fn sleep(&self, duration: Duration);
+}
+
+/// The real monotonic clock and [`thread::sleep`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemTicker;
+
+impl Ticker for SystemTicker {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        thread::sleep(duration);
+    }
+}
+
+/// Why a [`Reviews::wait`] returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Woke {
+    /// It is the agent's turn.
+    Turn,
+    /// The review is closed; its verdict is in the status.
+    Closed,
+    /// The timeout passed on the human's turn.
+    Timeout,
+}
+
+/// The result of a [`Reviews::wait`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waited {
+    pub reason: Woke,
+    /// The review's state when the wait returned; `latest` is the hand-off
+    /// or close that ended it.
+    pub review: ReviewStatus,
 }
 
 /// A thread together with its computed [`State`], as shown to front ends.
@@ -293,6 +343,60 @@ impl<C: Clock> Reviews<C> {
             review: ReviewStatus::of(&review),
             changes,
         })
+    }
+
+    /// Block until it is no longer the human's turn on `file`, or until
+    /// `timeout` passes on `ticker`'s clock.
+    ///
+    /// Level-triggered: the state is checked before the first sleep, so a
+    /// review already on the agent's turn, or closed, returns at once, and
+    /// a hand-off that lands between two waits is never missed. Re-reads
+    /// `review.json` every [`POLL_INTERVAL`]; a timeout of zero checks once.
+    /// The file must be readable when the wait starts; its review's
+    /// location is resolved then, so the file may go missing while
+    /// waiting. Never writes.
+    ///
+    /// # Errors
+    /// [`Error::FileUnreadable`] at the start, then any store error from a
+    /// read.
+    ///
+    /// # Examples
+    /// ```
+    /// # use ptal::{model::Side, review::{Reviews, SystemTicker, Woke}, store::Store};
+    /// # let dir = tempfile::tempdir()?;
+    /// # let file = dir.path().join("plan.md");
+    /// # std::fs::write(&file, "one\n")?;
+    /// let reviews = Reviews::new(Store::new(dir.path().join("data")));
+    /// reviews.hand_off(&file, Side::Human, "scott", Some("Over to you"))?;
+    ///
+    /// let waited = reviews.wait(&file, None, &SystemTicker)?;
+    /// assert_eq!(waited.reason, Woke::Turn);
+    /// assert_eq!(waited.review.latest.unwrap().note.as_deref(), Some("Over to you"));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn wait(
+        &self,
+        file: &Path,
+        timeout: Option<Duration>,
+        ticker: &dyn Ticker,
+    ) -> Result<Waited> {
+        Content::read(file)?;
+        let reader = self.store.reader(file)?;
+        let start = ticker.now();
+        loop {
+            let review = ReviewStatus::of(&reader.load()?);
+            let reason = match review.state {
+                ReviewState::Turn(Side::Agent) => Some(Woke::Turn),
+                ReviewState::Closed(_) => Some(Woke::Closed),
+                ReviewState::Turn(Side::Human) => None,
+            };
+            let left = timeout.map(|t| t.saturating_sub(ticker.now() - start));
+            let reason = reason.or((left == Some(Duration::ZERO)).then_some(Woke::Timeout));
+            if let Some(reason) = reason {
+                return Ok(Waited { reason, review });
+            }
+            ticker.sleep(left.map_or(POLL_INTERVAL, |left| left.min(POLL_INTERVAL)));
+        }
     }
 
     /// Resolve thread `id`, optionally appending `note` as a comment by
@@ -2271,5 +2375,212 @@ mod tests {
         assert!(!changes_now(&fx).is_empty());
         assert_eq!(fx.review_json(), bytes);
         assert_eq!(snapshot_of(&fx, EDITED), None);
+    }
+
+    // --- waiting for the agent's turn ---
+
+    /// A clock that only moves when slept on, by exactly the time asked,
+    /// running `on_sleep(n)` on the `n`th sleep (from 1).
+    struct FakeTicker<'a> {
+        now: std::cell::Cell<std::time::Instant>,
+        sleeps: std::cell::Cell<u32>,
+        on_sleep: Box<dyn Fn(u32) + 'a>,
+    }
+
+    impl<'a> FakeTicker<'a> {
+        fn new(on_sleep: impl Fn(u32) + 'a) -> Self {
+            Self {
+                now: std::cell::Cell::new(std::time::Instant::now()),
+                sleeps: std::cell::Cell::new(0),
+                on_sleep: Box::new(on_sleep),
+            }
+        }
+
+        fn idle() -> Self {
+            Self::new(|_| {})
+        }
+    }
+
+    impl Ticker for FakeTicker<'_> {
+        fn now(&self) -> std::time::Instant {
+            self.now.get()
+        }
+
+        fn sleep(&self, duration: std::time::Duration) {
+            self.now.set(self.now.get() + duration);
+            self.sleeps.set(self.sleeps.get() + 1);
+            (self.on_sleep)(self.sleeps.get());
+        }
+    }
+
+    const SECOND: Option<std::time::Duration> = Some(std::time::Duration::from_secs(1));
+    const NO_WAIT: Option<std::time::Duration> = Some(std::time::Duration::ZERO);
+
+    #[test]
+    fn a_wait_on_a_closed_review_returns_at_once() {
+        let fx = fixture();
+        fx.reviews
+            .close(&fx.file, "scott", Some(Verdict::Dropped), Some("No"))
+            .unwrap();
+        let ticker = FakeTicker::idle();
+
+        let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Closed);
+        assert_eq!(waited.review.verdict(), Some(Verdict::Dropped));
+        assert_eq!(ticker.sleeps.get(), 0);
+    }
+
+    #[test]
+    fn a_wait_on_the_agents_turn_returns_at_once() {
+        let fx = fixture();
+        fx.reviews
+            .hand_off(&fx.file, Side::Human, "scott", Some("Go"))
+            .unwrap();
+        let ticker = FakeTicker::idle();
+
+        let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Turn);
+        assert_eq!(waited.review.turn(), Some(Side::Agent));
+        assert_eq!(ticker.sleeps.get(), 0);
+    }
+
+    #[test]
+    fn a_zero_timeout_on_the_humans_turn_checks_once() {
+        let fx = fixture();
+        let ticker = FakeTicker::idle();
+
+        let waited = fx.reviews.wait(&fx.file, NO_WAIT, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Timeout);
+        assert_eq!(waited.review, ReviewStatus::default());
+        assert_eq!(ticker.sleeps.get(), 0);
+    }
+
+    #[test]
+    fn a_hand_off_during_the_wait_ends_it_with_that_entry() {
+        let fx = fixture();
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        let human = Reviews::with_clock(fx.store.clone(), later_now as fn() -> String);
+        let ticker = FakeTicker::new(|n| {
+            if n == 2 {
+                human
+                    .hand_off(&fx.file, Side::Human, "scott", Some("Your go"))
+                    .unwrap();
+            }
+        });
+
+        let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Turn);
+        assert_eq!(ticker.sleeps.get(), 2);
+        let latest = waited.review.latest.unwrap();
+        assert_eq!(latest.event, Event::HandOff);
+        assert_eq!(latest.author, "scott");
+        assert_eq!(latest.note.as_deref(), Some("Your go"));
+        assert_eq!(latest.next_id, 2);
+        assert_eq!(latest.revision, "r1");
+        assert_eq!(latest.created_at, later_now());
+    }
+
+    #[test]
+    fn a_close_during_the_wait_ends_it_with_the_verdict() {
+        let fx = fixture();
+        let human = Reviews::with_clock(fx.store.clone(), later_now as fn() -> String);
+        let ticker = FakeTicker::new(|_| {
+            human
+                .close(&fx.file, "scott", Some(Verdict::Approved), Some("Ship"))
+                .unwrap();
+        });
+
+        let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Closed);
+        assert_eq!(waited.review.verdict(), Some(Verdict::Approved));
+        assert_eq!(waited.review.latest.unwrap().note.as_deref(), Some("Ship"));
+    }
+
+    #[test]
+    fn the_timeout_is_measured_on_the_tickers_clock() {
+        let fx = fixture();
+        let ticker = FakeTicker::idle();
+
+        let waited = fx.reviews.wait(&fx.file, SECOND, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Timeout);
+        assert_eq!(ticker.sleeps.get(), 4, "a poll every {POLL_INTERVAL:?}");
+    }
+
+    #[test]
+    fn no_timeout_keeps_polling() {
+        let fx = fixture();
+        let human = Reviews::with_clock(fx.store.clone(), later_now as fn() -> String);
+        let ticker = FakeTicker::new(|n| {
+            if n == 100 {
+                human
+                    .hand_off(&fx.file, Side::Human, "scott", None)
+                    .unwrap();
+            }
+        });
+
+        let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Turn);
+        assert_eq!(ticker.sleeps.get(), 100);
+    }
+
+    #[test]
+    fn a_wait_on_a_missing_or_non_utf8_file_is_unreadable() {
+        let fx = fixture();
+        let binary = fx.file.with_file_name("bin.md");
+        fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
+
+        for path in [fx.file.with_file_name("nope.md"), binary] {
+            assert!(matches!(
+                fx.reviews.wait(&path, NO_WAIT, &FakeTicker::idle()),
+                Err(Error::FileUnreadable { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn removing_the_file_mid_wait_does_not_fail_it() {
+        let fx = fixture();
+        let human = Reviews::with_clock(fx.store.clone(), later_now as fn() -> String);
+        let ticker = FakeTicker::new(|n| match n {
+            1 => fs::remove_file(&fx.file).unwrap(),
+            3 => {
+                fs::write(&fx.file, "one\n").unwrap();
+                human
+                    .hand_off(&fx.file, Side::Human, "scott", None)
+                    .unwrap();
+            }
+            _ => {}
+        });
+
+        let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Turn);
+    }
+
+    #[test]
+    fn a_wait_never_writes() {
+        let fx = fixture();
+        fx.reviews
+            .wait(&fx.file, SECOND, &FakeTicker::idle())
+            .unwrap();
+        assert_eq!(fx.review_json(), None);
+
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        let bytes = fx.review_json();
+        fx.reviews
+            .wait(&fx.file, SECOND, &FakeTicker::idle())
+            .unwrap();
+        assert_eq!(fx.review_json(), bytes);
     }
 }

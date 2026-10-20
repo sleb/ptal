@@ -117,8 +117,23 @@ impl Store {
     /// [`Error::FileUnreadable`], [`Error::Corrupt`], [`Error::UnsupportedSchema`]
     /// or [`Error::Io`].
     pub fn load(&self, file: &Path) -> Result<Review> {
+        self.reader(file)?.load()
+    }
+
+    /// A reader of the review of `file`, its location resolved now, once.
+    ///
+    /// Each [`ReviewReader::load`] then reads only `review.json`, so a
+    /// reader that polls keeps working while the reviewed file is briefly
+    /// gone (an editor saving by rename).
+    ///
+    /// # Errors
+    /// [`Error::FileUnreadable`] if `file` cannot be canonicalized.
+    pub fn reader(&self, file: &Path) -> Result<ReviewReader> {
         let canonical = canonical(file)?;
-        read_review(&self.dir_for(&canonical).join(REVIEW_FILE), &canonical)
+        Ok(ReviewReader {
+            review_path: self.dir_for(&canonical).join(REVIEW_FILE),
+            canonical,
+        })
     }
 
     /// The snapshot of the revision whose content hashes to `sha256`, or
@@ -176,6 +191,25 @@ impl Store {
             write_atomic(&dir, &review)?;
         }
         Ok(out)
+    }
+}
+
+/// Reads one review again and again without resolving the reviewed file's
+/// path each time. Made by [`Store::reader`].
+#[derive(Debug, Clone)]
+pub struct ReviewReader {
+    review_path: PathBuf,
+    canonical: PathBuf,
+}
+
+impl ReviewReader {
+    /// Read the review; empty if none has been saved yet. Takes no lock,
+    /// like [`Store::load`].
+    ///
+    /// # Errors
+    /// [`Error::Corrupt`], [`Error::UnsupportedSchema`] or [`Error::Io`].
+    pub fn load(&self) -> Result<Review> {
+        read_review(&self.review_path, &self.canonical)
     }
 }
 

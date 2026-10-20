@@ -34,7 +34,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 |---|---|
 | `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State`, the review log (`Entry`, `Event`, `Side`, `Verdict`), its derived `ReviewState`, and the human's last look (`Review::last_look`) |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
-| `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state, changes since the human's last look), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review` |
+| `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state, changes since the human's last look), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review`, `wait` |
 | `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff` |
 | `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, hand off (`H`), close with a verdict (`C`), reopen the review (`O`), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
@@ -210,6 +210,10 @@ a snapshot and returns its hash, and an `Err` from the closure writes nothing,
 snapshots included. `load(file)` and `load_revision(file, sha) ->
 Option<bytes>` take no lock: rename makes each read a consistent snapshot. A
 review with no `review.json` loads as empty without touching disk.
+`reader(file) -> ReviewReader` resolves the review's location once;
+`ReviewReader::load()` then reads only `review.json` (`load` is
+`reader(file)?.load()`), so a poller survives the reviewed file briefly
+missing while an editor saves it by rename.
 `content_hash(bytes)` is the one hashing rule, shared with `review`.
 
 ### `review`
@@ -253,6 +257,18 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 - `reopen_review(file, side, author, note?) -> ReviewStatus` — either side
   brings a closed review back, on the human's turn. On an active review it
   is `NotClosed`.
+- `wait(file, timeout?, &dyn Ticker) -> Waited { reason, review }` — blocks
+  until it is not the human's turn: `Woke::Turn` on the agent's turn,
+  `Woke::Closed` when closed, `Woke::Timeout` once `timeout` passes on the
+  ticker's clock. Level-triggered on the state, checked before the first
+  sleep, so a wait on a closed review or on the agent's turn returns at once
+  and a hand-off between two waits can't be missed. It polls `review.json`
+  every `POLL_INTERVAL` (250 ms) through a `store::ReviewReader` resolved
+  once, after checking the file is readable; it never writes. `Ticker {
+  now, sleep }` is injected like the clock (`SystemTicker` for real), so
+  tests hand off from inside a fake `sleep`. Polling, not file watching:
+  `review.json` and editors' saves replace files by rename, which breaks
+  per-file watches, and the files are a few KB.
 
 `ReviewStatus { state, latest }` is the review's state as front ends see
 it: the `ReviewState` and the last log entry, if any. It serializes as
@@ -787,7 +803,10 @@ hand-off or close.
   by rule too: hand-off by either side, refusal out of turn or when closed
   (with `review.json` byte-identical), `waiting`, close during either turn,
   reopen by either side, error precedence, out-of-turn thread writes, and
-  each log entry's revision and snapshot.
+  each log entry's revision and snapshot; `wait` with a fake ticker
+  (returns at once when closed or on the agent's turn, a hand-off or close
+  from another handle inside `sleep`, timeouts on the ticker's clock, the
+  file removed mid-wait, never writes).
 - `tests/core.rs`: concurrent writers, cross-handle reads, a full review
   round, and a whole turn round (hand-off, hand-back, close, reopen) through
   separate handles, its log and state read back from disk.
