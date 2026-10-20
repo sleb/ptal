@@ -167,7 +167,7 @@ the diff ops, not one per line.
 ```
 <data>/<slug>-<hash8>/        slug = file name sanitized to [A-Za-z0-9._-];
                               hash8 = of the canonical absolute path
-  review.json                 Review (schema_version, path, next_id, revisions, threads)
+  review.json                 Review (schema_version, path, next_id, revisions, threads, log)
   review.lock                 advisory lock file; never renamed or replaced
   revisions/<sha256>          raw bytes of each revision written against
 ```
