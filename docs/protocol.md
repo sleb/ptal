@@ -3,7 +3,8 @@
 How a ptal review runs between you and an agent: who acts when, what each
 side can do, and how a review ends. The command and key for each operation
 are in [interfaces.md](interfaces.md). The scenarios and reasoning these
-definitions were worked out from are in the git history (#79).
+definitions were worked out from are in `docs/review-interactions.md` at
+commit `0365930` (removed since).
 
 > **Status.** Threads, comments, replies, resolving and reopening are built.
 > Revisions and threads that follow edits (#45), changes since your last
