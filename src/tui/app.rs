@@ -1421,9 +1421,15 @@ fn saved_body(draft: &str) -> &str {
 /// blank draft, else on a second press, any other key in between keeping
 /// the draft (and cancelling a pending confirmation).
 fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let save = ctrl && matches!(key.code, KeyCode::Char('s' | 'S'));
+    // Only a save needs these; computed before the mode is borrowed.
+    let (selection, open_threads) = if save {
+        (app.selection(), app.open_threads())
+    } else {
+        ((0, 0), 0)
+    };
     let width = app.draft_width();
-    let selection = app.selection();
-    let open_threads = app.open_threads();
     let Mode::Input {
         draft,
         discard_asked,
@@ -1433,24 +1439,22 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     else {
         return None;
     };
-    let back = back.mode();
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // Any key but a save cancels a pending confirmation, `esc` included.
+    if let Target::Close { confirm_asked, .. } = target
+        && !save
+    {
+        *confirm_asked = false;
+    }
     let cancel = key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c'));
     if cancel {
         if draft.text().trim().is_empty() || *discard_asked {
-            app.mode = back;
+            app.mode = back.mode();
         } else {
             *discard_asked = true;
         }
         return None;
     }
     *discard_asked = false;
-    let save = matches!(key.code, KeyCode::Char('s' | 'S')) && ctrl;
-    if let Target::Close { confirm_asked, .. } = target
-        && !save
-    {
-        *confirm_asked = false;
-    }
     match key.code {
         _ if save => return save_box(draft.text(), target, selection, open_threads),
         KeyCode::Tab => {
@@ -4710,5 +4714,24 @@ mod tests {
         assert_eq!(a.status(), Some("handed off"));
         assert_eq!(a.review().state, ReviewState::Turn(Side::Agent));
         assert!(a.banner().0.starts_with("agent's turn · scott: ok"));
+    }
+
+    #[test]
+    fn an_esc_between_the_two_presses_cancels_the_approve_confirmation() {
+        let mut a = with_an_open_thread();
+        send(&mut a, [shift('C'), press(KeyCode::Tab)]);
+        typed(&mut a, "x");
+        assert_eq!(update(&mut a, ctrl('s')), None, "the first press asks");
+
+        send(&mut a, [press(KeyCode::Esc)]);
+
+        assert!(matches!(
+            target(&a),
+            Target::Close {
+                confirm_asked: false,
+                ..
+            }
+        ));
+        assert_eq!(update(&mut a, ctrl('s')), None, "asked again");
     }
 }
