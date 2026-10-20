@@ -18,8 +18,9 @@ and revisions.
 > tables align, markdown structure is highlighted), comment on a line or a
 > selected range, read threads and the agent's replies, jump between threads,
 > search, write multi-line comments, reply, resolve, reopen, hand the turn to
-> the agent and close a review with a verdict, `?` lists the keys. Live
-> refresh is planned. See
+> the agent and close a review with a verdict, `?` lists the keys, and the
+> screen refreshes live as the agent writes; agents block on `ptal wait`
+> for their turn. See
 > [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why not a PR?
@@ -160,6 +161,14 @@ latest hand-off or close: `┃` (green) on lines added or edited since then,
 `-` (red) where text was removed. The footer counts them (`N changes`) and
 `}` / `{` jump between them. Opening ptal is not a look, so the markers stay
 until you hand off or close again; nothing is marked before your first one.
+
+The screen keeps itself current: about every 250 ms ptal checks whether the
+file or its review changed, and shows the agent's replies, resolves, new
+threads, hand-backs and edits to the file without a restart. The cursor
+stays on the text it was on, and a half-typed comment or note is kept. If
+the file changed after the screen last showed it, a new comment, hand-off
+or close is refused (`the file changed: look again`), the screen refreshes,
+and `ctrl+s` again saves against what you now see.
 
 The TUI needs an interactive terminal: run without one it
 exits `1` with a `not_a_terminal` JSON error.
