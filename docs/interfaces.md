@@ -36,6 +36,7 @@ acceptance criteria and link here instead of restating commands.
 | Reopen a thread | `ptal reopen <file> <id> --as <name> [--note "..."]` (`already_open` if open) | `o` in the thread panel reopens the selected resolved thread (no note; already open: footer says so) | `reopen` |
 | See whose turn it is | `review` in `comments`: `turn` (`human`, `agent`, or `null` when closed), `verdict` (`approved`, `dropped`, or `null`), and `latest`, the last hand-off, close or reopen with its side, author, time, revision, `next_id` and note; on a TTY, a `turn: agent` or `closed: approved` header and the latest note | A banner on the top row: `your turn`, `agent's turn` or `closed: approved`, then ` · <author>: <note>` (its first line, `…` if cut or longer), and on the right the keys for what you can do now. `i` in Normal opens the review full-screen: the state, the latest hand-off, close or reopen with its author, side, time and revision, and the whole note (`j`/`k`, `g`/`G` scroll; `i`, `esc`, `q` or `ctrl+c` close). Read at open and after each of your own writes | `view` |
 | Hand off | `ptal handoff <file> --as <name> [--note "..."]`, as the agent (`--side human` to act as the human); prints `{"file", "review", "waiting"}`, where `waiting` lists open threads whose last comment isn't yours; `not_your_turn` if the side doesn't hold the turn or the review is closed | `H` in Normal opens a box titled `Hand off to the agent (note optional)`; `ctrl+s` hands off, even with the box blank (no note); `esc` (or `ctrl+c`) cancels as for a comment. The footer then reads `handed off`, with `· waiting on you: c3, c5` when open threads' last comment isn't yours. Out of turn, `not your turn` shows on the box's border and the draft is kept | `hand_off` |
+| Wait for your turn | `ptal wait <file> [--timeout SECS]` blocks until it is the agent's turn or the review is closed, then prints `{"file", "reason", "review"}`: `reason` is `turn`, `closed` (with the `verdict`) or `timeout` (still the human's turn), all exit `0`; `review.latest` is the hand-off or close that ended it. Returns at once if already the agent's turn or closed; `--timeout 0` checks once. On a TTY: the `turn: agent` / `closed: approved` header and the note, or `timeout: still the human's turn`. Never writes | n/a: the TUI refreshes live (see "Seeing the other side's writes") | `wait` |
 | Close a review | n/a: only the human closes; `comments` shows the `verdict` and the close's note in `latest` | `C` in Normal opens a box titled `Close as ? (tab: approved / dropped)`; `tab` picks `approved`, then `dropped`, then `approved` again, and the title follows; the text is the note (optional). `ctrl+s` closes; with no verdict chosen, the core's `missing_verdict` message shows on the border and the draft is kept. Approving with open threads asks first (`N open threads stay open: ctrl+s again to approve`): a second `ctrl+s` closes, any other key cancels the ask. Works during either turn | `close` |
 | Reopen a review | `ptal reopen <file> --as <name> [--note "..."]` (no thread id), as the agent (`--side human` to act as the human); prints `{"file", "review"}`; back to the human's turn; `not_closed` if active | `O` in Normal reopens the review at once (no note); on an active one the footer says `review is not closed` | `reopen_review` |
 | See whether a thread is stale | `state: "current" \| "outdated"` in `comments`; the range is where the anchored text is now (edits above move it), `outdated` once an anchored line is edited or removed, at a best guess with the original quote | `outdated` in the thread panel; the footer counts open outdated threads (`N outdated`); the gutter and panel follow the same mapped range | `view` |
@@ -81,7 +82,7 @@ the TUI runs.
 ## Bare `ptal <file>` and subcommand names
 
 `ptal <file>` opens the TUI. A first argument that is exactly `comments`,
-`add`, `resolve`, `reply`, `reopen`, `handoff` or `help` is the subcommand; to open a file with one of those names,
+`add`, `resolve`, `reply`, `reopen`, `handoff`, `wait` or `help` is the subcommand; to open a file with one of those names,
 write `./comments`. With no arguments, `ptal` prints help and exits `2`. The
 `--json` flag is accepted with a file and has no effect on the TUI. Unlike
 the agent commands, the TUI takes its author from `$USER` only (never
@@ -92,6 +93,9 @@ the terminal is taken over.
 
 - **Changes since the last look are TUI-only.** They answer the human's "what did the agent change?"; the agent made the edits and reads the file itself, so `comments` carries no changes.
 
+- **Only the agent waits.** `ptal wait` blocks the agent until its turn; the
+  human's side of waiting is the TUI's live refresh, so `wait` has no
+  `--side`, and no `--as`, since it only reads.
 - **Only the human closes a review.** The CLI has no close command; the
   agent reads the verdict and note from `comments`.
 - **Navigation and quitting** are TUI-only; the agent has no cursor.

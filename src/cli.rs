@@ -13,7 +13,10 @@ use serde_json::json;
 
 use crate::error::Error;
 use crate::model::{Anchor, ReviewState, Side, State, Status, Thread};
-use crate::review::{Clock, HandedOff, ReviewStatus, Reviews, SystemClock, ThreadView, View};
+use crate::review::{
+    Clock, HandedOff, ReviewStatus, Reviews, SystemClock, SystemTicker, ThreadView, Ticker, View,
+    Waited, Woke,
+};
 use crate::store::Store;
 use crate::tui;
 
@@ -100,6 +103,8 @@ pub struct Env<C: Clock> {
     pub stderr_is_tty: bool,
     /// Whether the TUI may highlight text: [`color_wanted`] of `NO_COLOR`.
     pub color: bool,
+    /// The clock `wait` measures its timeout on and sleeps with.
+    pub ticker: Box<dyn Ticker>,
 }
 
 // Help text. Examples live here once; `--help` and the docs quote these.
@@ -133,6 +138,11 @@ const HANDOFF_EXAMPLE: &str = "\
 Examples:
   ptal handoff plan.md --as claude
   ptal handoff plan.md --as claude --note \"Addressed everything but c4.\"";
+
+const WAIT_EXAMPLE: &str = "\
+Examples:
+  ptal wait plan.md                  # block until your turn or a close
+  ptal wait plan.md --timeout 300    # give up after 5 minutes: reason \"timeout\"";
 
 const WORKFLOW: &str = "\
 Review a throwaway text file. A human comments on lines in the TUI, opened
@@ -334,6 +344,14 @@ enum Command {
         #[arg(long)]
         note: Option<String>,
     },
+    /// Block until it is your turn or the review is closed.
+    #[command(after_long_help = WAIT_EXAMPLE)]
+    Wait {
+        file: PathBuf,
+        /// Give up after SECS seconds (0 checks once); default: no limit.
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<u64>,
+    },
 }
 
 /// `--side`: which side the CLI acts as. The agent unless told otherwise.
@@ -396,6 +414,8 @@ enum Output {
     HandedOff(HandedOff),
     /// A reopened review.
     Reopened(ReviewStatus),
+    /// Why a wait returned.
+    Waited(Waited),
 }
 
 /// What a write command did, for the readable rendering.
@@ -423,6 +443,9 @@ impl Output {
                 json!({ "file": file, "review": review, "waiting": waiting })
             }
             Output::Reopened(review) => json!({ "file": file, "review": review }),
+            Output::Waited(Waited { reason, review }) => {
+                json!({ "file": file, "reason": reason, "review": review })
+            }
         };
         format!("{value}\n")
     }
@@ -459,6 +482,11 @@ impl Output {
                 line + "\n"
             }
             Output::Reopened(review) => format!("reopened: {}\n", state_line(review)),
+            Output::Waited(Waited {
+                reason: Woke::Timeout,
+                ..
+            }) => "timeout: still the human's turn\n".to_string(),
+            Output::Waited(Waited { review, .. }) => render_status(review),
         }
     }
 }
@@ -583,7 +611,8 @@ fn run_command<C: Clock>(
         | Command::Resolve { file, .. }
         | Command::Reply { file, .. }
         | Command::Reopen { file, .. }
-        | Command::Handoff { file, .. } => file,
+        | Command::Handoff { file, .. }
+        | Command::Wait { file, .. } => file,
     };
     let output = dispatch(command, env)?;
     let canonical = std::fs::canonicalize(file).map_err(|source| {
@@ -703,6 +732,14 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
             let handed = reviews.hand_off(file, (*side).into(), &author, note.as_deref())?;
             Ok(Output::HandedOff(handed))
         }
+        Command::Wait { file, timeout } => {
+            let timeout = timeout.map(std::time::Duration::from_secs);
+            Ok(Output::Waited(reviews.wait(
+                file,
+                timeout,
+                env.ticker.as_ref(),
+            )?))
+        }
     }
 }
 
@@ -747,6 +784,7 @@ pub fn main() -> ExitCode {
         stdout_is_tty,
         stderr_is_tty,
         color: color_wanted(std::env::var_os("NO_COLOR").as_deref()),
+        ticker: Box::new(SystemTicker),
     };
     let code = run(
         std::env::args_os(),
@@ -910,6 +948,7 @@ mod tests {
                 stdout_is_tty: tty,
                 stderr_is_tty: tty,
                 color: true,
+                ticker: Box::new(SystemTicker),
             }
         }
 
@@ -1816,7 +1855,9 @@ c2  open  outdated  lines 3-4
     fn every_subcommand_help_has_an_example() {
         let fx = fixture("one\n");
 
-        for command in ["comments", "add", "resolve", "reply", "reopen", "handoff"] {
+        for command in [
+            "comments", "add", "resolve", "reply", "reopen", "handoff", "wait",
+        ] {
             let help = fx.run(&[command, "--help"]).stdout;
             assert!(help.contains("Example"), "{command}:\n{help}");
             assert!(
@@ -2146,5 +2187,158 @@ c2  open  outdated  lines 3-4
 
         assert!(help.contains("ptal <file>"), "{help}");
         assert!(help.contains("not_a_terminal"), "{help}");
+    }
+
+    // ---- waiting for the agent's turn -------------------------------------
+
+    /// A ticker that never really sleeps: each sleep moves its clock on.
+    struct InstantTicker(std::cell::Cell<std::time::Instant>);
+
+    impl crate::review::Ticker for InstantTicker {
+        fn now(&self) -> std::time::Instant {
+            self.0.get()
+        }
+
+        fn sleep(&self, duration: std::time::Duration) {
+            self.0.set(self.0.get() + duration);
+        }
+    }
+
+    impl Fixture {
+        fn wait_env(&self, tty: bool) -> Env<fn() -> String> {
+            Env {
+                ticker: Box::new(InstantTicker(std::cell::Cell::new(
+                    std::time::Instant::now(),
+                ))),
+                ..self.env(None, tty)
+            }
+        }
+    }
+
+    #[test]
+    fn wait_on_the_agents_turn_prints_the_hand_off() {
+        let fx = fixture("one\n");
+        fx.human_hands_off(Some("Over to you"));
+
+        let out = fx.run_with(&["wait", "FILE"], &fx.wait_env(false));
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_eq!(
+            out.json(),
+            serde_json::json!({
+                "file": fx.canonical(),
+                "reason": "turn",
+                "review": {
+                    "turn": "agent",
+                    "verdict": null,
+                    "latest": {
+                        "event": "hand_off", "side": "human", "author": "scott",
+                        "created_at": NOW, "revision": "r1", "next_id": 1,
+                        "note": "Over to you",
+                    },
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn wait_on_a_closed_review_prints_the_verdict() {
+        let fx = fixture("one\n");
+        fx.reviews()
+            .close(&fx.file, "scott", Some(Verdict::Approved), None)
+            .unwrap();
+
+        let out = fx.run_with(&["wait", "FILE"], &fx.wait_env(false));
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        let json = out.json();
+        assert_eq!(json["reason"], "closed");
+        assert_eq!(json["review"]["verdict"], "approved");
+        assert_eq!(json["review"]["turn"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn wait_with_a_timeout_on_the_humans_turn_is_timeout_and_exit_0() {
+        let fx = fixture("one\n");
+
+        for timeout in ["0", "3"] {
+            let out = fx.run_with(&["wait", "FILE", "--timeout", timeout], &fx.wait_env(false));
+
+            assert_eq!(out.code, 0, "{}", out.stderr);
+            let json = out.json();
+            assert_eq!(json["reason"], "timeout");
+            assert_eq!(json["review"]["turn"], "human");
+            assert_eq!(json["review"]["latest"], serde_json::Value::Null);
+        }
+        assert_eq!(fx.review_bytes(), b"", "a wait writes nothing");
+    }
+
+    #[test]
+    fn wait_on_a_tty_prints_the_state_header_or_the_timeout() {
+        let fx = fixture("one\n");
+        let tty = fx.wait_env(true);
+
+        let timeout = fx.run_with(&["wait", "FILE", "--timeout", "0"], &tty);
+        fx.human_hands_off(Some("Look at c1\nand c2"));
+        let turn = fx.run_with(&["wait", "FILE"], &tty);
+        fx.reviews()
+            .close(&fx.file, "scott", Some(Verdict::Dropped), None)
+            .unwrap();
+        let closed = fx.run_with(&["wait", "FILE"], &tty);
+
+        assert_eq!(timeout.stdout, "timeout: still the human's turn\n");
+        assert_eq!(
+            turn.stdout,
+            "turn: agent\n  scott: Look at c1\n  scott: and c2\n"
+        );
+        assert_eq!(closed.stdout, "closed: dropped\n");
+    }
+
+    #[test]
+    fn wait_rejects_a_bad_timeout_a_side_and_an_author_as_usage() {
+        let fx = fixture("one\n");
+
+        for args in [
+            &["wait", "FILE", "--timeout", "soon"][..],
+            &["wait", "FILE", "--timeout", "-1"],
+            &["wait", "FILE", "--side", "human"],
+            &["wait", "FILE", "--as", "claude"],
+        ] {
+            let out = fx.run_with(args, &fx.wait_env(false));
+            assert_eq!(out.code, 2, "{args:?}");
+            assert_eq!(out.error_code(), "usage", "{args:?}");
+            assert_eq!(out.stdout, "", "{args:?}");
+        }
+    }
+
+    #[test]
+    fn wait_needs_no_author() {
+        let fx = fixture("one\n");
+
+        let out = fx.run_with(&["wait", "FILE", "--timeout", "0"], &fx.wait_env(false));
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+    }
+
+    #[test]
+    fn wait_on_a_missing_file_is_file_unreadable_with_empty_stdout() {
+        let fx = fixture("one\n");
+        fs::remove_file(&fx.file).unwrap();
+
+        let out = fx.run_with(&["wait", "FILE", "--timeout", "0"], &fx.wait_env(false));
+
+        assert_eq!(out.code, 1);
+        assert_eq!(out.error_code(), "file_unreadable");
+        assert_eq!(out.stdout, "");
+    }
+
+    #[test]
+    fn a_file_named_wait_opens_as_dot_slash_wait() {
+        let fx = fixture("one\n");
+
+        let out = fx.run_with(&["./wait", "--json"], &fx.env(None, true));
+
+        assert_eq!(out.error_code(), "file_unreadable");
+        assert!(out.stderr.contains("./wait"), "{}", out.stderr);
     }
 }

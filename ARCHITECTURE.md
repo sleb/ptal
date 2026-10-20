@@ -35,7 +35,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State`, the review log (`Entry`, `Event`, `Side`, `Verdict`), its derived `ReviewState`, and the human's last look (`Review::last_look`) |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
 | `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state, changes since the human's last look), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review`, `wait` |
-| `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff` |
+| `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff`, `wait` |
 | `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, hand off (`H`), close with a verdict (`C`), reopen the review (`O`), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor` | Built: `map_range`, `Diff` (with `Diff::changes`), `clamp` (Myers line diff via `similar`) |
@@ -343,11 +343,11 @@ API both front ends share. Mapping errors to exit codes belongs to `cli`.
 
 **Role:** the agent-facing front end (`src/cli.rs`, clap derive). Parses args,
 calls `review`, prints. The whole flow is `run(args, &Env, out, err) -> u8`,
-with the process facts (store, clock, `PTAL_AUTHOR`, TTY flags) injected via
+with the process facts (store, clock, ticker, `PTAL_AUTHOR`, TTY flags) injected via
 `Env`, so every path is testable in-process; `main` only fills `Env` from the
 real process.
 
-Commands: `comments`, `add`, `resolve`, `reply`, `reopen`, `handoff`. Bare `ptal <file>` launches the TUI
+Commands: `comments`, `add`, `resolve`, `reply`, `reopen`, `handoff`, `wait`. Bare `ptal <file>` launches the TUI
 (`args_conflicts_with_subcommands`; a file named like a subcommand is written
 `./name`). `run` splits into `run_command` and `launch_tui`; the latter
 refuses everything it can before the terminal is touched: no TTY on stdin and
@@ -381,6 +381,13 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   overrides it on these two (a flag, not an environment variable, so an
   agent can't inherit it). `--side` on a thread reopen is `usage`: threads
   have no side. There is no CLI close; only the human closes, in the TUI.
+- `wait <file> [--timeout SECS]` prints `{"file", "reason", "review"}`
+  (`reason` is the core's `Woke`: `turn`, `closed`, `timeout`) and exits `0`
+  for all three: a timeout is an outcome the agent loops on, not a failure.
+  It takes no `--as` (a read) and no `--side` (only the agent waits). One
+  blocking call per turn, not a stream: an agent's command tool reads a
+  command's output when it exits. The ticker comes from `Env.ticker`
+  (`SystemTicker` in `main`), so in-process tests never sleep.
 - Threads carry no `waiting_on` field. A thread is waiting on an agent when
   its last comment's `author` is not the agent's `--as` name (exact match);
   the help says so and tells agents to use one stable name. A hand-off's
@@ -815,8 +822,9 @@ hand-off or close.
   (identity, in-bounds, `Current` ⇒ identical text).
 - `cli`: in-process tests (golden JSON, TTY rendering, error table, help) in
   `src/cli.rs`; process tests in `tests/cli.rs` for streams, exit status, and
-  env, and turns passing between the library (as the TUI writes them) and
-  separate `ptal` processes. Schema conformance is deferred with `ptal schema`.
+  env, turns passing between the library (as the TUI writes them) and
+  separate `ptal` processes, and a spawned `ptal wait` woken by another
+  process's hand-off. Schema conformance is deferred with `ptal schema`.
 - `tui`: scripted key events through `update` assert on state (including the search prompt, `n`/`N` and Visual search, and the help probe that ties `tui::keys::HELP` to the key handlers); `TestBackend`
   snapshots (inline expected strings) cover Normal, Visual, Panel and Input
   rendering, gutter glyphs and styles (including the selection highlight on
