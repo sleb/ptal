@@ -69,15 +69,40 @@ pub enum Mode {
         /// and the write cannot retarget the reply.
         reply_to: Option<String>,
     },
-    /// Reading the key listing, which replaces the whole screen.
+    /// Reading a full-screen overlay, which replaces the whole screen.
     ///
     /// `back` is only ever Normal or the panel, and is where closing returns.
-    Help {
+    Overlay {
+        /// What the overlay shows.
+        kind: Overlay,
         /// Where the overlay was opened from.
         back: Back,
-        /// First visible row of the listing.
+        /// First visible row of its listing.
         scroll: usize,
     },
+}
+
+/// What a [`Mode::Overlay`] shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overlay {
+    /// The key listing, [`keys::HELP`].
+    Help,
+}
+
+impl Overlay {
+    /// The overlay's title row.
+    pub fn title(self) -> &'static str {
+        match self {
+            Overlay::Help => "Help",
+        }
+    }
+
+    /// The key that opens the overlay, and closes it again.
+    fn toggle(self) -> char {
+        match self {
+            Overlay::Help => '?',
+        }
+    }
 }
 
 impl Mode {
@@ -249,8 +274,8 @@ pub struct ScreenRow {
 
 /// Terminal rows taken by the footer in Normal mode.
 const FOOTER_ROWS: usize = 1;
-/// Rows the help overlay spends on its title and its footer.
-pub(super) const HELP_CHROME_ROWS: usize = 2;
+/// Rows an overlay spends on its title and its footer.
+pub(super) const OVERLAY_CHROME_ROWS: usize = 2;
 /// Rows the comment box's border takes; the box replaces the footer.
 const BOX_BORDER_ROWS: usize = 2;
 /// The comment box shows at most this many rows of its draft.
@@ -422,7 +447,7 @@ impl App {
             Mode::Normal | Mode::Visual { .. } | Mode::Search { .. } => FOOTER_ROWS,
             Mode::Input { .. } => self.box_text_rows() + BOX_BORDER_ROWS,
             Mode::Panel { .. } => self.panel_rows() + FOOTER_ROWS,
-            Mode::Help { .. } => self.rows,
+            Mode::Overlay { .. } => self.rows,
         }
     }
 
@@ -431,16 +456,29 @@ impl App {
         &self.help
     }
 
-    /// Listing rows the help overlay shows: the screen less its title and
-    /// footer rows.
-    pub(super) fn help_body_rows(&self) -> usize {
-        self.rows.saturating_sub(HELP_CHROME_ROWS)
+    /// The listing of overlay `kind`, laid out for the window.
+    pub fn overlay_rows(&self, kind: Overlay) -> &[keys::Row] {
+        match kind {
+            Overlay::Help => self.help_rows(),
+        }
     }
 
-    /// Keep the help scroll inside the listing.
-    fn clamp_help(&mut self) {
-        let max = self.help_rows().len().saturating_sub(self.help_body_rows());
-        if let Mode::Help { scroll, .. } = &mut self.mode {
+    /// Listing rows an overlay shows: the screen less its title and footer
+    /// rows.
+    pub(super) fn overlay_body_rows(&self) -> usize {
+        self.rows.saturating_sub(OVERLAY_CHROME_ROWS)
+    }
+
+    /// Keep an overlay's scroll inside its listing.
+    fn clamp_overlay(&mut self) {
+        let Mode::Overlay { kind, .. } = self.mode else {
+            return;
+        };
+        let max = self
+            .overlay_rows(kind)
+            .len()
+            .saturating_sub(self.overlay_body_rows());
+        if let Mode::Overlay { scroll, .. } = &mut self.mode {
             *scroll = (*scroll).min(max);
         }
     }
@@ -604,9 +642,9 @@ impl App {
         if matches!(self.mode, Mode::Panel { .. }) && self.threads_on(self.cursor).is_empty() {
             self.mode = Mode::Normal;
         }
-        if matches!(self.mode, Mode::Help { .. }) {
+        if matches!(self.mode, Mode::Overlay { .. }) {
             // The file is hidden, so its view stays as it was.
-            self.clamp_help();
+            self.clamp_overlay();
             return;
         }
         let height = self.height();
@@ -635,9 +673,13 @@ impl App {
         }
     }
 
-    /// Open the help overlay from `back`.
-    fn open_help(&mut self, back: Back) {
-        self.mode = Mode::Help { back, scroll: 0 };
+    /// Open overlay `kind` from `back`.
+    fn open_overlay(&mut self, kind: Overlay, back: Back) {
+        self.mode = Mode::Overlay {
+            kind,
+            back,
+            scroll: 0,
+        };
     }
 
     /// Open the panel on the cursor line's threads, selecting the first one
@@ -904,7 +946,7 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
                 Mode::Search { .. } => search_key(app, key),
                 Mode::Panel { .. } => panel_key(app, key),
                 Mode::Input { .. } => input_key(app, key),
-                Mode::Help { .. } => help_key(app, key),
+                Mode::Overlay { .. } => overlay_key(app, key),
             }
         }
         Event::Key(_) => None,
@@ -980,7 +1022,7 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Char('?') if !ctrl => app.open_help(Back::Normal),
+        KeyCode::Char('?') if !ctrl => app.open_overlay(Overlay::Help, Back::Normal),
         KeyCode::Char('v' | 'V') if !ctrl && !app.lines.is_empty() => {
             app.mode = Mode::Visual { anchor: app.cursor };
         }
@@ -1068,22 +1110,23 @@ fn search_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     None
 }
 
-/// Leave the help overlay for `back`.
+/// Leave an overlay for `back`.
 fn close(app: &mut App, back: Back) -> Option<Effect> {
     app.mode = back.mode();
     None
 }
 
-/// Keys in [`Mode::Help`]: `?`, `esc`, `q` and `ctrl+c` close it (never
-/// quit), the movement keys scroll the listing.
-fn help_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
-    let Mode::Help { back, scroll } = app.mode else {
+/// Keys in [`Mode::Overlay`]: its own key (`?` for help), `esc`, `q` and
+/// `ctrl+c` close it (never quit), the movement keys scroll the listing.
+fn overlay_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    let Mode::Overlay { kind, back, scroll } = app.mode else {
         return None;
     };
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let half = (app.help_body_rows() / 2).max(1);
+    let half = (app.overlay_body_rows() / 2).max(1);
     let to = match key.code {
-        KeyCode::Esc | KeyCode::Char('?' | 'q') if !ctrl => return close(app, back),
+        KeyCode::Esc | KeyCode::Char('q') if !ctrl => return close(app, back),
+        KeyCode::Char(c) if !ctrl && c == kind.toggle() => return close(app, back),
         KeyCode::Char('c') if ctrl => return close(app, back),
         KeyCode::Char('j') | KeyCode::Down if !ctrl => scroll + 1,
         KeyCode::Char('k') | KeyCode::Up if !ctrl => scroll.saturating_sub(1),
@@ -1095,7 +1138,11 @@ fn help_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Char('G') | KeyCode::End if !ctrl => usize::MAX,
         _ => return None,
     };
-    app.mode = Mode::Help { back, scroll: to };
+    app.mode = Mode::Overlay {
+        kind,
+        back,
+        scroll: to,
+    };
     None
 }
 
@@ -1111,7 +1158,9 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let count = app.threads_on(app.cursor).len().max(1);
     match key.code {
-        KeyCode::Char('?') if !ctrl => app.open_help(Back::Panel { selected, scroll }),
+        KeyCode::Char('?') if !ctrl => {
+            app.open_overlay(Overlay::Help, Back::Panel { selected, scroll })
+        }
         KeyCode::Char('a') if !ctrl => {
             app.mode = Mode::input(Back::Panel { selected, scroll }, None);
         }
@@ -3830,8 +3879,8 @@ mod tests {
 
     fn help_scroll(a: &App) -> usize {
         match a.mode {
-            Mode::Help { scroll, .. } => scroll,
-            _ => panic!("not in Help mode: {:?}", a.mode),
+            Mode::Overlay { scroll, .. } => scroll,
+            _ => panic!("not in an overlay: {:?}", a.mode),
         }
     }
 
@@ -3852,7 +3901,8 @@ mod tests {
             send(&mut a, [ch('?')]);
             assert!(matches!(
                 a.mode,
-                Mode::Help {
+                Mode::Overlay {
+                    kind: Overlay::Help,
                     back: Back::Normal,
                     ..
                 }
@@ -3884,7 +3934,8 @@ mod tests {
             send(&mut a, [ch('?')]);
             assert!(matches!(
                 a.mode,
-                Mode::Help {
+                Mode::Overlay {
+                    kind: Overlay::Help,
                     back: Back::Panel { .. },
                     ..
                 }
@@ -3914,7 +3965,7 @@ mod tests {
     #[test]
     fn help_scrolls_and_clamps_to_the_listing() {
         let mut a = app(5, 10);
-        let max = a.help_rows().len() - a.help_body_rows();
+        let max = a.help_rows().len() - a.overlay_body_rows();
         assert!(max > 3, "the listing must not fit in 10 rows");
 
         send(&mut a, [ch('?'), ch('k')]);
@@ -3930,7 +3981,7 @@ mod tests {
         send(&mut a, [ch('g')]);
         assert_eq!(help_scroll(&a), 0);
         send(&mut a, [ctrl('d')]);
-        assert_eq!(help_scroll(&a), a.help_body_rows() / 2);
+        assert_eq!(help_scroll(&a), a.overlay_body_rows() / 2);
         send(&mut a, [ctrl('u')]);
         assert_eq!(help_scroll(&a), 0);
         send(&mut a, [press(KeyCode::End)]);

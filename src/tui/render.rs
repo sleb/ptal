@@ -9,7 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Widget};
 
-use super::app::{App, HELP_CHROME_ROWS, Marker, Mode, ScreenRow};
+use super::app::{App, Marker, Mode, OVERLAY_CHROME_ROWS, Overlay, ScreenRow};
 use super::draft::Draft;
 use super::wrap;
 
@@ -20,8 +20,8 @@ pub fn render(app: &App, frame: &mut Frame) {
         return;
     }
     let buf = frame.buffer_mut();
-    if let Mode::Help { scroll, .. } = app.mode() {
-        draw_help(app, *scroll, buf, area);
+    if let Mode::Overlay { kind, scroll, .. } = app.mode() {
+        draw_overlay(app, *kind, *scroll, buf, area);
         return;
     }
     let chrome = u16::try_from(app.chrome_rows())
@@ -56,7 +56,7 @@ pub fn render(app: &App, frame: &mut Frame) {
             draw_panel(app, *scroll, buf, panel);
             draw_footer(app, buf, footer);
         }
-        Mode::Help { .. } => {}
+        Mode::Overlay { .. } => {}
         Mode::Input {
             draft,
             discard_asked,
@@ -194,17 +194,17 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
     );
 }
 
-/// The key listing over the whole screen: a title row, the listing from
+/// Overlay `kind` over the whole screen: a title row, its listing from
 /// `scroll`, and a footer row saying how to scroll and close.
-fn draw_help(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
+fn draw_overlay(app: &App, kind: Overlay, scroll: usize, buf: &mut Buffer, area: Rect) {
     let width = usize::from(area.width);
     let mut rows = area.rows();
     if let Some(row) = rows.next() {
         let title = Style::new().add_modifier(Modifier::BOLD);
-        buf.set_stringn(row.x, row.y, "Help", width, title);
+        buf.set_stringn(row.x, row.y, kind.title(), width, title);
     }
-    let listing = app.help_rows();
-    let body = usize::from(area.height).saturating_sub(HELP_CHROME_ROWS);
+    let listing = app.overlay_rows(kind);
+    let body = usize::from(area.height).saturating_sub(OVERLAY_CHROME_ROWS);
     for (row, line) in rows.by_ref().take(body).zip(listing.iter().skip(scroll)) {
         let style = if line.heading {
             Style::new().add_modifier(Modifier::BOLD)
@@ -215,7 +215,10 @@ fn draw_help(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
     }
     if area.height >= 2 {
         let y = area.y + area.height - 1;
-        let hint = wrap::cut("j/k g/G:scroll  ?/esc:close", width);
+        let hint = match kind {
+            Overlay::Help => "j/k g/G:scroll  ?/esc:close",
+        };
+        let hint = wrap::cut(hint, width);
         buf.set_stringn(area.x, y, hint, width, Style::new());
     }
 }
