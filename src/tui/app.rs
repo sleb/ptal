@@ -7,8 +7,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::model::{State, Status};
-use crate::review::ThreadView;
+use crate::model::{Entry, Event as LogEvent, ReviewState, Side, State, Status, Verdict};
+use crate::review::{ReviewStatus, ThreadView};
 
 use super::draft::Draft;
 use super::highlight::{self, Styling};
@@ -87,6 +87,8 @@ pub enum Mode {
 pub enum Overlay {
     /// The key listing, [`keys::HELP`].
     Help,
+    /// The review's state and its latest log entry, note in full.
+    Review,
 }
 
 impl Overlay {
@@ -94,6 +96,7 @@ impl Overlay {
     pub fn title(self) -> &'static str {
         match self {
             Overlay::Help => "Help",
+            Overlay::Review => "Review",
         }
     }
 
@@ -101,6 +104,7 @@ impl Overlay {
     fn toggle(self) -> char {
         match self {
             Overlay::Help => '?',
+            Overlay::Review => 'i',
         }
     }
 }
@@ -238,6 +242,11 @@ pub struct App {
     pub(super) search: Option<String>,
     /// The help listing laid out for `cols`.
     help: Vec<keys::Row>,
+    /// The review overlay's listing laid out for `cols`, from `review`.
+    review_rows: Vec<keys::Row>,
+    /// Whose turn it is, or the verdict, and the latest log entry. Re-read
+    /// from disk after each write, like the threads.
+    review: ReviewStatus,
     /// The reviewed file's path as shown in the footer.
     file: String,
     /// Who the comments will be written as, shown in the input box.
@@ -274,6 +283,9 @@ pub struct ScreenRow {
 
 /// Terminal rows taken by the footer in Normal mode.
 const FOOTER_ROWS: usize = 1;
+/// Terminal rows the review banner takes at the top, in every mode but an
+/// overlay.
+pub(super) const BANNER_ROWS: usize = 1;
 /// Rows an overlay spends on its title and its footer.
 pub(super) const OVERLAY_CHROME_ROWS: usize = 2;
 /// Rows the comment box's border takes; the box replaces the footer.
@@ -312,6 +324,8 @@ impl App {
             status: None,
             search: None,
             help: Vec::new(),
+            review_rows: Vec::new(),
+            review: ReviewStatus::default(),
             file: String::new(),
             author: author.to_string(),
             threads: threads.to_vec(),
@@ -328,6 +342,14 @@ impl App {
         self
     }
 
+    /// Show `review` as the review's state.
+    #[must_use]
+    pub fn with_review(mut self, review: ReviewStatus) -> Self {
+        self.review = review;
+        self.relayout();
+        self
+    }
+
     /// Style the file view's markdown structure when `on`; plain otherwise.
     #[must_use]
     pub fn highlighted(mut self, on: bool) -> Self {
@@ -337,6 +359,36 @@ impl App {
             Vec::new()
         };
         self
+    }
+
+    /// The review's state as last read.
+    pub fn review(&self) -> &ReviewStatus {
+        &self.review
+    }
+
+    /// The banner's text, `your turn`, `agent's turn` or `closed: <verdict>`
+    /// then ` · <author>: <note>` with the latest entry's note (its first
+    /// line, ending in `…` when there are more), and the key hint for what
+    /// the human can do now.
+    pub fn banner(&self) -> (String, &'static str) {
+        let mut text = state_name(self.review.state);
+        if let Some(Entry {
+            author,
+            note: Some(note),
+            ..
+        }) = &self.review.latest
+        {
+            let mut lines = note.lines();
+            let first = lines.next().unwrap_or_default();
+            let more = if lines.next().is_some() { "…" } else { "" };
+            text.push_str(&format!(" · {author}: {first}{more}"));
+        }
+        let hint = match self.review.state {
+            ReviewState::Turn(Side::Human) => "H:hand off C:close",
+            ReviewState::Turn(Side::Agent) => "C:close",
+            ReviewState::Closed(_) => "O:reopen",
+        };
+        (text, hint)
     }
 
     /// The file path shown in the footer.
@@ -460,6 +512,7 @@ impl App {
     pub fn overlay_rows(&self, kind: Overlay) -> &[keys::Row] {
         match kind {
             Overlay::Help => self.help_rows(),
+            Overlay::Review => &self.review_rows,
         }
     }
 
@@ -532,10 +585,13 @@ impl App {
         Some(panel::layout(&threads, selected, width))
     }
 
-    /// Rows available to the file view; never zero, so the arithmetic in
-    /// `clamp_view` and the half-page step stay total on tiny terminals.
+    /// Rows available to the file view, between the banner and the chrome
+    /// below it; never zero, so the arithmetic in `clamp_view` and the
+    /// half-page step stay total on tiny terminals.
     pub(super) fn height(&self) -> usize {
-        self.rows.saturating_sub(self.chrome_rows()).max(1)
+        self.rows
+            .saturating_sub(BANNER_ROWS + self.chrome_rows())
+            .max(1)
     }
 
     /// Digits in the largest line number; the gutter right-aligns numbers to
@@ -579,6 +635,7 @@ impl App {
     fn relayout(&mut self) {
         self.tables = table::align(&self.lines, self.text_width());
         self.help = keys::rows(self.cols);
+        self.review_rows = review_rows(&self.review, self.cols);
     }
 
     /// The screen rows of 0-based `line` at the current width: its table
@@ -901,6 +958,74 @@ impl App {
     }
 }
 
+/// `your turn`, `agent's turn` or `closed: <verdict>`, as the human reads it.
+fn state_name(state: ReviewState) -> String {
+    match state {
+        ReviewState::Turn(Side::Human) => "your turn".into(),
+        ReviewState::Turn(Side::Agent) => "agent's turn".into(),
+        ReviewState::Closed(Verdict::Approved) => "closed: approved".into(),
+        ReviewState::Closed(Verdict::Dropped) => "closed: dropped".into(),
+    }
+}
+
+/// The review overlay's listing for `width` cells: the state as a header,
+/// what the latest entry was, by whom, when and on which revision, then its
+/// whole note, each line wrapped.
+fn review_rows(review: &ReviewStatus, width: usize) -> Vec<keys::Row> {
+    let width = width.max(1);
+    let row = |text: String, heading| keys::Row { text, heading };
+    let mut out = vec![
+        row(state_name(review.state), true),
+        row(String::new(), false),
+    ];
+    let Some(entry) = &review.latest else {
+        out.extend(
+            wrap::plain_rows("no hand-off yet", width)
+                .into_iter()
+                .map(|t| row(t, false)),
+        );
+        return out;
+    };
+    let what = match entry.event {
+        LogEvent::HandOff => "hand-off".to_string(),
+        LogEvent::Close { verdict } => format!("closed as {}", verdict_name(verdict)),
+        LogEvent::Reopen => "reopened".to_string(),
+    };
+    let side = match entry.side {
+        Side::Human => "human",
+        Side::Agent => "agent",
+    };
+    let about = [
+        format!("{what} by {} ({side})", entry.author),
+        format!("at {} on {}", entry.created_at, entry.revision),
+    ];
+    for line in about {
+        out.extend(
+            wrap::plain_rows(&line, width)
+                .into_iter()
+                .map(|t| row(t, false)),
+        );
+    }
+    if let Some(note) = &entry.note {
+        out.push(row(String::new(), false));
+        for line in note.lines() {
+            out.extend(
+                wrap::plain_rows(line, width)
+                    .into_iter()
+                    .map(|t| row(t, false)),
+            );
+        }
+    }
+    out
+}
+
+fn verdict_name(verdict: Verdict) -> &'static str {
+    match verdict {
+        Verdict::Approved => "approved",
+        Verdict::Dropped => "dropped",
+    }
+}
+
 /// Apply `event` to `app`; return the effect the driver must perform.
 pub fn update(app: &mut App, event: Event) -> Option<Effect> {
     let effect = apply(app, event);
@@ -1023,6 +1148,7 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Char('?') if !ctrl => app.open_overlay(Overlay::Help, Back::Normal),
+        KeyCode::Char('i') if !ctrl => app.open_overlay(Overlay::Review, Back::Normal),
         KeyCode::Char('v' | 'V') if !ctrl && !app.lines.is_empty() => {
             app.mode = Mode::Visual { anchor: app.cursor };
         }
@@ -1271,6 +1397,8 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Entry, ReviewState, Side};
+    use crate::review::ReviewStatus;
     use ratatui::crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
     use ratatui::style::{Color, Modifier, Style};
 
@@ -1316,7 +1444,7 @@ mod tests {
 
     #[test]
     fn g_and_capital_g_jump_to_first_and_last_line() {
-        let mut a = app(20, 6); // view height 5
+        let mut a = app(20, 7); // view height 5
 
         send(&mut a, [ch('G')]);
         assert_eq!(at(&a), (19, 15));
@@ -1326,7 +1454,7 @@ mod tests {
 
     #[test]
     fn ctrl_d_and_ctrl_u_move_half_a_page_and_the_view_follows() {
-        let mut a = app(20, 11); // view height 10, half page 5
+        let mut a = app(20, 12); // view height 10, half page 5
 
         send(&mut a, [ctrl('d')]);
         assert_eq!(at(&a), (5, 5));
@@ -1340,7 +1468,7 @@ mod tests {
 
     #[test]
     fn half_page_is_at_least_one_line() {
-        let mut a = app(5, 2); // view height 1
+        let mut a = app(5, 3); // view height 1
 
         send(&mut a, [ctrl('d')]);
 
@@ -1349,7 +1477,7 @@ mod tests {
 
     #[test]
     fn cursor_stays_inside_the_view_through_a_scripted_walk() {
-        let mut a = app(30, 8); // view height 7
+        let mut a = app(30, 9); // view height 7
         let walk = "jjjjjjjjjjGkkkkkgjjjjjjjjjj";
         let mut events: Vec<Event> = walk.chars().map(ch).collect();
         events.extend([ctrl('d'), ctrl('u'), ctrl('d'), ctrl('d')]);
@@ -1367,11 +1495,11 @@ mod tests {
 
     #[test]
     fn resize_reclamps_the_view_and_zero_height_does_not_panic() {
-        let mut a = app(20, 11);
+        let mut a = app(20, 12); // view height 10
         send(&mut a, [ch('G')]);
         assert_eq!(at(&a), (19, 10));
 
-        send(&mut a, [Event::Resize(40, 4)]); // view height 3
+        send(&mut a, [Event::Resize(40, 5)]); // view height 3
         assert_eq!(at(&a), (19, 17));
         send(&mut a, [Event::Resize(40, 0), ch('k'), ctrl('d'), ch('g')]);
         assert_eq!(a.cursor, 0);
@@ -1418,7 +1546,7 @@ mod tests {
         // Gutter 4, text width 10; the second line wraps into 3 rows.
         let a = wrapped(
             &["short", "aaaa bbbb cccc dddd eeee", "x", "y"],
-            (14, 6), // view height 5
+            (14, 7), // view height 5
         );
 
         let row = |line, first, text: &str| (line, first, text.to_string());
@@ -1454,7 +1582,7 @@ mod tests {
 
     #[test]
     fn j_scrolls_so_a_wrapped_cursor_line_is_fully_shown() {
-        let mut a = wrapped(&[W3, W3, W3, "x"], (14, 8)); // height 7
+        let mut a = wrapped(&[W3, W3, W3, "x"], (14, 9)); // height 7
 
         send(&mut a, [ch('j'), ch('j')]);
 
@@ -1466,7 +1594,7 @@ mod tests {
     fn capital_g_shows_all_of_a_wrapped_last_line_with_no_blank_rows() {
         let mut lines = vec!["x"; 10];
         lines.push(W3);
-        let mut a = wrapped(&lines, (15, 8)); // 2 digits, width 10, height 7
+        let mut a = wrapped(&lines, (15, 9)); // 2 digits, width 10, height 7
 
         send(&mut a, [ch('G')]);
 
@@ -1476,7 +1604,7 @@ mod tests {
 
     #[test]
     fn a_cursor_line_taller_than_the_view_starts_at_the_top() {
-        let mut a = wrapped(&["x", W3, "y"], (14, 3)); // height 2
+        let mut a = wrapped(&["x", W3, "y"], (14, 4)); // height 2
 
         send(&mut a, [ch('j')]);
 
@@ -1487,7 +1615,7 @@ mod tests {
     fn a_bracket_jump_past_wrapped_lines_shows_the_target() {
         let lines = [W3, W3, W3, "x", "y"].map(String::from).to_vec();
         let threads = [view("c1", (4, 4), Status::Open, State::Current)];
-        let mut a = App::open(lines, &threads, "scott", (14, 8)); // height 7
+        let mut a = App::open(lines, &threads, "scott", (14, 9)); // height 7
 
         send(&mut a, [ch(']')]);
 
@@ -1499,7 +1627,7 @@ mod tests {
     fn opening_the_panel_below_wrapped_lines_keeps_the_cursor_line_shown() {
         let lines = [W3, W3, W3, W3, "t"].map(String::from).to_vec();
         let threads = [chatty("c1", (5, 5), 1)];
-        let mut a = App::open(lines, &threads, "scott", (14, 16)); // height 15
+        let mut a = App::open(lines, &threads, "scott", (14, 17)); // height 15
         send(&mut a, [ch('G')]);
         assert_eq!(at(&a), (4, 0));
 
@@ -1513,11 +1641,11 @@ mod tests {
 
     #[test]
     fn resizing_narrower_rewraps_and_keeps_the_cursor_line_shown() {
-        let mut a = wrapped(&[W3, W3, W3, "x"], (80, 8));
+        let mut a = wrapped(&[W3, W3, W3, "x"], (80, 9));
         send(&mut a, [ch('G')]);
         assert_eq!(at(&a), (3, 0));
 
-        send(&mut a, [Event::Resize(14, 8)]);
+        send(&mut a, [Event::Resize(14, 9)]);
 
         assert_eq!(a.screen_rows()[0].text.to_string(), "aaaa bbbb ");
         assert_eq!(at(&a), (3, 1));
@@ -1527,7 +1655,7 @@ mod tests {
     #[test]
     fn half_a_page_counts_rows_not_lines() {
         // 2 digits, width 10: every line is 3 rows. Height 11, half page 5.
-        let mut a = wrapped(&[W3; 20], (15, 12));
+        let mut a = wrapped(&[W3; 20], (15, 13));
 
         send(&mut a, [ctrl('d')]);
         assert_eq!(at(&a), (1, 1), "a second line would make 6 rows");
@@ -1791,7 +1919,7 @@ mod tests {
     fn the_clamp_counts_the_rows_of_a_wrapped_table_line() {
         let mut lines = vec!["x"; 6];
         lines.extend(&DECISION[..3]);
-        let mut a = wrapped(&lines, (24, 5)); // text width 20, height 4
+        let mut a = wrapped(&lines, (24, 6)); // text width 20, height 4
 
         send(&mut a, [ch('G')]);
         assert_eq!(at(&a), (8, 7), "the delimiter and the body's 3 rows");
@@ -1824,7 +1952,7 @@ mod tests {
         // Text width 20: the raw header wraps into 2 rows, aligned it is 1.
         let mut a = wrapped(
             &["| a                        | b |", "|---|---|", "| c | d |"],
-            (24, 4), // height 3
+            (24, 5), // height 3
         );
 
         send(&mut a, [ch('G')]);
@@ -2875,17 +3003,21 @@ mod tests {
 
     #[test]
     fn the_panel_shrinks_the_view_keeps_the_cursor_visible_and_closing_restores() {
-        let mut a = panel_app(&[chatty("c1", (6, 6), 1)], 12); // height 11
+        let mut a = panel_app(&[chatty("c1", (6, 6), 1)], 12); // height 10
         send(&mut a, [ch('G'), ch('g')]);
         send(&mut a, [ch('j'), ch('j'), ch('j'), ch('j'), ch('j')]);
         assert_eq!(a.cursor, 5);
 
         send(&mut a, [press(KeyCode::Enter)]);
 
-        assert_eq!(a.height(), 5, "12 rows minus a 6-row panel and the footer");
-        assert!(a.top <= a.cursor && a.cursor < a.top + 5);
+        assert_eq!(
+            a.height(),
+            4,
+            "12 rows minus the banner, a 6-row panel and the footer"
+        );
+        assert!(a.top <= a.cursor && a.cursor < a.top + 4);
         send(&mut a, [press(KeyCode::Esc)]);
-        assert_eq!(a.height(), 11);
+        assert_eq!(a.height(), 10);
     }
 
     #[test]
@@ -3035,13 +3167,17 @@ mod tests {
 
     #[test]
     fn input_box_shrinks_the_view_and_keeps_the_cursor_visible() {
-        let mut a = app(20, 7); // view height 6 in Normal
+        let mut a = app(20, 8); // view height 6 in Normal
         send(&mut a, [ch('j'), ch('j'), ch('j'), ch('j'), ch('j')]);
         assert_eq!(at(&a), (5, 0), "cursor on the last visible row");
 
         send(&mut a, [press(KeyCode::Enter)]);
 
-        assert_eq!(a.height(), 4, "7 rows minus a 3-row input box");
+        assert_eq!(
+            a.height(),
+            4,
+            "8 rows minus the banner and a 3-row input box"
+        );
         assert!(a.top <= a.cursor && a.cursor < a.top + 4, "{:?}", at(&a));
         send(&mut a, [press(KeyCode::Esc)]);
         assert_eq!(a.height(), 6);
@@ -3410,7 +3546,7 @@ mod tests {
 
     #[test]
     fn every_movement_key_moves_the_end_and_the_view_follows_it() {
-        let mut a = visual_at(20, 6, 2); // view height 5
+        let mut a = visual_at(20, 7, 2); // view height 5
 
         send(&mut a, [ch('G')]);
         assert_eq!((a.selection(), at(&a)), ((2, 19), (19, 15)));
@@ -4150,5 +4286,105 @@ mod tests {
                 }
             }
         }
+    }
+
+    // --- the review state ---
+
+    fn handed_off(note: &str) -> ReviewStatus {
+        ReviewStatus {
+            state: ReviewState::Turn(Side::Agent),
+            latest: Some(Entry {
+                event: crate::model::Event::HandOff,
+                side: Side::Human,
+                author: "scott".into(),
+                created_at: "2026-10-12T10:00:00Z".into(),
+                revision: "r2".into(),
+                next_id: 4,
+                note: Some(note.into()),
+            }),
+        }
+    }
+
+    #[test]
+    fn the_banner_takes_a_row_from_the_file_view() {
+        let a = app(20, 10);
+
+        assert_eq!(a.height(), 8, "10 rows less the banner and the footer");
+    }
+
+    fn overlay_text(a: &App) -> Vec<String> {
+        let Mode::Overlay { kind, .. } = a.mode else {
+            panic!("not in an overlay: {:?}", a.mode);
+        };
+        a.overlay_rows(kind)
+            .iter()
+            .map(|r| r.text.clone())
+            .collect()
+    }
+
+    #[test]
+    fn i_opens_the_review_with_its_whole_note_and_its_closing_keys_go_back() {
+        let note = "Over to you.\nSee c1 and c3.\nThanks";
+        for close in [ch('i'), press(KeyCode::Esc), ch('q'), ctrl('c')] {
+            let mut a = app(20, 10).with_review(handed_off(note));
+            send(&mut a, [ch('j')]);
+            let before = snapshot(&a);
+
+            send(&mut a, [ch('i')]);
+            assert!(matches!(
+                a.mode,
+                Mode::Overlay {
+                    kind: Overlay::Review,
+                    back: Back::Normal,
+                    ..
+                }
+            ));
+            let text = overlay_text(&a).join("\n");
+            for needle in [
+                "agent's turn",
+                "scott",
+                "2026-10-12T10:00:00Z",
+                "r2",
+                "Over to you.",
+                "See c1 and c3.",
+                "Thanks",
+            ] {
+                assert!(text.contains(needle), "{needle}: {text}");
+            }
+            assert_eq!(update(&mut a, close), None);
+            assert_eq!(snapshot(&a), before);
+        }
+    }
+
+    #[test]
+    fn the_review_overlay_scrolls_and_clamps_like_help() {
+        let note = (1..=20)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut a = app(5, 8).with_review(handed_off(&note));
+        send(&mut a, [ch('i')]);
+        let max = overlay_text(&a).len() - a.overlay_body_rows();
+        assert!(max > 3, "the note must not fit");
+
+        send(&mut a, [ch('j'), ch('j')]);
+        assert_eq!(help_scroll(&a), 2);
+        send(&mut a, [ch('k')]);
+        assert_eq!(help_scroll(&a), 1);
+        send(&mut a, [ch('G')]);
+        assert_eq!(help_scroll(&a), max);
+        send(&mut a, [ch('g')]);
+        assert_eq!(help_scroll(&a), 0);
+    }
+
+    #[test]
+    fn a_fresh_review_overlay_says_nothing_was_handed_off() {
+        let mut a = app(5, 10);
+
+        send(&mut a, [ch('i')]);
+
+        let text = overlay_text(&a).join("\n");
+        assert!(text.contains("your turn"), "{text}");
+        assert!(text.contains("no hand-off yet"), "{text}");
     }
 }

@@ -67,6 +67,10 @@ pub const HELP: &[Section] = &[
                 what: "open the line's threads, or comment on the line",
             },
             Entry {
+                keys: "i",
+                what: "show the review: whose turn, the latest note in full",
+            },
+            Entry {
                 keys: "?",
                 what: "show this help",
             },

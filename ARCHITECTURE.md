@@ -36,7 +36,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
 | `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review` |
 | `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff` |
-| `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Help` modes, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
+| `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor` | Built: `map_range`, `Diff`, `clamp` (Myers line diff via `similar`) |
 | `diffview` | Deferred |
@@ -382,11 +382,12 @@ Its parts:
   `tui::highlight`, computed once by `App::highlighted(true)` since the file
   never changes in a session, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
-  outdated ones, footer `status`, the active `search` query, the `help`
-  listing laid out for `cols`, the `file` label), `Mode = Normal | Visual { anchor } |
+  outdated ones, the `review`'s `ReviewStatus`, footer `status`, the active
+  `search` query, the `help` and review overlay listings laid out for
+  `cols`, the `file` label), `Mode = Normal | Visual { anchor } |
   Search { query, anchor, origin, hit } |
   Panel { selected, scroll } | Input { draft, discard_asked, back, reply_to } |
-  Help { back, scroll }`
+  Overlay { kind, back, scroll }` (`kind` is `Overlay::Help | Review`)
   (`draft` is a `tui::draft::Draft`;
   `back` is the `Back` the box returns to on `esc`: `Normal | Panel {
   selected, scroll } | Visual { anchor }`), and
@@ -519,11 +520,15 @@ Its parts:
   key bound in Normal mode and the thread panel (`Entry { keys, what }`,
   with aliases in one label such as `j/k, ↓/↑`), and `rows(width)` lays it out
   (keys beside the description, or stacked in a narrow window; nothing is
-  cut). `Mode::Help { back, scroll }` shows it full-screen, opened by `?` from
-  Normal or the panel (not from Visual, Search or the box, where `?` is
-  text or unbound); `back` is `Normal` or `Panel` and closing returns there
-  untouched; `?`/`esc`/`q`/`ctrl+c` close, `j`/`k`, `ctrl+d`/`ctrl+u`,
-  `PgDn`/`PgUp`, `g`/`G`, `Home`/`End` scroll, clamped in `update`. The
+  cut). `Mode::Overlay { kind: Help, back, scroll }` shows it full-screen,
+  opened by `?` from Normal or the panel (not from Visual, Search or the
+  box, where `?` is text or unbound); `back` is `Normal` or `Panel` and
+  closing returns there untouched; `?`/`esc`/`q`/`ctrl+c` close, `j`/`k`,
+  `ctrl+d`/`ctrl+u`, `PgDn`/`PgUp`, `g`/`G`, `Home`/`End` scroll, clamped in
+  `update`. `i` in Normal opens the other overlay, `kind: Review`: the state
+  as a header, what the latest log entry was, by whom (and which side), when
+  and on which revision, then its whole note, wrapped; it scrolls and
+  closes the same way, with `i` in place of `?`. The
   handlers are not table-driven; a probe test in `tui::app` presses every
   candidate key in each section's fixture and fails when a key does
   something unlisted or a listed key does nothing.
@@ -560,6 +565,14 @@ Its parts:
   `bg` shows under markdown styling; styling sets no backgrounds and never
   touches the gutter, and `DIM` is dropped on highlighted rows, where faint
   text on the cursor background is hard to read.
+  Banner: the top row in every mode but an overlay, so the file view
+  starts one row down and its height is the rows left after the banner and
+  the chrome below. It reads `your turn`, `agent's turn` or
+  `closed: <verdict>`, then ` · <author>: <note>` when the latest entry has
+  a note (its first line, with `…` when there are more lines), bold and
+  `wrap::cut` to leave room for the key hint flush right (`H:hand off
+  C:close` on your turn, `C:close` on the agent's, `O:reopen` when closed);
+  a row too narrow for both drops the hint.
   Footer: path (or the last save message, on one row as on the comment
   box's border),
   `L<line>/<total>`, `visual <a>-<b>` in `Visual` (1-based, ascending),
@@ -586,8 +599,9 @@ Its parts:
   prompt, which wins over the hint. Border text (error or hint) that does
   not fit between the corners is `wrap::cut`, so it ends in `…` and a wide
   character that would cross the corner is left out whole.
-- `tui` (module root): the driver. `load` takes the lines and all threads
-  from one `Reviews::view`, so they come from the same read of the file; `Loaded::into_app` highlights the file only when it is
+- `tui` (module root): the driver. `load` takes the lines, all threads and
+  the review's state from one `Reviews::view`, so they come from the same
+  read of the file; `Loaded::into_app` highlights the file only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
   `color_wanted(NO_COLOR)`, read once at startup); `step(app, event, reviews, file, author)` is the only
   place effects are performed (`Add` → `Reviews::add_thread`, `Reply` →
@@ -607,7 +621,8 @@ Its parts:
   a write it re-reads `view` rather than patching local state.
 - After every event `top <= cursor` and lines `top..=cursor` fit in `height`
   screen rows (wrapped rows counted), where height is the rows left after the
-  footer, panel or input box, so the whole cursor line is on screen. The one
+  banner and the footer, panel or input box, so the whole cursor line is on
+  screen. The one
   exception: a cursor line taller than the view sets `top == cursor` and its
   tail is cut off (`top` is a file line; there is no sub-line scroll). `top`
   never leaves blank rows below the last line while earlier lines could fill

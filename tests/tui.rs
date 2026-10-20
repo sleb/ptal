@@ -6,6 +6,7 @@ use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::process::Command;
 
+use ptal::model::Side;
 use ptal::review::{Reviews, SystemClock};
 use ptal::store::Store;
 use ptal::tui::app::{App, Back, Event, Mode};
@@ -684,12 +685,13 @@ fn a_second_round_with_the_agent_runs_end_to_end() {
 
 const MARKDOWN: &str = "# Title\n\n- item with `code`\n\n```\nfn main() {}\n```\n";
 
-/// Whether the `# Title` on row 0 is bold and the fenced body on row 5
-/// (`fn main() {}`, after the 4-column gutter) is cyan.
+/// Whether the `# Title` on line 1 (screen row 1, below the banner) is bold
+/// and the fenced body on line 6 (`fn main() {}`, after the 4-column gutter)
+/// is cyan.
 fn looks_highlighted(app: &App) -> (bool, bool) {
     let buffer = drawn(app);
-    let bold = (4..11).all(|x| buffer[(x, 0)].modifier.contains(Modifier::BOLD));
-    let cyan = (4..16).all(|x| buffer[(x, 5)].fg == Color::Cyan);
+    let bold = (4..11).all(|x| buffer[(x, 1)].modifier.contains(Modifier::BOLD));
+    let cyan = (4..16).all(|x| buffer[(x, 6)].fg == Color::Cyan);
     (bold, cyan)
 }
 
@@ -697,7 +699,7 @@ fn looks_highlighted(app: &App) -> (bool, bool) {
 fn a_markdown_file_shows_highlighted_and_a_comment_still_quotes_the_raw_line() {
     let sb = sandbox(MARKDOWN);
     let mut app = sb.open();
-    assert!(screen(&app).starts_with("  1│# Title"));
+    assert!(screen(&app).contains("\n  1│# Title"));
     assert_eq!(looks_highlighted(&app), (true, true));
 
     let flow = sb.press(&mut app, &["enter", "h", "i", "ctrl+s"]);
@@ -715,7 +717,7 @@ fn a_text_file_or_no_color_shows_markdown_plain() {
 
     let no_color = sandbox(MARKDOWN);
     let app = no_color.open_with(false);
-    assert!(screen(&app).starts_with("  1│# Title"));
+    assert!(screen(&app).contains("\n  1│# Title"));
     assert_eq!(looks_highlighted(&app), (false, false));
 }
 
@@ -1003,4 +1005,21 @@ fn a_thread_follows_lines_inserted_above_it_and_turns_outdated_when_edited() {
     let panel = screen(&edited);
     assert!(panel.contains("c1 open · outdated"), "{panel}");
     assert!(panel.contains("> three"), "{panel}");
+}
+
+#[test]
+fn opening_the_tui_shows_the_review_state_and_the_latest_note() {
+    let sb = sandbox(PLAN);
+    sb.reviews
+        .hand_off(&sb.file, Side::Human, "scott", Some("Over to you"))
+        .unwrap();
+
+    let app = sb.open();
+
+    let top = screen(&app).lines().next().unwrap().to_string();
+    assert!(
+        top.starts_with("agent's turn · scott: Over to you"),
+        "{top}"
+    );
+    assert!(top.trim_end().ends_with("C:close"), "{top}");
 }

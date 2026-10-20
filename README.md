@@ -59,6 +59,7 @@ Normal mode:
 | `esc` | Clear the active search and its highlight |
 | `v` (or `V`) | Select lines from the cursor (see Visual select below) |
 | `enter` | On a threaded line: open the thread panel. Otherwise comment on the line |
+| `i` | Show the review full-screen: whose turn it is (or the verdict), the latest hand-off, close or reopen, and its whole note |
 | `?` | Show the key listing (Normal and thread-panel keys), grouped by mode; the footer ends with `?:help` when it fits |
 | `q` (or `ctrl+c`) | Quit |
 
@@ -101,12 +102,16 @@ Comment box:
 | `←` / `→`, `↑` / `↓`, `Home` / `End` | Move by character, by screen row, to the line's start / end; `backspace` / `delete` remove (and join lines) |
 | Paste | Insert the pasted text, line breaks and tabs included |
 
-Help overlay:
+Help and review overlays:
 
 | Key | Action |
 |---|---|
 | `j` / `k` (or `↓` / `↑`), `ctrl+d` / `ctrl+u` (or `PgDn` / `PgUp`), `g` / `G` (or `Home` / `End`) | Scroll the listing |
-| `?` (or `esc`, `q`, `ctrl+c`) | Close |
+| `?` for help, `i` for the review (or `esc`, `q`, `ctrl+c`) | Close |
+
+The top row is the review's banner: `your turn`, `agent's turn` or
+`closed: approved`, the latest note's first line, and the keys for what you
+can do now.
 
 Long lines wrap at word boundaries onto continuation rows; the line number and
 thread marker show on a line's first row, and `j` / `k` move by file line,
