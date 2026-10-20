@@ -92,9 +92,12 @@ fn enter_terminal() -> io::Result<()> {
 }
 
 /// The escape sequences of [`enter_terminal`]: switch to the alternate
-/// screen and turn bracketed paste on.
+/// screen and turn bracketed paste on. Bracketed paste is best-effort: a
+/// terminal without it still runs, and a paste there arrives as keys.
 fn enter_screen(out: &mut impl Write) -> io::Result<()> {
-    execute!(out, EnterAlternateScreen, EnableBracketedPaste)
+    execute!(out, EnterAlternateScreen)?;
+    let _ = execute!(out, EnableBracketedPaste);
+    Ok(())
 }
 
 /// Undo [`enter_terminal`]. Idempotent and infallible: it runs from `Drop`
@@ -285,6 +288,33 @@ mod tests {
 
         assert!(find(&out, b"\x1b[?1049h").is_some(), "{out:?}");
         assert!(find(&out, b"\x1b[?2004h").is_some(), "{out:?}");
+    }
+
+    /// A terminal that takes everything but the bracketed-paste sequences.
+    #[derive(Default)]
+    struct NoPaste(Vec<u8>);
+
+    impl Write for NoPaste {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if find(buf, b"?2004").is_some() {
+                return Err(io::Error::other("unsupported"));
+            }
+            self.0.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_terminal_without_bracketed_paste_still_gets_the_alternate_screen() {
+        let mut out = NoPaste::default();
+
+        enter_screen(&mut out).unwrap();
+
+        assert!(find(&out.0, b"\x1b[?1049h").is_some(), "{:?}", out.0);
     }
 
     #[test]

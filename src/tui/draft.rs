@@ -74,12 +74,20 @@ impl Draft {
     /// [`Draft::insert`]. A paste with nothing left to insert changes
     /// nothing.
     pub fn paste(&mut self, text: &str) {
-        let text: String = text
-            .replace("\r\n", "\n")
-            .replace('\r', "\n")
-            .chars()
-            .filter(|&c| matches!(c, '\n' | '\t') || !c.is_control())
-            .collect();
+        let mut kept = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\r' => {
+                    chars.next_if_eq(&'\n');
+                    kept.push('\n');
+                }
+                '\n' | '\t' => kept.push(c),
+                c if c.is_control() => {}
+                c => kept.push(c),
+            }
+        }
+        let text = kept;
         if text.is_empty() {
             return;
         }
@@ -219,12 +227,15 @@ impl Draft {
             .get(target + 1)
             .is_some_and(|next| next.start == row.end);
         let mut landing = row.start;
+        // Cells from the row's start to the end of `cluster`.
+        let mut used = 0;
         for cluster in self.clusters() {
             if cluster.start < row.start {
                 continue;
             }
+            used += wrap::width(&self.text[cluster.clone()]);
             let past = cluster.end > row.end || (soft && cluster.end == row.end);
-            if past || wrap::width(&self.text[row.start..cluster.end]) > goal {
+            if past || used > goal {
                 break;
             }
             landing = cluster.end;

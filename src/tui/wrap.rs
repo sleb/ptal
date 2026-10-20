@@ -2,10 +2,11 @@
 //! TUI wraps text: file lines, table cells, thread panel comments and the
 //! comment being typed.
 //!
-//! - A tab is four spaces; control characters are dropped. The comment
-//!   being typed keeps its tabs: for it (`row_ranges`, `clusters`) a
-//!   tab is one cluster four cells wide, so its rows still map to byte
-//!   ranges of the text.
+//! - A tab is one cluster four cells wide, drawn as four spaces; other
+//!   control characters are dropped. Wrapping segments the text with its
+//!   tabs in place and expands them only in the rows it returns, so the
+//!   comment being typed, which keeps its tabs, wraps exactly as its saved
+//!   text does, and its rows map to byte ranges of it.
 //! - Width is measured exactly as ratatui draws: grapheme clusters of the
 //!   whole line (as [`Span::styled_graphemes`] yields them), each
 //!   [`CellWidth::cell_width`] cells wide. A cluster is never split, not even
@@ -45,10 +46,10 @@ use ratatui::text::{Line, Span};
 /// [`plain_rows`] of the line's text.
 pub fn rows(line: &Line, width: usize) -> Vec<Line<'static>> {
     let mut text = String::new();
-    // Where each span's expanded text ends in `text`, and its style.
+    // Where each span's text ends in `text`, and its style.
     let mut ends: Vec<(usize, Style)> = Vec::with_capacity(line.spans.len());
     for span in &line.spans {
-        text.push_str(&expand_tabs(&span.content));
+        text.push_str(&span.content);
         ends.push((text.len(), line.style.patch(span.style)));
     }
     let style_at = |at: usize| {
@@ -61,9 +62,10 @@ pub fn rows(line: &Line, width: usize) -> Vec<Line<'static>> {
             let mut spans: Vec<Span<'static>> = Vec::new();
             for &symbol in row {
                 let style = style_at(offset_in(&text, symbol));
+                let shown = shown(symbol);
                 match spans.last_mut() {
-                    Some(span) if span.style == style => span.content.to_mut().push_str(symbol),
-                    _ => spans.push(Span::styled(symbol.to_owned(), style)),
+                    Some(span) if span.style == style => span.content.to_mut().push_str(shown),
+                    _ => spans.push(Span::styled(shown.to_owned(), style)),
                 }
             }
             Line::from(spans)
@@ -73,22 +75,22 @@ pub fn rows(line: &Line, width: usize) -> Vec<Line<'static>> {
 
 /// [`rows`] of unstyled `text`, as strings.
 pub fn plain_rows(text: &str, width: usize) -> Vec<String> {
-    split(&expand_tabs(text), width)
+    split(text, width)
         .iter()
-        .map(|row| row.concat())
+        .map(|row| row.iter().copied().map(shown).collect())
         .collect()
 }
 
 /// How many rows [`rows`] (or [`plain_rows`]) makes of `text`, without
 /// building them.
 pub fn row_count(text: &str, width: usize) -> usize {
-    split(&expand_tabs(text), width).len()
+    split(text, width).len()
 }
 
 /// The byte range in `text` of each row of [`plain_rows`], for `text` with
-/// no control characters but tabs (which [`plain_rows`] would drop). A tab
-/// stays one cluster four cells wide, so each range, its tabs expanded, is
-/// the [`plain_rows`] row. An empty `text` is one empty row, `0..0`.
+/// no control characters but tabs (which [`plain_rows`] would drop): each
+/// range, its tabs expanded, is the [`plain_rows`] row. An empty `text` is
+/// one empty row, `0..0`.
 pub(super) fn row_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
     split(text, width)
         .iter()
@@ -125,9 +127,9 @@ pub(super) fn tail(text: &str, room: usize) -> String {
     format!("{ELLIPSIS}{}", kept.concat())
 }
 
-/// The clusters of `text` on each row, a tab four cells wide: the one
-/// wrapping algorithm behind [`rows`], [`plain_rows`], [`row_count`] (which
-/// expand tabs first) and [`row_ranges`] (which keeps them).
+/// The clusters of `text` on each row, a tab one cluster four cells wide:
+/// the one wrapping algorithm behind [`rows`], [`plain_rows`],
+/// [`row_count`] and [`row_ranges`].
 fn split(text: &str, width: usize) -> Vec<Vec<&str>> {
     let mut rows = Vec::new();
     let mut row: Vec<&str> = Vec::new();
@@ -210,12 +212,9 @@ fn offset_in(text: &str, part: &str) -> usize {
 /// Cells `text` takes on one unbounded row, by the same measure as [`rows`]:
 /// a tab is four cells, control characters take none.
 pub(super) fn width(text: &str) -> usize {
-    let text = expand_tabs(text);
-    let mut cells = 0;
-    each_cluster(&text, |cluster| {
-        cells += usize::from(text[cluster].cell_width())
-    });
-    cells
+    let mut used = 0;
+    each_cluster(text, |cluster| used += cells(&text[cluster]));
+    used
 }
 
 /// The mark [`cut`] puts where it cut text off.
@@ -269,12 +268,21 @@ fn drawn(text: &str) -> String {
     drawn
 }
 
-/// Cells a tab takes: it is drawn as this many spaces.
-const TAB_WIDTH: usize = 4;
+/// How a tab is drawn.
+const TAB: &str = "    ";
 
-/// `text` with each tab replaced by [`TAB_WIDTH`] spaces, as it is drawn.
+/// Cells a tab takes: those of [`TAB`].
+const TAB_WIDTH: usize = TAB.len();
+
+/// A cluster from [`each_cluster`] as it is drawn: a tab as [`TAB`],
+/// anything else as it is.
+fn shown(symbol: &str) -> &str {
+    if symbol == "\t" { TAB } else { symbol }
+}
+
+/// `text` with each tab replaced by [`TAB`], as it is drawn.
 pub(super) fn expand_tabs(text: &str) -> String {
-    text.replace('\t', &" ".repeat(TAB_WIDTH))
+    text.replace('\t', TAB)
 }
 
 #[cfg(test)]
@@ -494,6 +502,7 @@ mod tests {
         "The quick brown fox jumps over the lazy dog, twice.",
         "    - an indented list item that goes on for a while",
         "\tTabbed\tcolumns\tline",
+        "ab\t\u{301}cd ef",
         "averyveryverylongwordwithnospacesatallinsideit and more",
         "漢字かなカナ混じりの文、そして English words too",
         "emoji 👨\u{200d}👩\u{200d}👧 and e\u{301} accents 🎉🎉🎉",

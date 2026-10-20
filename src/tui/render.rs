@@ -961,6 +961,20 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:sea�
     }
 
     #[test]
+    fn a_combining_mark_after_a_tab_draws_on_it_with_the_cursor_after_the_text() {
+        let mut app = box_with("", (20, 10));
+        update(&mut app, Event::Paste("\t\u{301}x".into()));
+
+        let terminal = draw(&app, 20, 10);
+
+        assert_eq!(
+            box_rows(&terminal, 3)[1],
+            "│   \u{20}\u{301}x             │"
+        );
+        assert!(reversed_at(&terminal, 6, 8), "the cell after `x`");
+    }
+
+    #[test]
     fn a_tab_indented_line_that_wraps_continues_at_the_left_edge() {
         let mut app = box_with("", (20, 10));
         update(&mut app, Event::Paste("\taaaa bbbbbbbbbbb".into()));

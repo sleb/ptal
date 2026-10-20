@@ -420,14 +420,15 @@ Its parts:
   cells, thread panel rows, and the view clamp, which counts rows without
   building them); `row_ranges(text, width)` gives each row's byte range and
   `clusters(text)` each drawn cluster's, for the comment draft, whose text
-  has no control characters but tabs: for these two a tab is not expanded
-  but kept as one cluster four cells wide (ratatui would drop it), so the
-  ranges stay byte ranges of the draft and each, its tabs expanded, is the
+  has no control characters but tabs: each range, its tabs expanded, is the
   `plain_rows` row.
   Breaks after the last whitespace that fits, hard-breaks a word wider than
   a row, and leaves whitespace at a break hanging on the end of its row, so
-  the rows join back to the displayed line. Tabs are four spaces and control
-  characters are dropped. Widths are measured as ratatui draws
+  the rows join back to the displayed line. A tab is one cluster four cells
+  wide (ratatui would drop it), kept in place while segmenting and expanded
+  to four spaces only in the returned rows, so the draft (which keeps its
+  tabs) wraps exactly as its saved text does; other control characters are
+  dropped. Widths are measured as ratatui draws
   (`styled_graphemes`, `CellWidth`), segmenting the whole line at once, so a
   grapheme cluster is never split, even across two spans. Every cluster
   keeps its style (a straddling one takes its first byte's), so a styled
@@ -539,7 +540,8 @@ Its parts:
   `Reviews::reply`, `Resolve`/`Reopen` → `Reviews::resolve`/`reopen` with no
   note, then `Reviews::view(file, true)` → `Event::Saved`); `run` is the blocking loop (read event →
   `step` → draw) on a `TerminalSession`. Setup turns on raw mode, the
-  alternate screen and bracketed paste, so a paste arrives as one
+  alternate screen and bracketed paste (best-effort: a terminal that refuses
+  it still runs, its pastes arriving as keys), so a paste arrives as one
   `Event::Paste` rather than as keys (a `q` or `ctrl+s` in it is text);
   the escape sequences are written by `enter_screen`/`leave_screen` over any
   `Write`.
