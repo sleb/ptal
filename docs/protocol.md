@@ -6,9 +6,9 @@ are in [interfaces.md](interfaces.md). The scenarios and reasoning these
 definitions were worked out from are in `docs/review-interactions.md` at
 commit `0365930` (removed since).
 
-> **Status.** Threads, comments, replies, resolving and reopening are built.
-> Revisions and threads that follow edits (#45), changes since your last
-> look (#46), turns, hand-offs and closing a review (#35), and waiting for
+> **Status.** Threads, comments, replies, resolving and reopening are built,
+> and so are revisions and threads that follow edits (#45). Changes since
+> your last look (#46), turns, hand-offs and closing a review (#35), and waiting for
 > a turn (#36) are planned for v0.3.0. Each section below says which it is.
 > Planned behavior has no command names yet; those are settled in the
 > stories.
@@ -50,13 +50,14 @@ hand off; the agent revises and answers, hands back; until you close it.
 
 ## Revisions
 
-*Planned (#45). Today a thread keeps the line numbers it was created on and
-is `outdated` whenever those lines no longer match.*
+*Built (#45), except hand-offs, which are planned (#35).*
 
 - A **revision** is one version of the file's content. ptal never edits
   the file; it notices a new revision when someone writes something (a
-  comment, a resolve, a hand-off) against content it hasn't kept yet, and
-  keeps a copy. Revisions are numbered `r1`, `r2`, … in the order they
+  comment, a resolve, a reopen, later a hand-off) against content it hasn't
+  kept yet, and keeps a copy. Reading never keeps one, so edits made between
+  two writes are one revision, and content nobody has written against yet
+  has no number. Revisions are numbered `r1`, `r2`, … in the order they
   are kept. Going back to earlier content returns to that revision.
 - A thread stays anchored to the lines it was created on, in the revision
   it was created on. When the file changes, ptal maps those lines to the
@@ -65,9 +66,9 @@ is `outdated` whenever those lines no longer match.*
     **current**;
   - any anchored line edited or removed: the thread is **outdated**, shown
     near where its text was, with the original text quoted.
-- Every comment, resolve, reopen and hand-off records the revision it was
-  written against, so you can see which version of the file a fix referred
-  to.
+- Every comment and every resolve records the revision it was written
+  against (a reopen through its note, if it has one; later each hand-off
+  too), so you can see which version of the file a fix referred to.
 - Revisions have no author. What the agent changed is what changed between
   your hand-off and its hand-back.
 - A review belongs to the file's path. However much the file is rewritten,

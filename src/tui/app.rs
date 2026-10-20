@@ -2272,6 +2272,7 @@ mod tests {
             thread: Thread {
                 id: id.into(),
                 anchor: Anchor {
+                    revision: None,
                     start_line: start,
                     end_line: end,
                     quote: String::new(),
@@ -2293,6 +2294,7 @@ mod tests {
                 author: (*author).into(),
                 body: format!("body {i}"),
                 created_at: "2026-10-12T10:00:00Z".into(),
+                revision: None,
             })
             .collect();
         v
@@ -2302,6 +2304,7 @@ mod tests {
         Status::Resolved {
             resolved_by: "claude".into(),
             resolved_at: "2026-10-12T10:00:00Z".into(),
+            resolved_revision: None,
         }
     }
 
@@ -2670,6 +2673,7 @@ mod tests {
             author: "claude".into(),
             body: "漢".repeat(68),
             created_at: "2026-10-12T10:00:00Z".into(),
+            revision: None,
         }];
         let mut a = panel_app(&[wide], 12); // 4 rows inside the panel
         send(&mut a, [press(KeyCode::Enter)]);

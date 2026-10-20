@@ -13,7 +13,7 @@ use serde_json::json;
 
 use crate::error::Error;
 use crate::model::{Anchor, State, Status, Thread};
-use crate::review::{Clock, Reviews, SystemClock, ThreadView};
+use crate::review::{Clock, Reviews, SystemClock, ThreadView, View};
 use crate::store::Store;
 use crate::tui;
 
@@ -156,19 +156,28 @@ Output is JSON when stdout is not a terminal, or with --json. `comments`
 prints one document:
 
   {\"file\": \"/abs/path/plan.md\",
+   \"revision\": \"r3\" | null,
    \"threads\": [{
      \"id\": \"c3\", \"status\": \"open\" | \"resolved\",
      \"state\": \"current\" | \"outdated\",
-     \"anchor\": {\"start_line\": 12, \"end_line\": 14, \"quote\": \"...\"},
-     \"comments\": [{\"id\", \"author\", \"body\", \"created_at\"}],
-     \"resolved_by\", \"resolved_at\"   (resolved threads only)
+     \"anchor\": {\"revision\": \"r1\", \"start_line\": 12, \"end_line\": 14,
+                \"quote\": \"...\"},
+     \"comments\": [{\"id\", \"author\", \"body\", \"created_at\", \"revision\"}],
+     \"resolved_by\", \"resolved_at\", \"resolved_revision\"   (resolved only)
    }]}
 
-`state` is \"outdated\" when the quoted lines are no longer at the stored range,
-including after lines were inserted above them, so your own edits can cause
-it.
+Lines are where the anchored text is in the file now: edits above a thread
+move it. `state` is \"outdated\" when an anchored line was edited or removed;
+the thread is then shown at a best guess, with its original `quote`, so your
+own edits can cause it.
 
-`add`, `reply`, `resolve` and `reopen` print {\"file\", \"thread\"} (no `state`).
+A revision (r1, r2, ...) is a version of the file that a write was made
+against. The `revision` fields say which version a thread, comment or resolve
+referred to; the top-level `revision` is the file's current one, or null if
+nothing has been written against it yet.
+
+`add`, `reply`, `resolve` and `reopen` print {\"file\", \"thread\"} (no `state`;
+lines are mapped the same way).
 
 Author: write commands need --as <name> or the PTAL_AUTHOR environment
 variable. ptal never guesses one.
@@ -309,7 +318,7 @@ pub fn resolve_author(flag: Option<&str>, env: Option<&str>) -> Result<String, F
 
 /// What a successful command has to say.
 enum Output {
-    Threads(Vec<ThreadView>),
+    Threads(View),
     /// A write's result: the updated thread and what was done to it.
     Thread(Thread, Verb),
 }
@@ -326,7 +335,11 @@ enum Verb {
 impl Output {
     fn to_json(&self, file: &Path) -> String {
         let value = match self {
-            Output::Threads(threads) => json!({ "file": file, "threads": threads }),
+            Output::Threads(view) => json!({
+                "file": file,
+                "revision": view.revision,
+                "threads": view.threads,
+            }),
             Output::Thread(thread, _) => {
                 json!({ "file": file, "thread": thread })
             }
@@ -337,7 +350,7 @@ impl Output {
     /// Presentation only, not a contract.
     fn to_text(&self) -> String {
         match self {
-            Output::Threads(threads) => render_text(threads),
+            Output::Threads(view) => render_text(&view.threads),
             Output::Thread(thread, Verb::Added) => {
                 let Anchor {
                     start_line,
@@ -847,11 +860,12 @@ mod tests {
             out.json(),
             serde_json::json!({
                 "file": fx.canonical(),
+                "revision": "r1",
                 "threads": [{
                     "id": "c2",
-                    "anchor": {"start_line": 2, "end_line": 3, "quote": "two\nthree"},
+                    "anchor": {"revision": "r1", "start_line": 2, "end_line": 3, "quote": "two\nthree"},
                     "status": "open",
-                    "comments": [{"id": "c2", "author": "scott", "body": "Why?", "created_at": NOW}],
+                    "comments": [{"id": "c2", "author": "scott", "body": "Why?", "created_at": NOW, "revision": "r1"}],
                     "state": "current",
                 }],
             })
@@ -887,6 +901,51 @@ mod tests {
     }
 
     #[test]
+    fn comments_follows_lines_inserted_above_and_keeps_the_thread_current() {
+        let fx = fixture_with_two_threads();
+        fs::write(&fx.file, "zero\none\ntwo\nthree\n").unwrap();
+
+        let json = fx.run(&["comments", "FILE"]).json();
+
+        let c2 = &json["threads"][1];
+        assert_eq!(c2["anchor"]["start_line"], 3);
+        assert_eq!(c2["anchor"]["end_line"], 4);
+        assert_eq!(c2["anchor"]["revision"], "r1");
+        assert_eq!(c2["state"], "current");
+        assert_eq!(json["revision"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn comments_shows_an_edited_thread_outdated_with_its_original_quote() {
+        let fx = fixture_with_two_threads();
+        fs::write(&fx.file, "zero\none\nTWO\nthree\n").unwrap();
+
+        let json = fx.run(&["comments", "FILE"]).json();
+
+        let c2 = &json["threads"][1];
+        assert_eq!(c2["state"], "outdated");
+        assert_eq!(c2["anchor"]["start_line"], 3);
+        assert_eq!(c2["anchor"]["end_line"], 4);
+        assert_eq!(c2["anchor"]["quote"], "two\nthree");
+    }
+
+    #[test]
+    fn writes_print_the_thread_at_its_mapped_lines() {
+        let fx = fixture_with_two_threads();
+        fs::write(&fx.file, "zero\none\ntwo\nthree\n").unwrap();
+
+        let out = fx.run(&["reply", "FILE", "c2", "ok", "--as", "claude"]);
+
+        let anchor = &out.json()["thread"]["anchor"];
+        assert_eq!(
+            (&anchor["start_line"], &anchor["end_line"]),
+            (&3.into(), &4.into())
+        );
+        let revision = &out.json()["thread"]["comments"][1]["revision"];
+        assert_eq!(revision, "r2");
+    }
+
+    #[test]
     fn comments_with_no_threads_is_an_empty_list() {
         let fx = fixture("one\n");
 
@@ -894,7 +953,7 @@ mod tests {
 
         assert_eq!(
             out.json(),
-            serde_json::json!({"file": fx.canonical(), "threads": []})
+            serde_json::json!({"file": fx.canonical(), "revision": null, "threads": []})
         );
     }
 
@@ -945,9 +1004,9 @@ mod tests {
                 "file": fx.canonical(),
                 "thread": {
                     "id": "c1",
-                    "anchor": {"start_line": 2, "end_line": 3, "quote": "two\nthree"},
+                    "anchor": {"revision": "r1", "start_line": 2, "end_line": 3, "quote": "two\nthree"},
                     "status": "open",
-                    "comments": [{"id": "c1", "author": "scott", "body": "Why?", "created_at": NOW}],
+                    "comments": [{"id": "c1", "author": "scott", "body": "Why?", "created_at": NOW, "revision": "r1"}],
                 },
             })
         );
@@ -1326,7 +1385,7 @@ mod tests {
     fn comments_on_a_tty_is_a_readable_listing() {
         let fx = fixture_with_two_threads();
         fx.run(&["resolve", "FILE", "c1", "--as", "claude", "--note", "Fixed"]);
-        fs::write(&fx.file, "one\nTWO\nthree\n").unwrap();
+        fs::write(&fx.file, "zero\none\nTWO\nthree\n").unwrap();
 
         let out = fx.run_with(&["comments", "FILE", "--all"], &fx.env(None, true));
 
@@ -1334,12 +1393,12 @@ mod tests {
         assert_eq!(
             out.stdout,
             "\
-c1  resolved by claude  current  lines 1-1
+c1  resolved by claude  current  lines 2-2
   > one
   scott: Typo?
   claude: Fixed
 
-c2  open  outdated  lines 2-3
+c2  open  outdated  lines 3-4
   > two
   > three
   scott: Why?
@@ -1421,6 +1480,28 @@ c2  open  outdated  lines 2-3
         ] {
             at(needle);
         }
+    }
+
+    #[test]
+    fn top_level_help_says_lines_follow_edits_and_when_a_thread_is_outdated() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let paragraph = paragraph_with(&help, &["`state`", "outdated"]);
+        let flat = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            "edits above a thread move it",
+            "an anchored line was edited or removed",
+            "original `quote`",
+        ] {
+            assert!(flat.contains(needle), "{needle}: {flat}");
+        }
+        let shape = paragraph_with(&help, &["\"threads\""]);
+        for field in ["\"revision\"", "resolved_revision"] {
+            assert!(shape.contains(field), "{field}: {shape}");
+        }
+        paragraph_with(&help, &["revision", "null"]);
     }
 
     #[test]

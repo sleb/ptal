@@ -32,30 +32,27 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 
 | Component | State |
 |---|---|
-| `model` | Built: `Review`, `Thread`, `Status`, `Comment`, `Anchor`, `State` |
-| `store` | Built: data dir, atomic `review.json`, lock, schema check |
-| `review` | Built: `add_thread`, `view`, `resolve`, `reply`, `reopen` |
+| `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State` |
+| `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
+| `review` | Built: `add_thread`, `view` (anchors mapped across revisions), `resolve`, `reply`, `reopen` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
 | `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Help` modes, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
-| `anchor`, `diffview` | Deferred |
+| `anchor` | Built: `map_range`, `Diff`, `clamp` (Myers line diff via `similar`) |
+| `diffview` | Deferred |
 
-Deferred within built components: revisions and snapshots, anchor mapping
-between file versions, nested replies, edit, delete, and
-`ptal schema` in the CLI. For now, `state` compares the
-quote against the file at the stored lines, with no mapping. Sections below describe deferred design where
-they say so.
+Deferred within built components: nested replies, edit, delete, and
+`ptal schema` in the CLI. Sections below describe deferred design where they
+say so.
 
 ## Key idea: revisions and anchoring
 
-*Deferred.* The MVP stores no revisions: a thread keeps the line range and
-quote from when it was created, and `review` reports `outdated` whenever the
-file no longer matches. The design below replaces that without changing the
-output shape.
-
 A plan file is mutable and untracked, so there are no commits to anchor to.
 ptal supplies its own: every distinct content of the file is a **revision**,
-snapshotted and content-addressed (SHA-256) in the data dir.
+snapshotted and content-addressed (SHA-256) in the data dir. Snapshots are
+taken only on writes (see [docs/protocol.md § Revisions](docs/protocol.md#revisions)),
+so edits made between two writes collapse into one revision, and viewing
+never writes.
 
 A thread is anchored to a line range **in the revision it was created on**.
 Showing it against a newer revision means mapping that range forward by
@@ -75,15 +72,26 @@ threads are never silently dropped or silently re-pointed at the wrong text.
 **Role:** the data types that are persisted and exposed to agents.
 
 - `Review` — one per reviewed file: `schema_version`, `path`, `next_id`,
-  `threads`.
+  `revisions`, `threads`.
+- `Revision` — `{ id, sha256 }`: one kept version of the file, `r1`, `r2`, …
+  in the order first written against. `Review::revision_for(sha)` returns the
+  known id or appends the next one; there is no separate counter, because
+  revisions are never pruned.
 - `Thread` — `{ id, anchor, status, comments }`. Its id is its first
   comment's id.
-- `Status` — `open` or `resolved`; `resolved_by` and `resolved_at` appear on
-  the wire only when resolved. Reopening, or replying to a resolved thread,
+- `Status` — `open` or `resolved`; `resolved_by`, `resolved_at` and
+  `resolved_revision` appear on the wire only when resolved. Reopening, or replying to a resolved thread,
   makes the thread `open` and drops them.
-- `Comment` — `{ id, author, body, created_at }`. Timestamps are RFC 3339 UTC.
-- `Anchor` — `{ start_line, end_line, quote }` (1-based, inclusive); `quote`
-  is the anchored lines joined by `\n`.
+- `Comment` — `{ id, author, body, created_at, revision }`. Timestamps are
+  RFC 3339 UTC.
+- `Anchor` — `{ revision, start_line, end_line, quote }` (1-based,
+  inclusive); `quote` is the anchored lines joined by `\n`, and the lines
+  refer to `revision`. Anchors are immutable; `review` maps them to the
+  current file when viewing.
+- Every `revision` field (`anchor.revision`, `comments[].revision`,
+  `resolved_revision`) is skipped when `None`, which only data written before
+  revisions existed has. `revisions` defaults to empty, so such a
+  `review.json` still loads.
 - `State` — `current | outdated`. Computed by `review` when viewing, never
   persisted.
 
@@ -100,24 +108,39 @@ golden-JSON test in `model` pins it. Every persisted file carries
 `schema_version`; unknown future versions are refused, not guessed at.
 
 *Deferred:* nested replies (`parent`), edit/delete, `JsonSchema` derives and
-`ptal schema`, revisions.
+`ptal schema`.
 
 ### `anchor`
-*Deferred.* Not part of the MVP.
-
 **Role:** pure functions mapping line ranges between revisions.
 
 ```
-map_range(old_text, new_text, range) -> Mapped { range, state: Current | Outdated }
-changed_lines(old_text, new_text)    -> Vec<Range>      // for gutter markers
+map_range(old: &[&str], new: &[&str], range: LineRange) -> Mapped { range, state }
+Diff::new(old, new).map(range) -> Mapped     // one diff, many ranges
+clamp(range, len) -> LineRange               // into 1..=max(len, 1), no diff
 ```
+
+`LineRange { start, end }` is 1-based and inclusive; `state` is the model's
+`State`. It takes lines, not text, so the caller splits them (`review` uses
+`str::lines`). The diff is `similar`'s Myers over whole lines; `map_range`
+is `Diff::new(old, new).map(range)`. Checking a range costs one pass over
+the diff ops, not one per line.
+
+- `Current` iff every anchored line is in an unchanged run of the diff **and**
+  the mapped lines are contiguous: a line inserted inside the range makes it
+  `Outdated`, since the anchored text no longer reads the same.
+- `Outdated` best guess: each end follows the diff; an end on an edited or
+  deleted line goes to where that change starts in the new text. The result
+  is clamped to `1..=max(new_len, 1)` with `end >= start`, so an empty file
+  gives `1-1`.
 
 **Invariants**
 - Pure: no I/O, no clock, deterministic for the same inputs.
 - `Current` implies the mapped lines are byte-identical to the originals.
 - `Outdated` always carries a best-guess range clamped to the new file, never
-  out of bounds.
+  out of bounds. A range outside the old text is `Outdated`, never a panic.
 - Identity: mapping a range between identical texts returns it unchanged.
+
+*Deferred:* `changed_lines(old, new)` for gutter change markers (#46).
 
 ### `store`
 **Role:** persistence. Reads and writes `Review`s.
@@ -128,8 +151,9 @@ changed_lines(old_text, new_text)    -> Vec<Range>      // for gutter markers
 ```
 <data>/<slug>-<hash8>/        slug = file name sanitized to [A-Za-z0-9._-];
                               hash8 = of the canonical absolute path
-  review.json                 Review (schema_version, path, next_id, threads)
+  review.json                 Review (schema_version, path, next_id, revisions, threads)
   review.lock                 advisory lock file; never renamed or replaced
+  revisions/<sha256>          raw bytes of each revision written against
 ```
 
 **Invariants**
@@ -146,13 +170,21 @@ changed_lines(old_text, new_text)    -> Vec<Range>      // for gutter markers
 - A `review.json` with a newer `schema_version` is refused (`UnsupportedSchema`)
   and left untouched.
 - An unchanged review is not rewritten.
+- A snapshot is named by the SHA-256 of the file's raw bytes (so a change of
+  line endings alone is a new revision), written as `<sha>.tmp`, fsynced, then
+  renamed into place. An existing snapshot is never rewritten, and none is
+  ever removed. The reviewed file itself is only ever read.
+- Snapshots kept by a transaction are written after its closure returns `Ok`
+  and **before** `review.json` is renamed, all under the lock: a reader that
+  sees `rN` in `review.json` always finds its snapshot.
 
-**Contract:** `with_review(file, |&mut Review| -> Result<R>) -> Result<R>` is
-the only mutation primitive; an `Err` from the closure writes nothing.
-`load(file)` takes no lock: rename makes each read a consistent snapshot. A
+**Contract:** `with_review(file, |&mut Review, &mut Snapshots| -> Result<R>)
+-> Result<R>` is the only mutation primitive; `Snapshots::keep(bytes)` stages
+a snapshot and returns its hash, and an `Err` from the closure writes nothing,
+snapshots included. `load(file)` and `load_revision(file, sha) ->
+Option<bytes>` take no lock: rename makes each read a consistent snapshot. A
 review with no `review.json` loads as empty without touching disk.
-
-*Deferred:* `revisions/` snapshots.
+`content_hash(bytes)` is the one hashing rule, shared with `review`.
 
 ### `review`
 **Role:** the application core and the **only write path**. Each operation is
@@ -162,8 +194,14 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 
 - `add_thread(file, start, end, body, author)` — anchors a new open thread to
   lines `start..=end` of the file as it is now, storing the quote.
-- `view(file, include_resolved)` — threads in id order, open only by default,
-  each with a computed `state`.
+- `view(file, include_resolved) -> View { revision, threads }` — threads in
+  id order, open only by default, each with its anchor's lines mapped to the
+  file as it is now and a computed `state`; `revision` is the current
+  content's id, or `None` if nothing has been written against it yet. One
+  read of the file serves both.
+- `resolve`, `reply` and `reopen` return the thread with its lines mapped to
+  the content they read (the stored anchor is unchanged); `add_thread`'s
+  range is as given, since it anchors to the current content.
 - `resolve(file, id, author, note?)` — marks the thread resolved; a note is
   appended as a second comment by the resolver. Resolving a resolved thread
   is `AlreadyResolved` and writes nothing, so the note is dropped.
@@ -174,34 +212,54 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
   is appended as a comment by the reopener. Reopening an open thread is
   `AlreadyOpen` and writes nothing, so the note is dropped.
 
-Free function `file_lines(file)` returns the file's lines under the rule
-below, so a front end that displays the file shows exactly what
-`add_thread` quotes.
+`View.lines` is the file's lines from the same read the threads were mapped
+against, so a front end that displays them shows exactly what `add_thread`
+quotes and where each thread is.
 
 **Invariants**
 - Lines are read with `str::lines()` (`\n` or `\r\n`, final newline
-  ignored); the file must be valid UTF-8. `file_lines` is the one helper: it
-  supplies the quote at `add_thread`, the check in `view`, and the TUI's
-  display.
-- `state` is `outdated` iff the stored range no longer exists in the file or
-  its text differs from `quote`. There is no mapping between versions of the
-  file: inserting lines above an anchor makes it `outdated`.
+  ignored); the file must be valid UTF-8. One rule supplies the quote at
+  `add_thread`, the mapping in `view`, and `View.lines` for the TUI's display.
+- Anchors are never rewritten on disk. `view` maps each one from its own
+  revision's snapshot to the current file with an `anchor::Diff`, so an edit
+  that is later reverted maps back to `current`. Each revision is loaded and
+  diffed against the current file at most once per call.
+- `state` is `current` iff the mapping is `Current` **and** the lines at the
+  mapped range read as `quote` (the second check keeps an adopted legacy
+  anchor whose quote no longer matched from turning `current`). Otherwise it
+  is `outdated`, at the best-guess range, with the original `quote`.
+- An anchor with no revision (from before revisions, not yet adopted) is
+  checked in place against the current file. One whose snapshot is missing
+  or unreadable (deleted or damaged by hand) is `outdated` at its stored
+  range clamped to the file; it is still listed, and mapping never fails a
+  read or a write.
 - A mutation that fails (unknown id, bad range, empty author or body) changes
-  nothing.
+  nothing, snapshots included.
+- Every write reads the file once, outside the lock, and records the revision
+  it was made against, inside the lock: it keeps the snapshot and assigns the
+  next ordinal if the content is new. `add_thread` sets `anchor.revision` and
+  the comment's `revision`; `reply` sets the comment's; `resolve` sets
+  `resolved_revision` and the note's; `reopen` sets only its note's (a reopen
+  itself is not recorded, so one without a note keeps no snapshot and
+  assigns no ordinal). Reads hash the file but never write.
+- A thread anchored before revisions existed (`anchor.revision` absent) is
+  anchored to the revision of the first write after the upgrade, "the file as
+  first seen"; its old comments keep no revision.
 - Every message has a non-empty `author` and `body`.
 - `resolve` on a resolved thread is `AlreadyResolved` and `reopen` on an open
   thread is `AlreadyOpen`: both write nothing, so a note is dropped.
-- Error precedence: `reply` checks author, body, then thread id; `resolve`
-  and `reopen` check author, thread id, then status. An id is allocated only after the
-  thread is found, so a failed write never burns one.
+- Error precedence: `reply` checks author, body, file, then thread id;
+  `resolve` and `reopen` check author, file, thread id, then status. A file
+  that is missing or not UTF-8 fails every write with `FileUnreadable`. An id
+  is allocated only after the thread is found, so a failed write never burns
+  one.
 
 **Contract:** returns typed results and typed errors (`NotFound`,
 `AlreadyOpen`, `AlreadyResolved`, `InvalidRange`, `FileUnreadable`, `Locked`,
 `UnsupportedSchema`, `EmptyAuthor`, `EmptyBody`, `Io`, `Corrupt`). No printing, no terminal awareness. This is the
 API both front ends share. Mapping errors to exit codes belongs to `cli`.
 
-*Deferred:* `sync` and revisions, `edit`, `delete`, `as_of`
-views.
+*Deferred:* `sync`, `edit`, `delete`, `as_of` views.
 
 ### `cli`
 
@@ -222,13 +280,18 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
 - **stdout** is data only: JSON when not a TTY (or `--json`), a readable
   rendering when a TTY. **stderr** is diagnostics. Never mixed; on failure
   stdout is empty. `--help` and `--version` go to stdout with exit `0`.
-- `comments` prints `{"file", "threads": [...]}`. Each thread is self-contained:
-  id, `status`, `state`, `anchor` with the quote, and its flat list of
-  `comments` (resolved threads add `resolved_by`/`resolved_at`). Default is
+- `comments` prints `{"file", "revision", "threads": [...]}`; `revision` is
+  the file's current revision id, or `null` if nothing has been written
+  against this content. Each thread is self-contained: id, `status`, `state`,
+  `anchor` (its `revision`, its lines mapped to the file now, and the
+  original quote), and its flat list of `comments`, each with its `revision`
+  (resolved threads add `resolved_by`/`resolved_at`/`resolved_revision`). Default is
   open threads; `--all` includes resolved. Threads are in id order. Replies are
   flat: there is no reply tree yet.
 - `add`, `reply`, `resolve` and `reopen` print `{"file", "thread"}` (no
-  `state`: it is a read-time concept). Resolving a resolved thread fails with
+  `state`: it is a read-time concept). The printed anchor's lines are mapped
+  to the file as it is now, like `comments`, so the CLI never shows unmapped
+  lines; `anchor.revision` stays the revision the thread was created on. Resolving a resolved thread fails with
   `already_resolved` and reopening an open thread with `already_open` (both
   exit `2`).
 - There is no `waiting_on` field. A thread is waiting on an agent when its
@@ -288,8 +351,9 @@ Its parts:
   its draft's rows at `draft_width()` (terminal columns less the border and
   one cell for a cursor after a full row), at least 1, capped at
   `min(10, rows / 2 - 2)` (at least 1), plus its 2 border rows; the view
-  shrinks to stay above it. A thread covers its stored
-  range whatever its `state`; `Marker = Waiting | Open | Resolved` is derived
+  shrinks to stay above it. A thread covers its range as
+  `view` maps it to the file read at open (or after a save), whatever its
+  `state`, so an outdated thread sits at its best-guess lines; `Marker = Waiting | Open | Resolved` is derived
   per line (waiting > open > resolved). Waiting means open and last comment
   not by `author`. The panel's thread set is recomputed from the threads and
   the cursor, never cached. `screen_rows()` maps the view to
@@ -455,8 +519,8 @@ Its parts:
   prompt, which wins over the hint. Border text (error or hint) that does
   not fit between the corners is `wrap::cut`, so it ends in `…` and a wide
   character that would cross the corner is left out whole.
-- `tui` (module root): the driver. `load` reads lines (`review::file_lines`)
-  and all threads; `Loaded::into_app` highlights the file only when it is
+- `tui` (module root): the driver. `load` takes the lines and all threads
+  from one `Reviews::view`, so they come from the same read of the file; `Loaded::into_app` highlights the file only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
   `color_wanted(NO_COLOR)`, read once at startup); `step(app, event, reviews, file, author)` is the only
   place effects are performed (`Add` → `Reviews::add_thread`, `Reply` →
@@ -575,12 +639,16 @@ state or `review`.
 
 - `model`: round-trip and a golden-JSON test pinning the wire shape.
 - `store`: data-dir and review-dir naming, stale-temp recovery, schema
-  refusal, lock contention.
+  refusal, lock contention; snapshots hold exact bytes, are not written on
+  `Err` or `Locked`, are never rewritten, and leave the reviewed file's bytes
+  and mtime alone.
 - `review`: one test per rule, with an injected clock; editing the file between
-  calls to exercise `state`.
+  calls to exercise revisions and mapping (insert above, edit, delete, revert,
+  threads on different revisions, legacy anchors, a missing snapshot).
 - `tests/core.rs`: concurrent writers, cross-handle reads, a full review round.
-- `anchor` (deferred): property tests (identity, in-bounds, `Current` ⇒
-  identical text).
+- `anchor`: one example per diff shape plus properties checked exhaustively
+  over every pair of texts of 0–4 lines over `{a, b, c}` and every range
+  (identity, in-bounds, `Current` ⇒ identical text).
 - `cli`: in-process tests (golden JSON, TTY rendering, error table, help) in
   `src/cli.rs`; process tests in `tests/cli.rs` for streams, exit status, and
   env. Schema conformance is deferred with `ptal schema`.
@@ -611,7 +679,8 @@ state or `review`.
   the clamp and key effects are identical with highlighting on and off;
   `tests/tui.rs` runs scripted rounds through `step` against a real
   `Reviews` (single-line and Visual range comments checked through the real
-  `ptal comments`); the terminal guard and panic hook are tested with injected
+  `ptal comments`; a thread moving with lines inserted above it, then
+  outdated once its line is edited); the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the
   panic hook is global). A real-terminal check (pty) is manual.
 
