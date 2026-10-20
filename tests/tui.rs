@@ -11,7 +11,7 @@ use ptal::review::{Reviews, SystemClock};
 use ptal::store::Store;
 use ptal::tui::app::{App, Back, Event, Mode, Target};
 use ptal::tui::render::render;
-use ptal::tui::{load, step};
+use ptal::tui::{Watch, load, refresh, step};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -211,7 +211,7 @@ fn threads_added_with_a_range_mark_every_line_on_open() {
 }
 
 #[test]
-fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
+fn a_save_against_a_file_that_shrank_is_refused_keeps_the_draft_and_refreshes() {
     let sb = sandbox(PLAN);
     let mut app = sb.open();
     let typing = sb.press(&mut app, &["G", "enter", "o", "k"]);
@@ -230,10 +230,14 @@ fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
         "{:?}",
         app.mode()
     );
-    assert!(app.status().unwrap().contains("invalid line range"));
+    assert_eq!(app.status(), Some("the file changed: look again"));
     let rendered = screen(&app);
-    assert!(rendered.contains("└invalid line range"), "{rendered}");
+    assert!(
+        rendered.contains("└the file changed: look again"),
+        "{rendered}"
+    );
     assert!(rendered.contains("│ok"), "{rendered}");
+    assert_eq!(app.lines(), ["one", "two"], "the screen shows the file now");
     assert!(sb.reviews.view(&sb.file, true).unwrap().threads.is_empty());
 }
 
@@ -249,11 +253,14 @@ fn a_failed_range_save_shows_the_error_under_the_range_title() {
     assert_eq!(flow, ControlFlow::Continue(()));
     let rendered = screen(&app);
     assert!(
-        rendered.contains("┌Comment on lines 3-4 as scott"),
-        "{rendered}"
+        rendered.contains("┌Comment on line 2 as scott"),
+        "the range followed the shrink:\n{rendered}"
     );
     assert!(rendered.contains("│ok"), "{rendered}");
-    assert!(rendered.contains("└invalid line range"), "{rendered}");
+    assert!(
+        rendered.contains("└the file changed: look again"),
+        "{rendered}"
+    );
     assert!(sb.reviews.view(&sb.file, true).unwrap().threads.is_empty());
 }
 
@@ -916,7 +923,7 @@ fn a_failed_save_keeps_the_whole_multi_line_draft() {
         "{:?}",
         app.mode()
     );
-    assert!(app.status().unwrap().contains("invalid line range"));
+    assert_eq!(app.status(), Some("the file changed: look again"));
     assert!(sb.reviews.view(&sb.file, true).unwrap().threads.is_empty());
 }
 
@@ -1233,4 +1240,179 @@ fn the_first_open_of_a_review_marks_nothing() {
 
     assert_eq!(change_glyphs(&app), [" "; 5]);
     assert!(!screen(&app).contains("change"));
+}
+
+// --- live refresh ---
+
+/// A second handle on the same review: the agent, through the library.
+fn agent(sb: &Sandbox) -> Reviews<SystemClock> {
+    Reviews::new(Store::new(&sb.data))
+}
+
+fn draft_text(app: &App) -> Option<String> {
+    match app.mode() {
+        Mode::Input { draft, .. } => Some(draft.text().to_string()),
+        _ => None,
+    }
+}
+
+#[test]
+fn the_agents_writes_appear_on_refresh_with_the_cursor_and_draft_kept() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let mut watch = Watch::default();
+    let _ = sb.press_typing(&mut app, &["j", "enter"], "Why?", &["ctrl+s"]);
+    let _ = sb.press_typing(&mut app, &["j", "j", "enter"], "half", &[]);
+    assert_eq!(app.lines()[app.cursor()], "four");
+
+    let claude = agent(&sb);
+    claude.reply(&sb.file, "c1", "Because.", "claude").unwrap();
+    claude
+        .add_thread(&sb.file, 5, 5, "And this?", "claude")
+        .unwrap();
+    claude.resolve(&sb.file, "c1", "claude", None).unwrap();
+    fs::write(&sb.file, "zero\none\ntwo\nthree\nfour\nfive\n").unwrap();
+    assert!(refresh(&mut app, &sb.reviews, &sb.file, &mut watch));
+
+    assert_eq!(app.lines()[0], "zero");
+    assert_eq!(
+        app.lines()[app.cursor()],
+        "four",
+        "the cursor kept its text"
+    );
+    assert_eq!(draft_text(&app).as_deref(), Some("half"));
+    let rendered = screen(&app);
+    assert!(
+        rendered.contains("○ 3│two"),
+        "c1 resolved, moved down:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("◆ 6│five"),
+        "the agent's thread:\n{rendered}"
+    );
+
+    let _ = sb.press(&mut app, &["ctrl+s"]);
+    assert_eq!(app.status(), Some("added c4"));
+    let threads = sb.reviews.view(&sb.file, true).unwrap().threads;
+    let c4 = threads.iter().find(|t| t.thread.id == "c4").unwrap();
+    assert_eq!(c4.thread.anchor.quote, "four", "saved on the line shown");
+}
+
+#[test]
+fn a_hand_back_through_the_cli_flips_the_banner_on_refresh() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let mut watch = Watch::default();
+    let _ = sb.press(&mut app, &["H", "ctrl+s"]);
+    assert!(banner(&app).starts_with("agent's turn"), "{}", banner(&app));
+    let bytes = fs::read(review_json(&sb)).unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_ptal"))
+        .args(["handoff", sb.file.to_str().unwrap(), "--as", "claude"])
+        .args(["--note", "Revised"])
+        .env("PTAL_DATA_DIR", &sb.data)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let handed = fs::read(review_json(&sb)).unwrap();
+    assert_ne!(handed, bytes);
+
+    assert!(refresh(&mut app, &sb.reviews, &sb.file, &mut watch));
+
+    assert!(
+        banner(&app).starts_with("your turn · claude: Revised"),
+        "{}",
+        banner(&app)
+    );
+    assert_eq!(fs::read(review_json(&sb)).unwrap(), handed, "no TUI write");
+}
+
+#[test]
+fn nothing_changed_means_no_refresh_and_a_refresh_never_writes() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let mut watch = Watch::default();
+    let _ = sb.press_typing(&mut app, &["enter"], "hi", &["ctrl+s"]);
+    let bytes = fs::read(review_json(&sb)).unwrap();
+
+    assert!(
+        refresh(&mut app, &sb.reviews, &sb.file, &mut watch),
+        "first tick"
+    );
+    let before = app.clone();
+    for _ in 0..3 {
+        assert!(!refresh(&mut app, &sb.reviews, &sb.file, &mut watch));
+    }
+
+    assert_eq!(screen(&app), screen(&before));
+    assert_eq!(fs::read(review_json(&sb)).unwrap(), bytes);
+    fs::write(&sb.file, "ONE\ntwo\n").unwrap();
+    assert!(refresh(&mut app, &sb.reviews, &sb.file, &mut watch));
+    assert_eq!(fs::read(review_json(&sb)).unwrap(), bytes);
+}
+
+#[test]
+fn a_hand_off_against_an_unseen_edit_is_refused_then_hands_off_what_is_shown() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let _ = sb.press_typing(&mut app, &["H"], "Done", &[]);
+    fs::write(&sb.file, "one\nTWO\nthree\nfour\nfive\n").unwrap();
+
+    let _ = sb.press(&mut app, &["ctrl+s"]);
+
+    assert_eq!(app.status(), Some("the file changed: look again"));
+    assert_eq!(draft_text(&app).as_deref(), Some("Done"));
+    assert_eq!(app.lines()[1], "TWO", "the screen refreshed");
+    assert!(!review_json(&sb).exists(), "nothing written");
+
+    let _ = sb.press(&mut app, &["ctrl+s"]);
+
+    assert!(
+        banner(&app).starts_with("agent's turn · scott: Done"),
+        "{}",
+        banner(&app)
+    );
+    let review = &cli_comments(&sb)["review"];
+    assert_eq!(review["latest"]["revision"], "r1");
+    let shown = cli_comments(&sb)["revision"].clone();
+    assert_eq!(shown, "r1", "the last look is the content shown");
+}
+
+#[test]
+fn a_close_against_an_unseen_edit_is_refused_and_keeps_its_verdict() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let _ = sb.press_typing(&mut app, &["C", "tab"], "Ship", &[]);
+    fs::write(&sb.file, "one\n").unwrap();
+
+    let _ = sb.press(&mut app, &["ctrl+s"]);
+
+    assert_eq!(app.status(), Some("the file changed: look again"));
+    assert!(matches!(
+        app.mode(),
+        Mode::Input { target: Target::Close { verdict: Some(_), .. }, draft, .. }
+            if draft.text() == "Ship"
+    ));
+    let _ = sb.press(&mut app, &["ctrl+s"]);
+    assert!(
+        banner(&app).starts_with("closed: approved"),
+        "{}",
+        banner(&app)
+    );
+}
+
+#[test]
+fn a_refresh_that_cannot_read_leaves_the_screen_as_it_was() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let mut watch = Watch::default();
+    let before = screen(&app);
+
+    fs::remove_file(&sb.file).unwrap();
+
+    assert!(!refresh(&mut app, &sb.reviews, &sb.file, &mut watch));
+    assert_eq!(screen(&app), before);
+    fs::write(&sb.file, "back\n").unwrap();
+    assert!(refresh(&mut app, &sb.reviews, &sb.file, &mut watch));
+    assert_eq!(app.lines(), ["back"]);
 }

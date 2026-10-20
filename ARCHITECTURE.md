@@ -36,7 +36,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
 | `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state, changes since the human's last look), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review`, `wait`, `against` (writes against the content shown), `stamp` |
 | `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff`, `wait` |
-| `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, hand off (`H`), close with a verdict (`C`), reopen the review (`O`), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
+| `tui` | Built: live refresh (the agent's writes and file edits show within 250 ms, the cursor following its text, drafts kept; writes against content not shown are refused), `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, hand off (`H`), close with a verdict (`C`), reopen the review (`O`), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor` | Built: `map_range`, `Diff` (with `Diff::changes`), `clamp` (Myers line diff via `similar`) |
 
@@ -707,19 +707,33 @@ Its parts:
   prompt, which wins over the hint. Border text (error or hint) that does
   not fit between the corners is `wrap::cut`, so it ends in `…` and a wide
   character that would cross the corner is left out whole.
-- `tui` (module root): the driver. `load` takes the lines, all threads, the
-  review's state and the changes since the last look from one
-  `Reviews::view`, so they come from the same read of the file; `Loaded::into_app` highlights the file only when it is
+- `tui` (module root): the driver. `load` takes the lines, their hash, all
+  threads, the review's state and the changes since the last look from one
+  `Reviews::view` (`Reread: From<View>`), so they come from the same read of
+  the file; `Loaded::into_app` builds an empty `App` and applies that
+  `Reread` (`with_reread`), and highlights the file only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
   `color_wanted(NO_COLOR)`, read once at startup); `step(app, event, reviews, file, author)` is the only
-  place effects are performed (`Add` → `Reviews::add_thread`, `Reply` →
+  place effects are performed (`Add` → `Reviews::against(app.seen()).add_thread`, `Reply` →
   `Reviews::reply`, `Resolve`/`Reopen` → `Reviews::resolve`/`reopen` with no
   note, then `Reviews::view(file, true)` → `Event::Saved`; `HandOff` →
-  `Reviews::hand_off` as `Side::Human`, `Close` → `Reviews::close`,
+  `against(app.seen()).hand_off` as `Side::Human`, `Close` →
+  `against(app.seen()).close`,
   `ReopenReview` → `Reviews::reopen_review` as `Side::Human`, then the same
   re-read → `Event::ReviewSaved`, whose message for a hand-off lists the
-  `waiting` threads); `run` is the blocking loop (read event →
-  `step` → draw) on a `TerminalSession`. Setup turns on raw mode, the
+  `waiting` threads). A write refused with `FileChanged` re-reads the view
+  at once (`Event::Refreshed`) and then reports the error as `SaveFailed`,
+  so the draft and mode stay, the footer says `the file changed: look
+  again`, and the next save is made against what is now shown.
+  `refresh(app, reviews, file, &mut Watch) -> bool` is the live refresh:
+  it takes `Reviews::stamp` and, only when it differs from the `Watch`'s
+  last one (`None` at first), runs a full `view` and sends
+  `Event::Refreshed`. A stamp or view that fails (an editor's save briefly
+  removing the file) changes nothing and the next check retries; it never
+  writes. `run` is the loop on a `TerminalSession`: draw, `event::poll`
+  until the next check is due (`POLL_INTERVAL` after the last), `step` the
+  event if one came, and `refresh` once the check is due, whether or not
+  keys arrived, so typing can't starve it. Setup turns on raw mode, the
   alternate screen and bracketed paste (best-effort: a terminal that refuses
   it still runs, its pastes arriving as keys), so a paste arrives as one
   `Event::Paste` rather than as keys (a `q` or `ctrl+s` in it is text);
@@ -757,7 +771,12 @@ Its parts:
   unwinding), and a chained panic hook restores before the panic message
   prints. `SIGTERM`/`SIGHUP` skip both and are not
   handled.
-- Display only; never mutates the reviewed file (it is read once on open).
+- Display only; never mutates the reviewed file. The file and its review
+  are re-read on open, after each of the TUI's own writes, and whenever the
+  stamp changes (within `POLL_INTERVAL`); a refresh only reads.
+- A new thread, hand-off or close is written against the content on screen
+  (`App::seen`), so a hand-off or close records what the human was shown as
+  their last look, and a thread lands on the lines they saw.
 
 *Deferred within `tui`:* character or column selection; sub-line scrolling of a
 line taller than the view; a hanging indent for wrapped list items; real tab
@@ -765,9 +784,8 @@ stops; inline markup in laid-out table cells (a laid-out table gets only its
 header line's bold); `NO_COLOR` for the TUI's chrome as well;
 GFM padding of ragged table rows; pipes inside inline code in a cell; tables
 inside lists or blockquotes;
-editing threads; notes on resolve/reopen from the TUI. Until live refresh exists,
-the screen shows the file as read at open, while `add_thread` quotes the file
-as it is at save time.
+editing threads; notes on resolve/reopen from the TUI; a bell or desktop
+notification when the turn comes back (the banner changes, nothing more).
 
 ### `highlight`
 Lives at `tui::highlight`. Depends on nothing else in the crate (only
@@ -903,7 +921,12 @@ origin mapped) and checks that screen rows,
   `ptal comments`; a thread moving with lines inserted above it, then
   outdated once its line is edited; a hand-off, a hand-back seen after the
   next write, closing with and without a verdict, the approve confirmation,
-  reopening, refusals keeping the draft, and the state after a reload); the
+  reopening, refusals keeping the draft, and the state after a reload; live
+  refresh: the agent's replies, resolves, threads and file edits shown by
+  `refresh` with the cursor and a draft kept, a CLI hand-back flipping the
+  banner, no refresh and no write when nothing changed, a refresh that can't
+  read changing nothing, and a hand-off, comment or close against an unseen
+  edit refused with `file_changed` and then made against what is shown); the
   banner and the review overlay are covered in `tui::render` and `tui::app`;
   the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the

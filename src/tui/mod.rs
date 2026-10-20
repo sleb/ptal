@@ -24,6 +24,7 @@ use std::io::{self, Write};
 use std::ops::ControlFlow;
 use std::panic;
 use std::path::Path;
+use std::time::Instant;
 
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -35,9 +36,9 @@ use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::{Side, Thread};
-use crate::review::{Clock, ReviewStatus, Reviews, View};
+use crate::review::{Clock, POLL_INTERVAL, ReviewStatus, Reviews, Stamp, View};
 
 use app::{App, Done, Effect, Event, Reread, update};
 use render::render;
@@ -184,24 +185,75 @@ pub fn run<C: Clock>(
     install_restore_hook(restore_terminal);
     let _session = TerminalSession::new(enter_terminal, restore_terminal)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let mut watch = Watch::default();
+    let mut next_check = Instant::now();
     loop {
         terminal.draw(|frame| render(&app, frame))?;
-        let event = match event::read()? {
-            TermEvent::Key(key) => Event::Key(key),
-            TermEvent::Resize(width, height) => Event::Resize(width, height),
-            TermEvent::Paste(text) => Event::Paste(text),
-            _ => continue,
-        };
-        if step(&mut app, event, reviews, file, author).is_break() {
-            return Ok(());
+        // Wait for a key only until the next check is due, and check
+        // whether or not keys arrived, so fast typing can't starve it.
+        if event::poll(next_check.saturating_duration_since(Instant::now()))? {
+            let event = match event::read()? {
+                TermEvent::Key(key) => Some(Event::Key(key)),
+                TermEvent::Resize(width, height) => Some(Event::Resize(width, height)),
+                TermEvent::Paste(text) => Some(Event::Paste(text)),
+                _ => None,
+            };
+            if let Some(event) = event
+                && step(&mut app, event, reviews, file, author).is_break()
+            {
+                return Ok(());
+            }
+        }
+        if Instant::now() >= next_check {
+            refresh(&mut app, reviews, file, &mut watch);
+            next_check = Instant::now() + POLL_INTERVAL;
         }
     }
+}
+
+/// What [`refresh`] last saw on disk.
+#[derive(Debug, Clone, Default)]
+pub struct Watch {
+    /// The stamp of the last re-read; `None` before the first, so the first
+    /// check always re-reads.
+    stamp: Option<Stamp>,
+}
+
+/// Show the other side's writes: when the file or its review changed on
+/// disk since the last check ([`Reviews::stamp`]), re-read them into `app`
+/// as [`Event::Refreshed`]. Returns whether it did.
+///
+/// Only reads. A check that can't read (the file briefly missing while an
+/// editor saves it) leaves the screen as it was, to try again next time.
+pub fn refresh<C: Clock>(
+    app: &mut App,
+    reviews: &Reviews<C>,
+    file: &Path,
+    watch: &mut Watch,
+) -> bool {
+    let Ok(stamp) = reviews.stamp(file) else {
+        return false;
+    };
+    if watch.stamp.as_ref() == Some(&stamp) {
+        return false;
+    }
+    let Ok(view) = reviews.view(file, true) else {
+        return false;
+    };
+    update(app, Event::Refreshed(view.into()));
+    watch.stamp = Some(stamp);
+    true
 }
 
 /// Feed one event to `app` and perform whatever it asks for. This is the
 /// only place effects happen: all writes go through `reviews`, then the
 /// threads and the review's state are re-read so the screen shows what is
 /// on disk. The TUI writes as the human side.
+///
+/// A new thread, a hand-off and a close are made against the content on
+/// screen ([`Reviews::against`] with [`App::seen`]): if the file changed
+/// since, the write is refused, the draft is kept, and the screen is
+/// refreshed at once so the next save is made against what is shown.
 ///
 /// Returns [`ControlFlow::Break`] when the user quit.
 pub fn step<C: Clock>(
@@ -215,7 +267,10 @@ pub fn step<C: Clock>(
         None => ControlFlow::Continue(()),
         Some(Effect::Quit) => ControlFlow::Break(()),
         Some(Effect::Add { start, end, body }) => {
-            let written = reviews.add_thread(file, start, end, &body, author);
+            let seen = app.seen().to_string();
+            let written = reviews
+                .against(&seen)
+                .add_thread(file, start, end, &body, author);
             answer(app, reviews, file, Done::Added, written)
         }
         Some(Effect::Reply { id, body }) => {
@@ -231,7 +286,9 @@ pub fn step<C: Clock>(
             answer(app, reviews, file, Done::Reopened, written)
         }
         Some(Effect::HandOff { note }) => {
+            let seen = app.seen().to_string();
             let written = reviews
+                .against(&seen)
                 .hand_off(file, Side::Human, author, note.as_deref())
                 .map(|handed| {
                     let message = match handed.waiting.as_slice() {
@@ -243,7 +300,9 @@ pub fn step<C: Clock>(
             answer_review(app, reviews, file, written)
         }
         Some(Effect::Close { verdict, note }) => {
+            let seen = app.seen().to_string();
             let written = reviews
+                .against(&seen)
                 .close(file, author, verdict, note.as_deref())
                 .map(|review| ("closed".to_string(), review));
             answer_review(app, reviews, file, written)
@@ -296,9 +355,25 @@ fn answer<C: Clock>(
             done,
             reread: reread(reviews, file, app, app.review()),
         },
-        Err(error) => Event::SaveFailed(error.to_string()),
+        Err(error) => return failed(app, reviews, file, &error),
     };
     update(app, event);
+    ControlFlow::Continue(())
+}
+
+/// Show a failed write. When it was refused because the file changed under
+/// the screen, re-read it first, so the message sits over what is now on
+/// disk and the next save is made against it.
+fn failed<C: Clock>(
+    app: &mut App,
+    reviews: &Reviews<C>,
+    file: &Path,
+    error: &Error,
+) -> ControlFlow<()> {
+    if let (Error::FileChanged, Ok(view)) = (error, reviews.view(file, true)) {
+        update(app, Event::Refreshed(view.into()));
+    }
+    update(app, Event::SaveFailed(error.to_string()));
     ControlFlow::Continue(())
 }
 
@@ -317,7 +392,7 @@ fn answer_review<C: Clock>(
             message,
             reread: reread(reviews, file, app, &written),
         },
-        Err(error) => Event::SaveFailed(error.to_string()),
+        Err(error) => return failed(app, reviews, file, &error),
     };
     update(app, event);
     ControlFlow::Continue(())
