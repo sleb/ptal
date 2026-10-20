@@ -32,7 +32,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 
 | Component | State |
 |---|---|
-| `model` | Built: `Review`, `Thread`, `Status`, `Comment`, `Anchor`, `State` |
+| `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State` |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check |
 | `review` | Built: `add_thread`, `view`, `resolve`, `reply`, `reopen` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
@@ -76,15 +76,26 @@ threads are never silently dropped or silently re-pointed at the wrong text.
 **Role:** the data types that are persisted and exposed to agents.
 
 - `Review` — one per reviewed file: `schema_version`, `path`, `next_id`,
-  `threads`.
+  `revisions`, `threads`.
+- `Revision` — `{ id, sha256 }`: one kept version of the file, `r1`, `r2`, …
+  in the order first written against. `Review::revision_for(sha)` returns the
+  known id or appends the next one; there is no separate counter, because
+  revisions are never pruned.
 - `Thread` — `{ id, anchor, status, comments }`. Its id is its first
   comment's id.
-- `Status` — `open` or `resolved`; `resolved_by` and `resolved_at` appear on
-  the wire only when resolved. Reopening, or replying to a resolved thread,
+- `Status` — `open` or `resolved`; `resolved_by`, `resolved_at` and
+  `resolved_revision` appear on the wire only when resolved. Reopening, or replying to a resolved thread,
   makes the thread `open` and drops them.
-- `Comment` — `{ id, author, body, created_at }`. Timestamps are RFC 3339 UTC.
-- `Anchor` — `{ start_line, end_line, quote }` (1-based, inclusive); `quote`
-  is the anchored lines joined by `\n`.
+- `Comment` — `{ id, author, body, created_at, revision }`. Timestamps are
+  RFC 3339 UTC.
+- `Anchor` — `{ revision, start_line, end_line, quote }` (1-based,
+  inclusive); `quote` is the anchored lines joined by `\n`, and the lines
+  refer to `revision`. Anchors are immutable; `review` maps them to the
+  current file when viewing.
+- Every `revision` field (`anchor.revision`, `comments[].revision`,
+  `resolved_revision`) is skipped when `None`, which only data written before
+  revisions existed has. `revisions` defaults to empty, so such a
+  `review.json` still loads.
 - `State` — `current | outdated`. Computed by `review` when viewing, never
   persisted.
 
@@ -101,7 +112,7 @@ golden-JSON test in `model` pins it. Every persisted file carries
 `schema_version`; unknown future versions are refused, not guessed at.
 
 *Deferred:* nested replies (`parent`), edit/delete, `JsonSchema` derives and
-`ptal schema`, revisions.
+`ptal schema`.
 
 ### `anchor`
 **Role:** pure functions mapping line ranges between revisions.

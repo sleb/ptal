@@ -130,6 +130,7 @@ mod tests {
             thread: Thread {
                 id: id.into(),
                 anchor: Anchor {
+                    revision: None,
                     start_line: 1,
                     end_line: 1,
                     quote: quote.into(),
@@ -148,6 +149,7 @@ mod tests {
             author: author.into(),
             body: body.into(),
             created_at: at.into(),
+            revision: None,
         });
         view
     }
@@ -156,6 +158,7 @@ mod tests {
         Status::Resolved {
             resolved_by: "claude".into(),
             resolved_at: "2026-10-12T11:00:00Z".into(),
+            resolved_revision: None,
         }
     }
 
@@ -343,6 +346,7 @@ mod tests {
         let status = Status::Resolved {
             resolved_by: "a-very-long-resolver-name".into(),
             resolved_at: "2026-10-12T11:00:00Z".into(),
+            resolved_revision: None,
         };
         let view = comment(
             thread("c12", "q", status, State::Outdated),
@@ -372,6 +376,7 @@ mod tests {
         let status = Status::Resolved {
             resolved_by: "ops\nbot".into(),
             resolved_at: "2026-10-12T11:00:00Z".into(),
+            resolved_revision: None,
         };
         let view = comment(
             thread("c1", "q", status, State::Current),

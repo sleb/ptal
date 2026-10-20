@@ -431,6 +431,7 @@ mod tests {
             thread: Thread {
                 id: id.into(),
                 anchor: Anchor {
+                    revision: None,
                     start_line: start,
                     end_line: end,
                     quote: String::new(),
@@ -462,6 +463,7 @@ mod tests {
                 author: (*author).into(),
                 body: (*body).into(),
                 created_at: format!("2026-10-12T09:{:02}:30Z", 30 + i),
+                revision: None,
             })
             .collect();
         view
@@ -471,6 +473,7 @@ mod tests {
         Status::Resolved {
             resolved_by: "claude".into(),
             resolved_at: "2026-10-12T10:00:00Z".into(),
+            resolved_revision: None,
         }
     }
 
@@ -697,6 +700,7 @@ mod tests {
             Status::Resolved {
                 resolved_by: "claude".into(),
                 resolved_at: "2026-10-12T10:00:00Z".into(),
+                resolved_revision: None,
             },
             State::Current,
             &[("claude", "hi")],
@@ -809,6 +813,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:seaâ
                 author: author.into(),
                 body: "b".into(),
                 created_at: "2026-10-12T10:00:00Z".into(),
+                revision: None,
             }];
             v
         };
@@ -816,6 +821,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:seaâ
         resolved.thread.status = Status::Resolved {
             resolved_by: "claude".into(),
             resolved_at: "2026-10-12T10:00:00Z".into(),
+            resolved_revision: None,
         };
         let threads = [
             said(open_thread("c1", (1, 1), State::Current), "scott"),

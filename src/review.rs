@@ -109,6 +109,7 @@ impl<C: Clock> Reviews<C> {
             let thread = Thread {
                 id: id.clone(),
                 anchor: Anchor {
+                    revision: None,
                     start_line: start,
                     end_line: end,
                     quote,
@@ -119,6 +120,7 @@ impl<C: Clock> Reviews<C> {
                     author: author.to_string(),
                     body: body.to_string(),
                     created_at,
+                    revision: None,
                 }],
             };
             review.threads.push(thread.clone());
@@ -213,6 +215,7 @@ impl<C: Clock> Reviews<C> {
             thread.status = Status::Resolved {
                 resolved_by: author.to_string(),
                 resolved_at: now,
+                resolved_revision: None,
             };
             thread.comments.extend(note_comment);
             Ok(thread.clone())
@@ -320,6 +323,7 @@ fn new_comment(review: &mut Review, author: &str, body: &str, created_at: &str) 
         author: author.to_string(),
         body: body.to_string(),
         created_at: created_at.to_string(),
+        revision: None,
     }
 }
 
@@ -491,6 +495,7 @@ mod tests {
         assert_eq!(
             thread.anchor,
             Anchor {
+                revision: None,
                 start_line: 2,
                 end_line: 3,
                 quote: "two\nthree".into()
@@ -504,6 +509,7 @@ mod tests {
                 author: "scott".into(),
                 body: "Why?".into(),
                 created_at: NOW.into(),
+                revision: None,
             }]
         );
         assert_eq!(fx.store.load(&fx.file).unwrap().threads, vec![thread]);
@@ -668,7 +674,8 @@ mod tests {
             thread.status,
             Status::Resolved {
                 resolved_by: "claude".into(),
-                resolved_at: NOW.into()
+                resolved_at: NOW.into(),
+                resolved_revision: None,
             }
         );
         assert_eq!(thread.comments.len(), 1);
@@ -692,6 +699,7 @@ mod tests {
                 author: "claude".into(),
                 body: "Done".into(),
                 created_at: NOW.into(),
+                revision: None,
             }
         );
         let next = fx.reviews.add_thread(&fx.file, 2, 2, "y", "scott").unwrap();
@@ -796,6 +804,7 @@ mod tests {
                 author: "claude".into(),
                 body: "Because.".into(),
                 created_at: LATER.into(),
+                revision: None,
             }
         );
         assert_eq!(thread.comments.len(), 2);
@@ -901,6 +910,7 @@ mod tests {
                 author: "scott".into(),
                 body: "Wrong guess".into(),
                 created_at: NOW.into(),
+                revision: None,
             }
         );
 
@@ -955,7 +965,8 @@ mod tests {
             thread.status,
             Status::Resolved {
                 resolved_by: "codex".into(),
-                resolved_at: NOW.into()
+                resolved_at: NOW.into(),
+                resolved_revision: None,
             }
         );
     }
