@@ -8,6 +8,9 @@
 > each scenario says which steps ptal supports today and which happen out of
 > band or need planned work (v0.3.0: #35 finish/hand-off, #36 wait and live
 > refresh, #45 revisions, #46 changes since last look).
+>
+> The definitions worked out below are summarized for users in
+> [protocol.md](protocol.md).
 
 ## Notation
 
