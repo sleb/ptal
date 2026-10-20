@@ -644,7 +644,10 @@ Its parts:
 - All keys are handled in `update`; `render` holds no logic. The state
   machine is tested without a terminal.
 - The TUI owns no persistent state. Every write goes through `review`; after
-  a write it re-reads `view` rather than patching local state.
+  a write it re-reads `view` rather than patching local state. If that re-read
+  fails, the threads are dropped from the screen (a retry would duplicate a
+  comment) but the review state is kept: the one the screen had for a
+  thread write, the write's own for a hand-off, close or reopen.
 - After every event `top <= cursor` and lines `top..=cursor` fit in `height`
   screen rows (wrapped rows counted), where height is the rows left after the
   banner and the footer, panel or input box, so the whole cursor line is on

@@ -226,32 +226,50 @@ pub fn step<C: Clock>(
         Some(Effect::HandOff { note }) => {
             let written = reviews
                 .hand_off(file, Side::Human, author, note.as_deref())
-                .map(|handed| match handed.waiting.as_slice() {
-                    [] => "handed off".to_string(),
-                    waiting => format!("handed off · waiting on you: {}", waiting.join(", ")),
+                .map(|handed| {
+                    let message = match handed.waiting.as_slice() {
+                        [] => "handed off".to_string(),
+                        waiting => format!("handed off · waiting on you: {}", waiting.join(", ")),
+                    };
+                    (message, handed.review)
                 });
             answer_review(app, reviews, file, written)
         }
         Some(Effect::Close { verdict, note }) => {
             let written = reviews
                 .close(file, author, verdict, note.as_deref())
-                .map(|_| "closed".to_string());
+                .map(|review| ("closed".to_string(), review));
             answer_review(app, reviews, file, written)
         }
         Some(Effect::ReopenReview) => {
             let written = reviews
                 .reopen_review(file, Side::Human, author, None)
-                .map(|_| "reopened".to_string());
+                .map(|review| ("reopened".to_string(), review));
             answer_review(app, reviews, file, written)
         }
     }
 }
 
-/// Turn the result of a write into the event that tells `app` about it.
+/// The threads and the review's state of `file` as they are on disk, for
+/// the screen after a write.
 ///
 /// The write is already stored when the re-read runs; if the re-read fails
 /// the screen loses its markers rather than offering a retry that would
-/// duplicate the comment.
+/// duplicate the comment, and keeps the `current` review state rather than
+/// showing a fresh review's.
+fn reread<C: Clock>(
+    reviews: &Reviews<C>,
+    file: &Path,
+    current: &ReviewStatus,
+) -> (Vec<ThreadView>, ReviewStatus) {
+    match reviews.view(file, true) {
+        Ok(view) => (view.threads, view.review),
+        Err(_) => (Vec::new(), current.clone()),
+    }
+}
+
+/// Turn the result of a write into the event that tells `app` about it,
+/// with the view [`reread`].
 fn answer<C: Clock>(
     app: &mut App,
     reviews: &Reviews<C>,
@@ -261,12 +279,12 @@ fn answer<C: Clock>(
 ) -> ControlFlow<()> {
     let event = match written {
         Ok(thread) => {
-            let view = reviews.view(file, true).unwrap_or_default();
+            let (threads, review) = reread(reviews, file, app.review());
             Event::Saved {
                 id: thread.id,
                 done,
-                threads: view.threads,
-                review: view.review,
+                threads,
+                review,
             }
         }
         Err(error) => Event::SaveFailed(error.to_string()),
@@ -275,22 +293,23 @@ fn answer<C: Clock>(
     ControlFlow::Continue(())
 }
 
-/// Turn the result of a hand-off, close or reopen (the footer message on
-/// success) into the event that tells `app` about it, re-reading the view
-/// as [`answer`] does.
+/// Turn the result of a hand-off, close or reopen (the footer message and
+/// the state the write left) into the event that tells `app` about it,
+/// with the view [`reread`] as [`answer`] does; if the re-read fails, the
+/// state is the write's own.
 fn answer_review<C: Clock>(
     app: &mut App,
     reviews: &Reviews<C>,
     file: &Path,
-    written: Result<String>,
+    written: Result<(String, ReviewStatus)>,
 ) -> ControlFlow<()> {
     let event = match written {
-        Ok(message) => {
-            let view = reviews.view(file, true).unwrap_or_default();
+        Ok((message, written)) => {
+            let (threads, review) = reread(reviews, file, &written);
             Event::ReviewSaved {
                 message,
-                threads: view.threads,
-                review: view.review,
+                threads,
+                review,
             }
         }
         Err(error) => Event::SaveFailed(error.to_string()),
@@ -421,5 +440,20 @@ mod tests {
 
         assert!(session.is_err());
         assert_eq!(restored.get(), 1);
+    }
+
+    #[test]
+    fn a_failed_re_read_keeps_the_review_state_it_had() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reviews = Reviews::new(crate::store::Store::new(tmp.path().join("data")));
+        let current = ReviewStatus {
+            state: crate::model::ReviewState::Turn(Side::Agent),
+            latest: None,
+        };
+
+        let (threads, review) = reread(&reviews, &tmp.path().join("gone.md"), &current);
+
+        assert!(threads.is_empty());
+        assert_eq!(review, current);
     }
 }
