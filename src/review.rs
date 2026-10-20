@@ -6,6 +6,8 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use jiff::Timestamp;
 use serde::Serialize;
@@ -42,6 +44,59 @@ impl<F: Fn() -> String> Clock for F {
     }
 }
 
+/// How often [`Reviews::wait`] re-reads the review, and how often the TUI
+/// checks for the other side's writes.
+pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// How many reads of `review.json` in a row [`Reviews::wait`] lets fail
+/// with [`Error::Io`] before giving up: about five seconds of polls, to
+/// ride out a transient I/O error.
+pub const WAIT_READ_RETRIES: u32 = 20;
+
+/// A monotonic clock that can be slept on, injected so waiting is
+/// testable without real time passing.
+pub trait Ticker {
+    /// The current instant.
+    fn now(&self) -> Instant;
+    /// Block for `duration`.
+    fn sleep(&self, duration: Duration);
+}
+
+/// The real monotonic clock and [`thread::sleep`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemTicker;
+
+impl Ticker for SystemTicker {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        thread::sleep(duration);
+    }
+}
+
+/// Why a [`Reviews::wait`] returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Woke {
+    /// It is the agent's turn.
+    Turn,
+    /// The review is closed; its verdict is in the status.
+    Closed,
+    /// The timeout passed on the human's turn.
+    Timeout,
+}
+
+/// The result of a [`Reviews::wait`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waited {
+    pub reason: Woke,
+    /// The review's state when the wait returned; `latest` is the hand-off
+    /// or close that ended it.
+    pub review: ReviewStatus,
+}
+
 /// A thread together with its computed [`State`], as shown to front ends.
 ///
 /// The anchor's lines are mapped to the current file; its `revision` and
@@ -59,6 +114,9 @@ pub struct View {
     /// The current content's revision id, or `None` if no write has been
     /// made against this content yet.
     pub revision: Option<String>,
+    /// The [`content_hash`] of the bytes read for this view: what a front
+    /// end that shows [`lines`](View::lines) passes to [`Reviews::against`].
+    pub sha256: String,
     /// The file's lines as read for this view, split by [`str::lines`]
     /// (`\n` or `\r\n`, a final newline ignored): exactly the lines
     /// `add_thread` quotes from and the threads are mapped to, so a front end
@@ -148,6 +206,72 @@ pub struct HandedOff {
     pub waiting: Vec<String>,
 }
 
+/// A fingerprint of a reviewed file and its review: see [`Reviews::stamp`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stamp {
+    file: String,
+    review: Option<String>,
+}
+
+/// Writes made against content a front end showed: see
+/// [`Reviews::against`].
+#[derive(Debug, Clone, Copy)]
+pub struct Against<'a, C> {
+    reviews: &'a Reviews<C>,
+    seen: &'a str,
+}
+
+impl<C: Clock> Against<'_, C> {
+    /// [`Reviews::add_thread`] on the lines that were shown.
+    ///
+    /// # Errors
+    /// As [`Reviews::add_thread`], with [`Error::FileChanged`] checked
+    /// after the file is read and before the range.
+    pub fn add_thread(
+        &self,
+        file: &Path,
+        start: u32,
+        end: u32,
+        body: &str,
+        author: &str,
+    ) -> Result<Thread> {
+        self.reviews
+            .add_thread_seen(Some(self.seen), file, start, end, body, author)
+    }
+
+    /// [`Reviews::hand_off`], recording the content shown.
+    ///
+    /// # Errors
+    /// As [`Reviews::hand_off`], with [`Error::FileChanged`] checked after
+    /// the file is read and before the turn.
+    pub fn hand_off(
+        &self,
+        file: &Path,
+        side: Side,
+        author: &str,
+        note: Option<&str>,
+    ) -> Result<HandedOff> {
+        self.reviews
+            .hand_off_seen(Some(self.seen), file, side, author, note)
+    }
+
+    /// [`Reviews::close`], recording the content shown.
+    ///
+    /// # Errors
+    /// As [`Reviews::close`], with [`Error::FileChanged`] checked after the
+    /// file is read and before whether the review is closed.
+    pub fn close(
+        &self,
+        file: &Path,
+        author: &str,
+        verdict: Option<Verdict>,
+        note: Option<&str>,
+    ) -> Result<ReviewStatus> {
+        self.reviews
+            .close_seen(Some(self.seen), file, author, verdict, note)
+    }
+}
+
 /// Review operations over a [`Store`].
 #[derive(Debug, Clone)]
 pub struct Reviews<C = SystemClock> {
@@ -198,11 +322,25 @@ impl<C: Clock> Reviews<C> {
         body: &str,
         author: &str,
     ) -> Result<Thread> {
+        self.add_thread_seen(None, file, start, end, body, author)
+    }
+
+    /// [`Reviews::add_thread`], refused with [`Error::FileChanged`] when
+    /// `seen` is set and the file read no longer hashes to it.
+    fn add_thread_seen(
+        &self,
+        seen: Option<&str>,
+        file: &Path,
+        start: u32,
+        end: u32,
+        body: &str,
+        author: &str,
+    ) -> Result<Thread> {
         require_author(author)?;
         if body.trim().is_empty() {
             return Err(Error::EmptyBody);
         }
-        let content = Content::read(file)?;
+        let content = Content::read(file)?.seen(seen)?;
         let lines = content.lines();
         let quote =
             quote_of(&lines, start, end).ok_or_else(|| invalid_range(&lines, start, end))?;
@@ -289,10 +427,132 @@ impl<C: Clock> Reviews<C> {
         Ok(View {
             revision: review.revision_id(&content.sha256).map(String::from),
             lines: content.text.lines().map(String::from).collect(),
+            sha256: content.sha256.clone(),
             threads,
             review: ReviewStatus::of(&review),
             changes,
         })
+    }
+
+    /// The writes that depend on what a front end showed, made against the
+    /// content hashing to `sha256` (a [`View::sha256`]).
+    ///
+    /// Each refuses with [`Error::FileChanged`], writing nothing, when the
+    /// file now reads differently, so a hand-off or close records the
+    /// content that was shown as the human's last look, and a new thread
+    /// lands on the lines that were shown.
+    ///
+    /// # Examples
+    /// ```
+    /// # use ptal::{Error, model::Side, review::Reviews, store::Store};
+    /// # let dir = tempfile::tempdir()?;
+    /// # let file = dir.path().join("plan.md");
+    /// # std::fs::write(&file, "one\n")?;
+    /// let reviews = Reviews::new(Store::new(dir.path().join("data")));
+    /// let shown = reviews.view(&file, true)?;
+    /// std::fs::write(&file, "ONE\n")?;
+    ///
+    /// let refused = reviews.against(&shown.sha256).hand_off(&file, Side::Human, "scott", None);
+    /// assert!(matches!(refused, Err(Error::FileChanged)));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn against<'a>(&'a self, sha256: &'a str) -> Against<'a, C> {
+        Against {
+            reviews: self,
+            seen: sha256,
+        }
+    }
+
+    /// A cheap fingerprint of `file` and its review, to tell whether either
+    /// changed since the last look without a full [`Reviews::view`].
+    ///
+    /// The hashes of the file's bytes and of `review.json`'s bytes: unlike
+    /// mtimes, they can't miss a same-second, same-length write. Never
+    /// writes.
+    ///
+    /// # Errors
+    /// [`Error::FileUnreadable`], or a store error reading `review.json`.
+    pub fn stamp(&self, file: &Path) -> Result<Stamp> {
+        let bytes = fs::read(file).map_err(|source| Error::FileUnreadable {
+            path: file.to_path_buf(),
+            source,
+        })?;
+        let review = self.store.reader(file)?.bytes()?;
+        Ok(Stamp {
+            file: content_hash(&bytes),
+            review: review.as_deref().map(content_hash),
+        })
+    }
+
+    /// Block until it is no longer the human's turn on `file`, or until
+    /// `timeout` passes on `ticker`'s clock.
+    ///
+    /// Level-triggered: the state is checked before the first sleep, so a
+    /// review already on the agent's turn, or closed, returns at once, and
+    /// a hand-off that lands between two waits is never missed. Re-reads
+    /// `review.json` every [`POLL_INTERVAL`]; a timeout of zero checks once.
+    /// The file must be readable when the wait starts; its review's
+    /// location is resolved then, so the file may go missing while
+    /// waiting. Never writes.
+    ///
+    /// # Errors
+    /// [`Error::FileUnreadable`] at the start. An [`Error::Io`] reading
+    /// `review.json` is retried on the next poll, up to
+    /// [`WAIT_READ_RETRIES`] in a row; any other store error ends the wait
+    /// at once.
+    ///
+    /// # Examples
+    /// ```
+    /// # use ptal::{model::Side, review::{Reviews, SystemTicker, Woke}, store::Store};
+    /// # let dir = tempfile::tempdir()?;
+    /// # let file = dir.path().join("plan.md");
+    /// # std::fs::write(&file, "one\n")?;
+    /// let reviews = Reviews::new(Store::new(dir.path().join("data")));
+    /// reviews.hand_off(&file, Side::Human, "scott", Some("Over to you"))?;
+    ///
+    /// let waited = reviews.wait(&file, None, &SystemTicker)?;
+    /// assert_eq!(waited.reason, Woke::Turn);
+    /// assert_eq!(waited.review.latest.unwrap().note.as_deref(), Some("Over to you"));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn wait(
+        &self,
+        file: &Path,
+        timeout: Option<Duration>,
+        ticker: &dyn Ticker,
+    ) -> Result<Waited> {
+        Content::read(file)?;
+        let reader = self.store.reader(file)?;
+        let start = ticker.now();
+        let mut failed_reads = 0;
+        let mut last = ReviewStatus::default();
+        loop {
+            let reason = match reader.load() {
+                Ok(review) => {
+                    failed_reads = 0;
+                    last = ReviewStatus::of(&review);
+                    match last.state {
+                        ReviewState::Turn(Side::Agent) => Some(Woke::Turn),
+                        ReviewState::Closed(_) => Some(Woke::Closed),
+                        ReviewState::Turn(Side::Human) => None,
+                    }
+                }
+                Err(Error::Io { .. }) if failed_reads < WAIT_READ_RETRIES => {
+                    failed_reads += 1;
+                    None
+                }
+                Err(error) => return Err(error),
+            };
+            let left = timeout.map(|t| t.saturating_sub(ticker.now() - start));
+            let reason = reason.or((left == Some(Duration::ZERO)).then_some(Woke::Timeout));
+            if let Some(reason) = reason {
+                return Ok(Waited {
+                    reason,
+                    review: last,
+                });
+            }
+            ticker.sleep(left.map_or(POLL_INTERVAL, |left| left.min(POLL_INTERVAL)));
+        }
     }
 
     /// Resolve thread `id`, optionally appending `note` as a comment by
@@ -500,9 +760,22 @@ impl<C: Clock> Reviews<C> {
         author: &str,
         note: Option<&str>,
     ) -> Result<HandedOff> {
+        self.hand_off_seen(None, file, side, author, note)
+    }
+
+    /// [`Reviews::hand_off`], refused with [`Error::FileChanged`] when
+    /// `seen` is set and the file read no longer hashes to it.
+    fn hand_off_seen(
+        &self,
+        seen: Option<&str>,
+        file: &Path,
+        side: Side,
+        author: &str,
+        note: Option<&str>,
+    ) -> Result<HandedOff> {
         require_author(author)?;
-        let content = Content::read(file)?;
-        let stamp = Stamp {
+        let content = Content::read(file)?.seen(seen)?;
+        let signature = Signature {
             side,
             author,
             created_at: self.clock.now(),
@@ -513,7 +786,7 @@ impl<C: Clock> Reviews<C> {
             if review.state() != ReviewState::Turn(side) {
                 return Err(Error::NotYourTurn);
             }
-            stamp.log(review, snapshots, &content, Event::HandOff);
+            signature.log(review, snapshots, &content, Event::HandOff);
             let waiting = review
                 .threads
                 .iter()
@@ -565,10 +838,23 @@ impl<C: Clock> Reviews<C> {
         verdict: Option<Verdict>,
         note: Option<&str>,
     ) -> Result<ReviewStatus> {
+        self.close_seen(None, file, author, verdict, note)
+    }
+
+    /// [`Reviews::close`], refused with [`Error::FileChanged`] when `seen`
+    /// is set and the file read no longer hashes to it.
+    fn close_seen(
+        &self,
+        seen: Option<&str>,
+        file: &Path,
+        author: &str,
+        verdict: Option<Verdict>,
+        note: Option<&str>,
+    ) -> Result<ReviewStatus> {
         require_author(author)?;
         let verdict = verdict.ok_or(Error::MissingVerdict)?;
-        let content = Content::read(file)?;
-        let stamp = Stamp {
+        let content = Content::read(file)?.seen(seen)?;
+        let signature = Signature {
             side: Side::Human,
             author,
             created_at: self.clock.now(),
@@ -579,7 +865,7 @@ impl<C: Clock> Reviews<C> {
             if let ReviewState::Closed(_) = review.state() {
                 return Err(Error::AlreadyClosed);
             }
-            stamp.log(review, snapshots, &content, Event::Close { verdict });
+            signature.log(review, snapshots, &content, Event::Close { verdict });
             Ok(ReviewStatus::of(review))
         })
     }
@@ -617,7 +903,7 @@ impl<C: Clock> Reviews<C> {
     ) -> Result<ReviewStatus> {
         require_author(author)?;
         let content = Content::read(file)?;
-        let stamp = Stamp {
+        let signature = Signature {
             side,
             author,
             created_at: self.clock.now(),
@@ -628,7 +914,7 @@ impl<C: Clock> Reviews<C> {
             let ReviewState::Closed(_) = review.state() else {
                 return Err(Error::NotClosed);
             };
-            stamp.log(review, snapshots, &content, Event::Reopen);
+            signature.log(review, snapshots, &content, Event::Reopen);
             Ok(ReviewStatus::of(review))
         })
     }
@@ -668,14 +954,14 @@ fn new_comment(
 
 /// Who writes a log entry, when, and with what note: everything about it
 /// that is known before the review is locked.
-struct Stamp<'a> {
+struct Signature<'a> {
     side: Side,
     author: &'a str,
     created_at: String,
     note: Option<&'a str>,
 }
 
-impl Stamp<'_> {
+impl Signature<'_> {
     /// Append an `event` entry to `review`'s log, recording the revision of
     /// `content` (snapshotted if new) and the review's `next_id`. A blank
     /// note is no note. Call this only once the operation can no longer fail.
@@ -712,6 +998,17 @@ impl Content {
         })?;
         let sha256 = content_hash(text.as_bytes());
         Ok(Self { text, sha256 })
+    }
+
+    /// This content, unless `seen` is set and it hashes differently.
+    ///
+    /// # Errors
+    /// [`Error::FileChanged`].
+    fn seen(self, seen: Option<&str>) -> Result<Self> {
+        match seen {
+            Some(sha) if sha != self.sha256 => Err(Error::FileChanged),
+            _ => Ok(self),
+        }
     }
 
     fn lines(&self) -> Vec<&str> {
@@ -2271,5 +2568,456 @@ mod tests {
         assert!(!changes_now(&fx).is_empty());
         assert_eq!(fx.review_json(), bytes);
         assert_eq!(snapshot_of(&fx, EDITED), None);
+    }
+
+    // --- waiting for the agent's turn ---
+
+    /// A clock that only moves when slept on, by exactly the time asked,
+    /// running `on_sleep(n)` on the `n`th sleep (from 1).
+    struct FakeTicker<'a> {
+        now: std::cell::Cell<std::time::Instant>,
+        sleeps: std::cell::Cell<u32>,
+        on_sleep: Box<dyn Fn(u32) + 'a>,
+    }
+
+    impl<'a> FakeTicker<'a> {
+        fn new(on_sleep: impl Fn(u32) + 'a) -> Self {
+            Self {
+                now: std::cell::Cell::new(std::time::Instant::now()),
+                sleeps: std::cell::Cell::new(0),
+                on_sleep: Box::new(on_sleep),
+            }
+        }
+
+        fn idle() -> Self {
+            Self::new(|_| {})
+        }
+    }
+
+    impl Ticker for FakeTicker<'_> {
+        fn now(&self) -> std::time::Instant {
+            self.now.get()
+        }
+
+        fn sleep(&self, duration: std::time::Duration) {
+            self.now.set(self.now.get() + duration);
+            self.sleeps.set(self.sleeps.get() + 1);
+            (self.on_sleep)(self.sleeps.get());
+        }
+    }
+
+    const SECOND: Option<std::time::Duration> = Some(std::time::Duration::from_secs(1));
+    const NO_WAIT: Option<std::time::Duration> = Some(std::time::Duration::ZERO);
+
+    #[test]
+    fn a_wait_on_a_closed_review_returns_at_once() {
+        let fx = fixture();
+        fx.reviews
+            .close(&fx.file, "scott", Some(Verdict::Dropped), Some("No"))
+            .unwrap();
+        let ticker = FakeTicker::idle();
+
+        let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Closed);
+        assert_eq!(waited.review.verdict(), Some(Verdict::Dropped));
+        assert_eq!(ticker.sleeps.get(), 0);
+    }
+
+    #[test]
+    fn a_wait_on_the_agents_turn_returns_at_once() {
+        let fx = fixture();
+        fx.reviews
+            .hand_off(&fx.file, Side::Human, "scott", Some("Go"))
+            .unwrap();
+        let ticker = FakeTicker::idle();
+
+        let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Turn);
+        assert_eq!(waited.review.turn(), Some(Side::Agent));
+        assert_eq!(ticker.sleeps.get(), 0);
+    }
+
+    #[test]
+    fn a_zero_timeout_on_the_humans_turn_checks_once() {
+        let fx = fixture();
+        let ticker = FakeTicker::idle();
+
+        let waited = fx.reviews.wait(&fx.file, NO_WAIT, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Timeout);
+        assert_eq!(waited.review, ReviewStatus::default());
+        assert_eq!(ticker.sleeps.get(), 0);
+    }
+
+    #[test]
+    fn a_hand_off_during_the_wait_ends_it_with_that_entry() {
+        let fx = fixture();
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        let human = Reviews::with_clock(fx.store.clone(), later_now as fn() -> String);
+        let ticker = FakeTicker::new(|n| {
+            if n == 2 {
+                human
+                    .hand_off(&fx.file, Side::Human, "scott", Some("Your go"))
+                    .unwrap();
+            }
+        });
+
+        let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Turn);
+        assert_eq!(ticker.sleeps.get(), 2);
+        let latest = waited.review.latest.unwrap();
+        assert_eq!(latest.event, Event::HandOff);
+        assert_eq!(latest.author, "scott");
+        assert_eq!(latest.note.as_deref(), Some("Your go"));
+        assert_eq!(latest.next_id, 2);
+        assert_eq!(latest.revision, "r1");
+        assert_eq!(latest.created_at, later_now());
+    }
+
+    #[test]
+    fn a_close_during_the_wait_ends_it_with_the_verdict() {
+        let fx = fixture();
+        let human = Reviews::with_clock(fx.store.clone(), later_now as fn() -> String);
+        let ticker = FakeTicker::new(|_| {
+            human
+                .close(&fx.file, "scott", Some(Verdict::Approved), Some("Ship"))
+                .unwrap();
+        });
+
+        let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Closed);
+        assert_eq!(waited.review.verdict(), Some(Verdict::Approved));
+        assert_eq!(waited.review.latest.unwrap().note.as_deref(), Some("Ship"));
+    }
+
+    #[test]
+    fn the_timeout_is_measured_on_the_tickers_clock() {
+        let fx = fixture();
+        let ticker = FakeTicker::idle();
+
+        let waited = fx.reviews.wait(&fx.file, SECOND, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Timeout);
+        assert_eq!(ticker.sleeps.get(), 4, "a poll every {POLL_INTERVAL:?}");
+    }
+
+    #[test]
+    fn no_timeout_keeps_polling() {
+        let fx = fixture();
+        let human = Reviews::with_clock(fx.store.clone(), later_now as fn() -> String);
+        let ticker = FakeTicker::new(|n| {
+            if n == 100 {
+                human
+                    .hand_off(&fx.file, Side::Human, "scott", None)
+                    .unwrap();
+            }
+        });
+
+        let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Turn);
+        assert_eq!(ticker.sleeps.get(), 100);
+    }
+
+    #[test]
+    fn a_wait_on_a_missing_or_non_utf8_file_is_unreadable() {
+        let fx = fixture();
+        let binary = fx.file.with_file_name("bin.md");
+        fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
+
+        for path in [fx.file.with_file_name("nope.md"), binary] {
+            assert!(matches!(
+                fx.reviews.wait(&path, NO_WAIT, &FakeTicker::idle()),
+                Err(Error::FileUnreadable { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn removing_the_file_mid_wait_does_not_fail_it() {
+        let fx = fixture();
+        let human = Reviews::with_clock(fx.store.clone(), later_now as fn() -> String);
+        let ticker = FakeTicker::new(|n| match n {
+            1 => fs::remove_file(&fx.file).unwrap(),
+            3 => {
+                fs::write(&fx.file, "one\n").unwrap();
+                human
+                    .hand_off(&fx.file, Side::Human, "scott", None)
+                    .unwrap();
+            }
+            _ => {}
+        });
+
+        let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Turn);
+    }
+
+    fn review_json_path(fx: &Fixture) -> PathBuf {
+        fx.store.review_dir(&fx.file).unwrap().join("review.json")
+    }
+
+    #[test]
+    fn a_wait_rides_out_a_failed_read() {
+        let fx = fixture();
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        let path = review_json_path(&fx);
+        let saved = fs::read(&path).unwrap();
+        let human = Reviews::with_clock(fx.store.clone(), later_now as fn() -> String);
+        let ticker = FakeTicker::new(|n| match n {
+            1 => {
+                fs::remove_file(&path).unwrap();
+                fs::create_dir(&path).unwrap();
+            }
+            3 => {
+                fs::remove_dir(&path).unwrap();
+                fs::write(&path, &saved).unwrap();
+                human
+                    .hand_off(&fx.file, Side::Human, "scott", None)
+                    .unwrap();
+            }
+            _ => {}
+        });
+
+        let waited = fx.reviews.wait(&fx.file, None, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Turn);
+    }
+
+    #[test]
+    fn a_wait_gives_up_when_reads_keep_failing() {
+        let fx = fixture();
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        let path = review_json_path(&fx);
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let ticker = FakeTicker::idle();
+
+        let result = fx.reviews.wait(&fx.file, None, &ticker);
+
+        assert!(matches!(result, Err(Error::Io { .. })), "{result:?}");
+        assert_eq!(ticker.sleeps.get(), WAIT_READ_RETRIES);
+    }
+
+    #[test]
+    fn a_corrupt_review_ends_a_wait_at_once() {
+        let fx = fixture();
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        fs::write(review_json_path(&fx), "{").unwrap();
+        let ticker = FakeTicker::idle();
+
+        let result = fx.reviews.wait(&fx.file, None, &ticker);
+
+        assert!(matches!(result, Err(Error::Corrupt { .. })), "{result:?}");
+        assert_eq!(ticker.sleeps.get(), 0);
+    }
+
+    #[test]
+    fn a_wait_never_writes() {
+        let fx = fixture();
+        fx.reviews
+            .wait(&fx.file, SECOND, &FakeTicker::idle())
+            .unwrap();
+        assert_eq!(fx.review_json(), None);
+
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        let bytes = fx.review_json();
+        fx.reviews
+            .wait(&fx.file, SECOND, &FakeTicker::idle())
+            .unwrap();
+        assert_eq!(fx.review_json(), bytes);
+    }
+
+    // --- writes against the content a front end showed ---
+
+    fn sha_now(fx: &Fixture) -> String {
+        content_hash(&fs::read(&fx.file).unwrap())
+    }
+
+    #[test]
+    fn view_carries_the_hash_of_the_content_it_read() {
+        let fx = fixture();
+
+        let view = fx.reviews.view(&fx.file, true).unwrap();
+
+        assert_eq!(view.sha256, sha_now(&fx));
+    }
+
+    #[test]
+    fn writes_against_stale_content_are_file_changed_and_write_nothing() {
+        let fx = fixture();
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        let seen = sha_now(&fx);
+        fs::write(&fx.file, EDITED).unwrap();
+        let bytes = fx.review_json();
+        let stale = fx.reviews.against(&seen);
+
+        let results = [
+            stale.add_thread(&fx.file, 1, 1, "x", "scott").map(drop),
+            stale
+                .hand_off(&fx.file, Side::Human, "scott", None)
+                .map(drop),
+            stale
+                .close(&fx.file, "scott", Some(Verdict::Approved), None)
+                .map(drop),
+        ];
+
+        for result in results {
+            assert!(matches!(result, Err(Error::FileChanged)), "{result:?}");
+        }
+        assert_eq!(fx.review_json(), bytes);
+        assert_eq!(snapshot_of(&fx, EDITED), None);
+    }
+
+    #[test]
+    fn writes_against_the_current_content_behave_as_the_plain_ones() {
+        let guarded = fixture();
+        let plain = fixture();
+        let sha = sha_now(&guarded);
+        let against = guarded.reviews.against(&sha);
+
+        assert_eq!(
+            against
+                .add_thread(&guarded.file, 2, 3, "Why?", "scott")
+                .unwrap(),
+            plain
+                .reviews
+                .add_thread(&plain.file, 2, 3, "Why?", "scott")
+                .unwrap()
+        );
+        assert_eq!(
+            against
+                .hand_off(&guarded.file, Side::Human, "scott", Some("Go"))
+                .unwrap(),
+            plain
+                .reviews
+                .hand_off(&plain.file, Side::Human, "scott", Some("Go"))
+                .unwrap()
+        );
+        assert_eq!(
+            against
+                .close(&guarded.file, "scott", Some(Verdict::Dropped), None)
+                .unwrap(),
+            plain
+                .reviews
+                .close(&plain.file, "scott", Some(Verdict::Dropped), None)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn a_guarded_write_checks_author_and_file_before_file_changed_then_the_rest() {
+        let fx = fixture();
+        let stale = fx.reviews.against("not the hash");
+        let missing = fx.file.with_file_name("nope.md");
+
+        assert!(matches!(
+            stale.add_thread(&fx.file, 1, 1, "x", " "),
+            Err(Error::EmptyAuthor)
+        ));
+        assert!(matches!(
+            stale.close(&fx.file, "scott", None, None),
+            Err(Error::MissingVerdict)
+        ));
+        assert!(matches!(
+            stale.hand_off(&missing, Side::Human, "scott", None),
+            Err(Error::FileUnreadable { .. })
+        ));
+        assert!(matches!(
+            stale.add_thread(&fx.file, 9, 9, "x", "scott"),
+            Err(Error::FileChanged)
+        ));
+        assert!(matches!(
+            stale.hand_off(&fx.file, Side::Agent, "claude", None),
+            Err(Error::FileChanged)
+        ));
+
+        let current = sha_now(&fx);
+        let fresh = fx.reviews.against(&current);
+        assert!(matches!(
+            fresh.add_thread(&fx.file, 9, 9, "x", "scott"),
+            Err(Error::InvalidRange { .. })
+        ));
+        assert!(matches!(
+            fresh.hand_off(&fx.file, Side::Agent, "claude", None),
+            Err(Error::NotYourTurn)
+        ));
+    }
+
+    #[test]
+    fn a_guarded_hand_off_records_the_content_shown_as_the_last_look() {
+        let fx = fixture();
+        let shown = fx.reviews.view(&fx.file, true).unwrap();
+
+        fx.reviews
+            .against(&shown.sha256)
+            .hand_off(&fx.file, Side::Human, "scott", None)
+            .unwrap();
+        fs::write(&fx.file, EDITED).unwrap();
+
+        assert_eq!(
+            changes_now(&fx),
+            expected_changes("one\ntwo\nthree\nfour\n", EDITED)
+        );
+    }
+
+    // --- the change stamp ---
+
+    #[test]
+    fn the_stamp_changes_when_the_file_or_the_review_changes_and_not_otherwise() {
+        let fx = fixture();
+        let other = Reviews::with_clock(fx.store.clone(), later_now as fn() -> String);
+        let first = fx.reviews.stamp(&fx.file).unwrap();
+
+        assert_eq!(fx.reviews.stamp(&fx.file).unwrap(), first);
+        fs::write(&fx.file, EDITED).unwrap();
+        let edited = fx.reviews.stamp(&fx.file).unwrap();
+        assert_ne!(edited, first);
+        other.add_thread(&fx.file, 1, 1, "Hmm", "claude").unwrap();
+        let written = fx.reviews.stamp(&fx.file).unwrap();
+        assert_ne!(written, edited);
+        assert_eq!(fx.reviews.stamp(&fx.file).unwrap(), written);
+    }
+
+    #[test]
+    fn the_stamp_never_writes() {
+        let fx = fixture();
+        fx.reviews.stamp(&fx.file).unwrap();
+        assert_eq!(fx.review_json(), None);
+
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        fs::write(&fx.file, EDITED).unwrap();
+        let bytes = fx.review_json();
+        fx.reviews.stamp(&fx.file).unwrap();
+        assert_eq!(fx.review_json(), bytes);
+        assert_eq!(snapshot_of(&fx, EDITED), None);
+    }
+
+    #[test]
+    fn the_stamp_of_a_missing_file_is_unreadable() {
+        let fx = fixture();
+
+        assert!(matches!(
+            fx.reviews.stamp(&fx.file.with_file_name("nope.md")),
+            Err(Error::FileUnreadable { .. })
+        ));
     }
 }

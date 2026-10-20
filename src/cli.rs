@@ -13,7 +13,10 @@ use serde_json::json;
 
 use crate::error::Error;
 use crate::model::{Anchor, ReviewState, Side, State, Status, Thread};
-use crate::review::{Clock, HandedOff, ReviewStatus, Reviews, SystemClock, ThreadView, View};
+use crate::review::{
+    Clock, HandedOff, ReviewStatus, Reviews, SystemClock, SystemTicker, ThreadView, Ticker, View,
+    Waited, Woke,
+};
 use crate::store::Store;
 use crate::tui;
 
@@ -56,6 +59,7 @@ impl Failure {
                 Error::MissingVerdict => ("missing_verdict", EXIT_CALLER),
                 Error::NotClosed => ("not_closed", EXIT_CALLER),
                 Error::AlreadyClosed => ("already_closed", EXIT_CALLER),
+                Error::FileChanged => ("file_changed", EXIT_CALLER),
                 Error::FileUnreadable { .. } => ("file_unreadable", EXIT_RUNTIME),
                 Error::Locked => ("locked", EXIT_RUNTIME),
                 Error::UnsupportedSchema { .. } => ("unsupported_schema", EXIT_RUNTIME),
@@ -100,86 +104,15 @@ pub struct Env<C: Clock> {
     pub stderr_is_tty: bool,
     /// Whether the TUI may highlight text: [`color_wanted`] of `NO_COLOR`.
     pub color: bool,
+    /// The clock `wait` measures its timeout on and sleeps with.
+    pub ticker: Box<dyn Ticker>,
 }
 
-// Help text. Examples live here once; `--help` and the docs quote these.
+// Help text. The top level is the loop and the concepts; each command's
+// `after_long_help` owns its output, its errors and its examples.
 
-const COMMENTS_EXAMPLE: &str = "\
-Examples:
-  ptal comments plan.md           # open threads
-  ptal comments plan.md --all     # include resolved threads";
-
-const ADD_EXAMPLE: &str = "\
-Examples:
-  ptal add plan.md --lines 12 \"Why not X?\" --as claude
-  ptal add plan.md --lines 12-14 \"Why not X?\" --as claude";
-
-const RESOLVE_EXAMPLE: &str = "\
-Examples:
-  ptal resolve plan.md c3 --as claude
-  ptal resolve plan.md c3 --as claude --note \"Done, see step 2.\"";
-
-const REPLY_EXAMPLE: &str = "\
-Examples:
-  ptal reply plan.md c3 \"Which of the two do you mean?\" --as claude";
-
-const REOPEN_EXAMPLE: &str = "\
-Examples:
-  ptal reopen plan.md c3 --as scott
-  ptal reopen plan.md c3 --as scott --note \"Not fixed: still fails on empty input.\"
-  ptal reopen plan.md --as claude --note \"Revising per chat.\"   # the review";
-
-const HANDOFF_EXAMPLE: &str = "\
-Examples:
-  ptal handoff plan.md --as claude
-  ptal handoff plan.md --as claude --note \"Addressed everything but c4.\"";
-
-const WORKFLOW: &str = "\
-Review a throwaway text file. A human comments on lines in the TUI, opened
-with `ptal <file>` (interactive terminals only; without one it fails with
-not_a_terminal). Their terminal's working directory may differ from yours, so
-give them an absolute path. You read and answer those comments here. Every
-command reads from disk, so each call sees the other side's latest writes.
-
-Workflow:
-  1. ptal comments <file>             list open threads (--all adds resolved)
-  2. edit the file to address them    ptal never modifies the reviewed file
-  3. ptal comments <file>             re-check: edits can leave threads outdated
-  4. ptal reply <file> <id> \"<body>\" --as <name>
-     ptal resolve <file> <id> --as <name> [--note \"what changed\"]
-     ptal reopen <file> <id> --as <name> [--note \"why\"]
-  5. ptal handoff <file> --as <name> [--note \"what you did\"]   when done
-
-Threads are conversations. `ptal reply` adds a comment to a thread;
-`ptal resolve` closes it, and its --note is recorded as a comment;
-`ptal reopen` takes a resolved thread back. A reply to a resolved thread
-reopens it. Resolving a resolved thread fails with already_resolved (and
-reopening an open one with already_open); nothing is written.
-
-A thread is waiting on you when its last comment is not yours: its author
-differs from your --as name (exact match), so use the same --as name every
-time. Only open threads are listed by default.
-
-Turns: a review is on the human's turn or yours, or closed, and `turn` in
-`comments` says whose move it is. The human hands off to you from the TUI,
-often with a note (`latest`); when you are done, `ptal handoff` hands the
-turn back, with an optional --note. Only the side holding the turn can hand
-off: otherwise it fails with not_your_turn and nothing is written. The turn
-is a signal, not a lock: comment, reply, resolve and reopen at any time.
-
-Only the human closes a review, with a verdict: \"approved\" means take the
-next step with the file as it stands (publish, commit, implement), even with
-threads still open; \"dropped\" means don't. A closed review has no turn.
-When the human asks you to revise a closed review, reopen it with
-`ptal reopen <file> --as <name>` (no thread id): it returns to the human's
-turn. Reopening an active review fails with not_closed. `handoff` and the
-review `reopen` act as the agent; --side human acts as the human instead.
-
-`ptal add <file> --lines <N|A-B> \"<body>\" --as <name>` starts a new thread
-on a line or range; to answer an existing thread, use `ptal reply`.
-
-Output is JSON when stdout is not a terminal, or with --json. `comments`
-prints one document:
+const COMMENTS_HELP: &str = "\
+Prints one document (JSON when stdout is not a terminal, or with --json):
 
   {\"file\": \"/abs/path/plan.md\",
    \"revision\": \"r3\" | null,
@@ -201,6 +134,144 @@ prints one document:
        \"note\"          (if any)
      }}}
 
+Threads are in id order; only open ones unless --all. Only the latest
+hand-off, close or reopen is printed. On a terminal: the turn (or verdict)
+and the latest note, then each thread with its quote and comments.
+
+Examples:
+  ptal comments plan.md           # open threads
+  ptal comments plan.md --all     # include resolved threads";
+
+const ADD_HELP: &str = "\
+Prints {\"file\", \"thread\"}: the new thread, shaped as in
+`ptal comments --help` but without `state`.
+
+To answer an existing thread, use `ptal reply`; `add` starts a new one.
+
+Errors: missing_author, empty_body, invalid_range (line 0, start after end,
+or past the end of the file). Nothing is written.
+
+Examples:
+  ptal add plan.md --lines 12 \"Why not X?\" --as claude
+  ptal add plan.md --lines 12-14 \"Why not X?\" --as claude";
+
+const RESOLVE_HELP: &str = "\
+Prints {\"file\", \"thread\"}: the resolved thread, shaped as in
+`ptal comments --help` but without `state`. A --note is added to the thread
+as a comment by you.
+
+Errors: missing_author, not_found, already_resolved (nothing is written, so
+the note is dropped).
+
+Examples:
+  ptal resolve plan.md c3 --as claude
+  ptal resolve plan.md c3 --as claude --note \"Done, see step 2.\"";
+
+const REPLY_HELP: &str = "\
+Prints {\"file\", \"thread\"}: the thread with your comment last, shaped as
+in `ptal comments --help` but without `state`. A reply to a resolved thread
+reopens it.
+
+Errors: missing_author, empty_body, not_found.
+
+Examples:
+  ptal reply plan.md c3 \"Which of the two do you mean?\" --as claude";
+
+const REOPEN_HELP: &str = "\
+With a thread id: prints {\"file\", \"thread\"}, the reopened thread shaped
+as in `ptal comments --help` but without `state`. A --note is added as a
+comment by you. Errors: missing_author, not_found, already_open (nothing is
+written); --side is usage, since threads have no side.
+
+With no id: reopens a closed review and prints {\"file\", \"review\"}; it
+returns to the human's turn. It acts as the agent; --side human acts as the
+human. Errors: missing_author, not_closed (the review is active).
+
+Examples:
+  ptal reopen plan.md c3 --as scott
+  ptal reopen plan.md c3 --as scott --note \"Not fixed: still fails on empty input.\"
+  ptal reopen plan.md --as claude --note \"Revising per chat.\"   # the review";
+
+const HANDOFF_HELP: &str = "\
+Prints {\"file\", \"review\", \"waiting\": [\"c3\"]}: `review` is the state
+after the hand-off (as in `ptal comments --help`), and `waiting` lists the
+open threads whose last comment isn't yours.
+
+It acts as the agent; --side human acts as the human.
+
+Errors: missing_author, not_your_turn (your side doesn't hold the turn, or
+the review is closed). Nothing is written.
+
+Examples:
+  ptal handoff plan.md --as claude
+  ptal handoff plan.md --as claude --note \"Addressed everything but c4.\"";
+
+const WAIT_HELP: &str = "\
+Prints {\"file\", \"reason\", \"review\"}; every reason is exit 0:
+  \"turn\"     it is your turn; review.latest is the human's hand-off and note
+  \"closed\"   the review is closed; review.verdict is \"approved\" or \"dropped\"
+  \"timeout\"  --timeout passed and it is still the human's turn
+`review` is shaped as in `ptal comments --help`. It returns at once if it is
+already your turn or the review is closed, re-reads every 250 ms otherwise,
+and never writes. On a terminal: the turn or verdict and the note, or
+`timeout: still the human's turn`.
+
+Errors: file_unreadable if the file is missing when the wait starts.
+
+Examples:
+  ptal wait plan.md                  # block until your turn or a close
+  ptal wait plan.md --timeout 300    # give up after 5 minutes: reason \"timeout\"";
+
+const WORKFLOW: &str = "\
+Review a throwaway text file. A human comments on lines in the TUI, opened
+with `ptal <file>` (interactive terminals only; without one it fails with
+not_a_terminal). Their terminal's working directory may differ from yours, so
+give them an absolute path. You read and answer those comments here. Every
+command reads from disk, so each call sees the other side's latest writes.
+
+The turn loop:
+  1. ptal wait <file>                 block until your turn or a close
+     \"turn\":    your move; the human's note is in review.latest.note
+     \"closed\":  act on review.verdict, then stop (see below)
+     \"timeout\": still the human's turn; run ptal wait again
+  2. ptal comments <file>             the threads and the review's state
+                                      (document: ptal comments --help)
+  3. edit the file to address them    ptal never modifies the reviewed file
+  4. ptal comments <file>             re-check: edits can leave threads outdated
+  5. ptal reply <file> <id> \"<body>\" --as <name>
+     ptal resolve <file> <id> --as <name> [--note \"what changed\"]
+     ptal reopen <file> <id> --as <name> [--note \"why\"]
+  6. ptal handoff <file> --as <name> [--note \"what you did\"]
+                                      hand the turn back; its `waiting` lists
+                                      threads still waiting on you
+  7. back to 1: wait again for the human's turn to end.
+
+If your command tool can run a command in the background, run `ptal wait`
+that way; otherwise pass --timeout SECS below the tool's time limit and run
+it again on \"timeout\".
+
+Only the human closes a review, with a verdict: \"approved\" means take the
+next step with the file as it stands (publish, commit, implement), even with
+threads still open; \"dropped\" means stop. Either way the loop ends. A
+closed review has no turn. When the human asks you to revise one, reopen it
+with `ptal reopen <file> --as <name>` (no thread id): it returns to the
+human's turn, and you wait again.
+
+Threads are conversations. `ptal reply` adds a comment to a thread;
+`ptal resolve` closes it, and its --note is recorded as a comment;
+`ptal reopen` takes a resolved thread back. A reply to a resolved thread
+reopens it. Start a new thread on a line or range with:
+  ptal add <file> --lines <N|A-B> \"<body>\" --as <name>
+
+A thread is waiting on you when its last comment is not yours: its author
+differs from your --as name (exact match), so use the same --as name every
+time. Only open threads are listed by default.
+
+Turns: a review is on the human's turn or yours, or closed; `turn` in the
+`review` object says whose move it is. Only the side holding the turn can
+hand off; otherwise it fails with not_your_turn. The turn is a signal, not a
+lock: comment, reply, resolve and reopen at any time.
+
 Lines are where the anchored text is in the file now: edits above a thread
 move it. `state` is \"outdated\" when an anchored line was edited or removed;
 the thread is then shown at a best guess, with its original `quote`, so your
@@ -211,14 +282,12 @@ against. The `revision` fields say which version a thread, comment, resolve
 or hand-off referred to; the top-level `revision` is the file's current one,
 or null if nothing has been written against it yet.
 
-`add`, `reply`, `resolve` and `reopen` print {\"file\", \"thread\"} (no `state`;
-lines are mapped the same way).
-`handoff` prints {\"file\", \"review\", \"waiting\": [\"c3\"]}: `waiting` lists
-the open threads whose last comment isn't yours. `reopen <file>` with no id
-prints {\"file\", \"review\"}.
-
 Author: write commands need --as <name> or the PTAL_AUTHOR environment
 variable. ptal never guesses one.
+
+Output is JSON when stdout is not a terminal, or with --json. Each command's
+help, `ptal <command> --help`, has its output shape, the errors it can
+return and examples: comments, add, reply, resolve, reopen, handoff, wait.
 
 Errors: nothing on stdout; stderr gets one line,
   {\"error\": {\"code\": \"not_found\", \"message\": \"...\"}}
@@ -227,11 +296,12 @@ Exit codes:
   0  success
   2  fix the invocation: usage, missing_author, not_found, invalid_range,
      empty_body, already_open, already_resolved, not_your_turn,
-     missing_verdict, not_closed, already_closed
+     missing_verdict, not_closed, already_closed, file_changed
   1  runtime failure: file_unreadable, locked, unsupported_schema, io,
      corrupt, no_data_dir, not_a_terminal, terminal
 
-Data lives under PTAL_DATA_DIR (default ~/.local/share/ptal).";
+Environment: PTAL_AUTHOR is the default --as name. Reviews are kept under
+PTAL_DATA_DIR, else $XDG_DATA_HOME/ptal, else ~/.local/share/ptal.";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -259,16 +329,18 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// List the comment threads on a file.
-    #[command(after_long_help = COMMENTS_EXAMPLE)]
+    #[command(after_long_help = COMMENTS_HELP)]
     Comments {
+        /// The reviewed file.
         file: PathBuf,
         /// Include resolved threads.
         #[arg(long)]
         all: bool,
     },
     /// Start a thread on a line or a range of lines.
-    #[command(after_long_help = ADD_EXAMPLE)]
+    #[command(after_long_help = ADD_HELP)]
     Add {
+        /// The reviewed file.
         file: PathBuf,
         /// Line `N` or inclusive range `A-B` (1-based).
         #[arg(long, value_name = "N|A-B", value_parser = parse_lines)]
@@ -280,8 +352,9 @@ enum Command {
         author: Option<String>,
     },
     /// Mark a thread resolved.
-    #[command(after_long_help = RESOLVE_EXAMPLE)]
+    #[command(after_long_help = RESOLVE_HELP)]
     Resolve {
+        /// The reviewed file.
         file: PathBuf,
         /// Thread id, e.g. `c3`.
         id: String,
@@ -293,8 +366,9 @@ enum Command {
         note: Option<String>,
     },
     /// Add a comment to a thread.
-    #[command(after_long_help = REPLY_EXAMPLE)]
+    #[command(after_long_help = REPLY_HELP)]
     Reply {
+        /// The reviewed file.
         file: PathBuf,
         /// Thread id, e.g. `c3`.
         id: String,
@@ -305,8 +379,9 @@ enum Command {
         author: Option<String>,
     },
     /// Reopen a resolved thread, or with no id a closed review.
-    #[command(after_long_help = REOPEN_EXAMPLE)]
+    #[command(after_long_help = REOPEN_HELP)]
     Reopen {
+        /// The reviewed file.
         file: PathBuf,
         /// Thread id, e.g. `c3`; leave it out to reopen the review.
         id: Option<String>,
@@ -321,18 +396,28 @@ enum Command {
         side: Option<SideArg>,
     },
     /// Hand the turn to the other side.
-    #[command(after_long_help = HANDOFF_EXAMPLE)]
+    #[command(after_long_help = HANDOFF_HELP)]
     Handoff {
+        /// The reviewed file.
         file: PathBuf,
         /// Who is handing off; falls back to `PTAL_AUTHOR`.
         #[arg(long = "as", value_name = "NAME")]
         author: Option<String>,
-        /// Which side is handing off.
+        /// Which side is handing off: the agent unless `human`.
         #[arg(long, value_enum, default_value_t = SideArg::Agent)]
         side: SideArg,
         /// A note for the other side.
         #[arg(long)]
         note: Option<String>,
+    },
+    /// Block until it is your turn or the review is closed.
+    #[command(after_long_help = WAIT_HELP)]
+    Wait {
+        /// The reviewed file.
+        file: PathBuf,
+        /// Give up after SECS seconds (0 checks once); default: no limit.
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<u64>,
     },
 }
 
@@ -396,6 +481,8 @@ enum Output {
     HandedOff(HandedOff),
     /// A reopened review.
     Reopened(ReviewStatus),
+    /// Why a wait returned.
+    Waited(Waited),
 }
 
 /// What a write command did, for the readable rendering.
@@ -423,6 +510,9 @@ impl Output {
                 json!({ "file": file, "review": review, "waiting": waiting })
             }
             Output::Reopened(review) => json!({ "file": file, "review": review }),
+            Output::Waited(Waited { reason, review }) => {
+                json!({ "file": file, "reason": reason, "review": review })
+            }
         };
         format!("{value}\n")
     }
@@ -459,6 +549,11 @@ impl Output {
                 line + "\n"
             }
             Output::Reopened(review) => format!("reopened: {}\n", state_line(review)),
+            Output::Waited(Waited {
+                reason: Woke::Timeout,
+                ..
+            }) => "timeout: still the human's turn\n".to_string(),
+            Output::Waited(Waited { review, .. }) => render_status(review),
         }
     }
 }
@@ -583,7 +678,8 @@ fn run_command<C: Clock>(
         | Command::Resolve { file, .. }
         | Command::Reply { file, .. }
         | Command::Reopen { file, .. }
-        | Command::Handoff { file, .. } => file,
+        | Command::Handoff { file, .. }
+        | Command::Wait { file, .. } => file,
     };
     let output = dispatch(command, env)?;
     let canonical = std::fs::canonicalize(file).map_err(|source| {
@@ -703,6 +799,14 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
             let handed = reviews.hand_off(file, (*side).into(), &author, note.as_deref())?;
             Ok(Output::HandedOff(handed))
         }
+        Command::Wait { file, timeout } => {
+            let timeout = timeout.map(std::time::Duration::from_secs);
+            Ok(Output::Waited(reviews.wait(
+                file,
+                timeout,
+                env.ticker.as_ref(),
+            )?))
+        }
     }
 }
 
@@ -747,6 +851,7 @@ pub fn main() -> ExitCode {
         stdout_is_tty,
         stderr_is_tty,
         color: color_wanted(std::env::var_os("NO_COLOR").as_deref()),
+        ticker: Box::new(SystemTicker),
     };
     let code = run(
         std::env::args_os(),
@@ -769,11 +874,11 @@ mod tests {
         io::Error::other("boom")
     }
 
-    #[test]
-    fn every_failure_maps_to_its_documented_code_and_exit() {
+    /// Every failure the CLI reports, with its documented code and exit.
+    fn all_failures() -> Vec<(Failure, &'static str, u8)> {
         let path = PathBuf::from("/x");
         let corrupt = serde_json::from_str::<u32>("x").unwrap_err();
-        let table: Vec<(Failure, &str, u8)> = vec![
+        vec![
             (Failure::Usage("bad".into()), "usage", 2),
             (Failure::MissingAuthor, "missing_author", 2),
             (Failure::NotATerminal, "not_a_terminal", 1),
@@ -838,9 +943,13 @@ mod tests {
             (Failure::Core(Error::MissingVerdict), "missing_verdict", 2),
             (Failure::Core(Error::NotClosed), "not_closed", 2),
             (Failure::Core(Error::AlreadyClosed), "already_closed", 2),
-        ];
+            (Failure::Core(Error::FileChanged), "file_changed", 2),
+        ]
+    }
 
-        for (failure, code, exit) in table {
+    #[test]
+    fn every_failure_maps_to_its_documented_code_and_exit() {
+        for (failure, code, exit) in all_failures() {
             assert_eq!(failure.classify(), (code, exit), "{failure:?}");
         }
     }
@@ -910,6 +1019,7 @@ mod tests {
                 stdout_is_tty: tty,
                 stderr_is_tty: tty,
                 color: true,
+                ticker: Box::new(SystemTicker),
             }
         }
 
@@ -1627,6 +1737,19 @@ c2  open  outdated  lines 3-4
         assert_eq!(out.error_code(), "not_found");
     }
 
+    /// Every subcommand, from clap, so a new one can't be missed.
+    fn subcommands() -> Vec<String> {
+        use clap::CommandFactory;
+        Cli::command()
+            .get_subcommands()
+            .map(|c| c.get_name().to_string())
+            .collect()
+    }
+
+    fn flat(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
     #[test]
     fn top_level_help_teaches_the_whole_agent_workflow() {
         let fx = fixture("one\n");
@@ -1643,19 +1766,40 @@ c2  open  outdated  lines 3-4
             "add",
             "--as",
             "PTAL_AUTHOR",
-            "--all",
             "--json",
             "Exit codes",
             "outdated",
-            "threads",
-            "state",
-            "anchor",
-            "start_line",
-            "quote",
-            "comments",
         ] {
             at(needle);
         }
+    }
+
+    #[test]
+    fn top_level_help_walks_the_turn_loop() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let at = |needle: &str| {
+            help.find(needle)
+                .unwrap_or_else(|| panic!("help is missing {needle:?}:\n{help}"))
+        };
+        assert!(at("ptal wait") < at("ptal comments"));
+        assert!(at("ptal comments") < at("edit the file"));
+        assert!(at("edit the file") < at("ptal resolve"));
+        assert!(at("ptal resolve") < at("ptal handoff"));
+        let loop_text = flat(&help[at("ptal wait")..]);
+        for reason in ["\"turn\"", "\"closed\"", "\"timeout\""] {
+            assert!(loop_text.contains(reason), "{reason}: {loop_text}");
+        }
+        let verdicts = paragraph_with(&help, &["\"approved\"", "\"dropped\""]);
+        let verdicts = flat(&verdicts);
+        assert!(verdicts.contains("take the next step"), "{verdicts}");
+        assert!(verdicts.contains("stop"), "{verdicts}");
+        let advice = flat(&paragraph_with(&help, &["background", "--timeout"]));
+        assert!(advice.contains("ptal wait"), "{advice}");
+        let after = flat(&help[at("ptal handoff")..]);
+        assert!(after.contains("wait again"), "{after}");
     }
 
     #[test]
@@ -1664,18 +1808,13 @@ c2  open  outdated  lines 3-4
 
         let help = fx.run(&["--help"]).stdout;
 
-        let paragraph = paragraph_with(&help, &["`state`", "outdated"]);
-        let flat = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");
+        let paragraph = flat(&paragraph_with(&help, &["`state`", "outdated"]));
         for needle in [
             "edits above a thread move it",
             "an anchored line was edited or removed",
             "original `quote`",
         ] {
-            assert!(flat.contains(needle), "{needle}: {flat}");
-        }
-        let shape = paragraph_with(&help, &["\"threads\""]);
-        for field in ["\"revision\"", "resolved_revision"] {
-            assert!(shape.contains(field), "{field}: {shape}");
+            assert!(paragraph.contains(needle), "{needle}: {paragraph}");
         }
         paragraph_with(&help, &["revision", "null"]);
     }
@@ -1718,10 +1857,9 @@ c2  open  outdated  lines 3-4
         for needle in ["ptal reply", "ptal resolve", "ptal reopen", "--note"] {
             assert!(paragraph.contains(needle), "{needle}: {paragraph}");
         }
-        let flat = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
-            flat.contains("A reply to a resolved thread reopens it"),
-            "{flat}"
+            flat(&paragraph).contains("A reply to a resolved thread reopens it"),
+            "{paragraph}"
         );
     }
 
@@ -1762,6 +1900,30 @@ c2  open  outdated  lines 3-4
     }
 
     #[test]
+    fn top_level_help_lists_every_error_code_under_its_exit() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["--help"]).stdout;
+
+        let exit_2 = help.find("  2  ").expect("exit 2 line");
+        let exit_1 = help.find("  1  ").expect("exit 1 line");
+        let table_end = help[exit_1..]
+            .find("\n\n")
+            .map_or(help.len(), |n| exit_1 + n);
+        for (failure, code, exit) in all_failures() {
+            let rows = if exit == 2 {
+                &help[exit_2..exit_1]
+            } else {
+                &help[exit_1..table_end]
+            };
+            assert!(
+                rows.contains(code),
+                "{failure:?} ({code}) not under {exit}:\n{help}"
+            );
+        }
+    }
+
+    #[test]
     fn top_level_help_shows_how_to_call_reply_and_reopen() {
         let fx = fixture("one\n");
 
@@ -1787,41 +1949,151 @@ c2  open  outdated  lines 3-4
     }
 
     #[test]
-    fn top_level_help_says_add_is_for_new_threads_not_answers() {
+    fn top_level_help_names_every_subcommand_and_points_to_its_help() {
         let fx = fixture("one\n");
 
         let help = fx.run(&["--help"]).stdout;
 
-        let paragraph = paragraph_with(&help, &["new thread", "ptal reply"]);
-        assert!(paragraph.contains("answer"), "{paragraph}");
-        assert!(paragraph.contains("ptal add"), "{paragraph}");
-    }
-
-    #[test]
-    fn top_level_help_says_which_commands_print_the_thread() {
-        let fx = fixture("one\n");
-
-        let help = fx.run(&["--help"]).stdout;
-
-        let line = help
-            .lines()
-            .find(|l| l.contains(r#"{"file", "thread"}"#))
-            .unwrap_or_else(|| panic!("no line describes the thread output:\n{help}"));
-        for command in ["add", "reply", "resolve", "reopen"] {
-            assert!(line.contains(command), "{command}: {line}");
+        let pointer = flat(&paragraph_with(&help, &["ptal <command> --help"]));
+        for needle in ["output", "errors", "examples"] {
+            assert!(pointer.contains(needle), "{needle}: {pointer}");
+        }
+        for command in subcommands() {
+            assert!(
+                help.contains(&format!("ptal {command}")),
+                "{command}:\n{help}"
+            );
+            assert!(pointer.contains(&command), "{command}: {pointer}");
         }
     }
 
     #[test]
-    fn every_subcommand_help_has_an_example() {
+    fn top_level_help_names_the_environment_variables() {
         let fx = fixture("one\n");
 
-        for command in ["comments", "add", "resolve", "reply", "reopen", "handoff"] {
+        let help = fx.run(&["--help"]).stdout;
+
+        let paragraph = paragraph_with(&help, &["PTAL_DATA_DIR"]);
+        for needle in ["PTAL_AUTHOR", "XDG_DATA_HOME", "~/.local/share/ptal"] {
+            assert!(paragraph.contains(needle), "{needle}: {paragraph}");
+        }
+    }
+
+    #[test]
+    fn comments_help_shows_the_output_document() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["comments", "--help"]).stdout;
+
+        let shape = paragraph_with(&help, &["\"threads\""]);
+        for field in [
+            "\"revision\"",
+            "\"state\"",
+            "\"anchor\"",
+            "\"start_line\"",
+            "\"quote\"",
+            "\"comments\"",
+            "resolved_revision",
+            "\"review\"",
+            "\"turn\"",
+            "\"verdict\"",
+            "\"latest\"",
+            "hand_off",
+            "next_id",
+        ] {
+            assert!(shape.contains(field), "{field}: {shape}");
+        }
+        assert!(help.contains("--all"), "{help}");
+    }
+
+    #[test]
+    fn add_help_says_it_is_for_new_threads_not_answers() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["add", "--help"]).stdout;
+
+        let paragraph = paragraph_with(&help, &["ptal reply"]);
+        assert!(paragraph.contains("answer"), "{paragraph}");
+        for code in ["invalid_range", "empty_body", "missing_author"] {
+            assert!(help.contains(code), "{code}: {help}");
+        }
+    }
+
+    #[test]
+    fn thread_writes_help_says_they_print_the_thread() {
+        let fx = fixture("one\n");
+
+        for (command, codes) in [
+            ("add", &["invalid_range"][..]),
+            ("reply", &["not_found", "empty_body"]),
+            ("resolve", &["not_found", "already_resolved"]),
+            ("reopen", &["not_found", "already_open"]),
+        ] {
             let help = fx.run(&[command, "--help"]).stdout;
+            assert!(help.contains(r#"{"file", "thread"}"#), "{command}:\n{help}");
+            for code in codes {
+                assert!(help.contains(code), "{command} {code}:\n{help}");
+            }
+        }
+    }
+
+    #[test]
+    fn handoff_help_says_what_waiting_lists_and_when_it_is_refused() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["handoff", "--help"]).stdout;
+
+        let output = flat(&paragraph_with(&help, &["\"waiting\""]));
+        assert!(output.contains("last comment isn't yours"), "{output}");
+        paragraph_with(&help, &["not_your_turn", "closed"]);
+        paragraph_with(&help, &["--side human", "as the human"]);
+    }
+
+    #[test]
+    fn reopen_help_covers_reopening_the_review() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["reopen", "--help"]).stdout;
+
+        let review = flat(&paragraph_with(&help, &["no id", "not_closed"]));
+        for needle in [r#"{"file", "review"}"#, "human's turn", "--side human"] {
+            assert!(review.contains(needle), "{needle}: {review}");
+        }
+    }
+
+    #[test]
+    fn wait_help_explains_each_reason_and_the_exit_status() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["wait", "--help"]).stdout;
+
+        let output = flat(&paragraph_with(&help, &[r#"{"file", "reason", "review"}"#]));
+        for needle in [
+            "\"turn\"",
+            "\"closed\"",
+            "\"timeout\"",
+            "exit 0",
+            "never writes",
+        ] {
+            assert!(output.contains(needle), "{needle}: {output}");
+        }
+    }
+
+    #[test]
+    fn every_subcommand_help_has_an_output_shape_and_an_example() {
+        let fx = fixture("one\n");
+
+        for command in subcommands() {
+            let help = fx.run(&[&command, "--help"]).stdout;
+            assert!(help.to_lowercase().contains("prints"), "{command}:\n{help}");
             assert!(help.contains("Example"), "{command}:\n{help}");
             assert!(
                 help.contains(&format!("ptal {command}")),
                 "{command}:\n{help}"
+            );
+            assert!(
+                !help.contains("<FILE>\n          \n"),
+                "{command}: FILE undocumented:\n{help}"
             );
         }
     }
@@ -2022,27 +2294,10 @@ c2  open  outdated  lines 3-4
         assert!(resolve < handoff, "hand off after answering:\n{help}");
         let step = help[handoff..].lines().next().unwrap();
         assert!(step.contains("--as"), "{step}");
-        let turns = paragraph_with(&help, &["`turn`", "not_your_turn"]);
+        let turns = flat(&paragraph_with(&help, &["`turn`", "not_your_turn"]));
         assert!(turns.contains("signal, not a lock"), "{turns}");
-        let closing = paragraph_with(&help, &["approved", "dropped"]);
-        for needle in ["ptal reopen <file>", "not_closed", "--side"] {
-            assert!(closing.contains(needle), "{needle}: {closing}");
-        }
-        let shape = paragraph_with(&help, &["\"review\""]);
-        for field in [
-            "\"turn\"",
-            "\"verdict\"",
-            "\"latest\"",
-            "hand_off",
-            "next_id",
-        ] {
-            assert!(shape.contains(field), "{field}: {shape}");
-        }
-        let outputs = paragraph_with(&help, &["\"waiting\""]);
-        assert!(outputs.contains("handoff"), "{outputs}");
+        paragraph_with(&help, &["closes", "ptal reopen <file>"]);
     }
-
-    // ---- bare `ptal <file>` (the TUI) --------------------------------------
 
     #[test]
     fn a_file_without_a_terminal_is_not_a_terminal() {
@@ -2146,5 +2401,158 @@ c2  open  outdated  lines 3-4
 
         assert!(help.contains("ptal <file>"), "{help}");
         assert!(help.contains("not_a_terminal"), "{help}");
+    }
+
+    // ---- waiting for the agent's turn -------------------------------------
+
+    /// A ticker that never really sleeps: each sleep moves its clock on.
+    struct InstantTicker(std::cell::Cell<std::time::Instant>);
+
+    impl crate::review::Ticker for InstantTicker {
+        fn now(&self) -> std::time::Instant {
+            self.0.get()
+        }
+
+        fn sleep(&self, duration: std::time::Duration) {
+            self.0.set(self.0.get() + duration);
+        }
+    }
+
+    impl Fixture {
+        fn wait_env(&self, tty: bool) -> Env<fn() -> String> {
+            Env {
+                ticker: Box::new(InstantTicker(std::cell::Cell::new(
+                    std::time::Instant::now(),
+                ))),
+                ..self.env(None, tty)
+            }
+        }
+    }
+
+    #[test]
+    fn wait_on_the_agents_turn_prints_the_hand_off() {
+        let fx = fixture("one\n");
+        fx.human_hands_off(Some("Over to you"));
+
+        let out = fx.run_with(&["wait", "FILE"], &fx.wait_env(false));
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_eq!(
+            out.json(),
+            serde_json::json!({
+                "file": fx.canonical(),
+                "reason": "turn",
+                "review": {
+                    "turn": "agent",
+                    "verdict": null,
+                    "latest": {
+                        "event": "hand_off", "side": "human", "author": "scott",
+                        "created_at": NOW, "revision": "r1", "next_id": 1,
+                        "note": "Over to you",
+                    },
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn wait_on_a_closed_review_prints_the_verdict() {
+        let fx = fixture("one\n");
+        fx.reviews()
+            .close(&fx.file, "scott", Some(Verdict::Approved), None)
+            .unwrap();
+
+        let out = fx.run_with(&["wait", "FILE"], &fx.wait_env(false));
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        let json = out.json();
+        assert_eq!(json["reason"], "closed");
+        assert_eq!(json["review"]["verdict"], "approved");
+        assert_eq!(json["review"]["turn"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn wait_with_a_timeout_on_the_humans_turn_is_timeout_and_exit_0() {
+        let fx = fixture("one\n");
+
+        for timeout in ["0", "3"] {
+            let out = fx.run_with(&["wait", "FILE", "--timeout", timeout], &fx.wait_env(false));
+
+            assert_eq!(out.code, 0, "{}", out.stderr);
+            let json = out.json();
+            assert_eq!(json["reason"], "timeout");
+            assert_eq!(json["review"]["turn"], "human");
+            assert_eq!(json["review"]["latest"], serde_json::Value::Null);
+        }
+        assert_eq!(fx.review_bytes(), b"", "a wait writes nothing");
+    }
+
+    #[test]
+    fn wait_on_a_tty_prints_the_state_header_or_the_timeout() {
+        let fx = fixture("one\n");
+        let tty = fx.wait_env(true);
+
+        let timeout = fx.run_with(&["wait", "FILE", "--timeout", "0"], &tty);
+        fx.human_hands_off(Some("Look at c1\nand c2"));
+        let turn = fx.run_with(&["wait", "FILE"], &tty);
+        fx.reviews()
+            .close(&fx.file, "scott", Some(Verdict::Dropped), None)
+            .unwrap();
+        let closed = fx.run_with(&["wait", "FILE"], &tty);
+
+        assert_eq!(timeout.stdout, "timeout: still the human's turn\n");
+        assert_eq!(
+            turn.stdout,
+            "turn: agent\n  scott: Look at c1\n  scott: and c2\n"
+        );
+        assert_eq!(closed.stdout, "closed: dropped\n");
+    }
+
+    #[test]
+    fn wait_rejects_a_bad_timeout_a_side_and_an_author_as_usage() {
+        let fx = fixture("one\n");
+
+        for args in [
+            &["wait", "FILE", "--timeout", "soon"][..],
+            &["wait", "FILE", "--timeout", "-1"],
+            &["wait", "FILE", "--side", "human"],
+            &["wait", "FILE", "--as", "claude"],
+        ] {
+            let out = fx.run_with(args, &fx.wait_env(false));
+            assert_eq!(out.code, 2, "{args:?}");
+            assert_eq!(out.error_code(), "usage", "{args:?}");
+            assert_eq!(out.stdout, "", "{args:?}");
+        }
+    }
+
+    #[test]
+    fn wait_needs_no_author() {
+        let fx = fixture("one\n");
+
+        let out = fx.run_with(&["wait", "FILE", "--timeout", "0"], &fx.wait_env(false));
+
+        assert_eq!(out.code, 0, "{}", out.stderr);
+    }
+
+    #[test]
+    fn wait_on_a_missing_file_is_file_unreadable_with_empty_stdout() {
+        let fx = fixture("one\n");
+        fs::remove_file(&fx.file).unwrap();
+
+        let out = fx.run_with(&["wait", "FILE", "--timeout", "0"], &fx.wait_env(false));
+
+        assert_eq!(out.code, 1);
+        assert_eq!(out.error_code(), "file_unreadable");
+        assert_eq!(out.stdout, "");
+    }
+
+    #[test]
+    fn a_file_named_wait_opens_as_dot_slash_wait() {
+        let fx = fixture("one\n");
+
+        let out = fx.run_with(&["./wait", "--json"], &fx.env(None, true));
+
+        assert_eq!(out.error_code(), "file_unreadable");
+        assert!(out.stderr.contains("./wait"), "{}", out.stderr);
     }
 }

@@ -9,7 +9,7 @@ commit `0365930` (removed since).
 > **Status.** Threads, comments, replies, resolving and reopening are built,
 > and so are revisions and threads that follow edits (#45), and turns,
 > hand-offs and closing a review (#35), and changes since your last look
-> (#46, TUI only). Waiting for a turn (#36) is planned for v0.3.0. Each section below says
+> (#46, TUI only), and waiting for a turn and live refresh (#36). Each section below says
 > which it is. Planned behavior has no command names yet; those are settled
 > in its story.
 
@@ -77,7 +77,7 @@ hand off; the agent revises and answers, hands back; until you close it.
 
 ## Turns
 
-*Built (#35), except waiting for a turn, which is planned (#36).*
+*Built (#35, #36).*
 
 - One side at a time has the **turn**: the side expected to act next. A
   review starts on your turn.
@@ -91,9 +91,17 @@ hand off; the agent revises and answers, hands back; until you close it.
 - Every hand-off, close and reopen is kept, in order, with the review, and
   whose turn it is (or the verdict) is read from them, so it survives
   restarts of ptal on either side.
-- An agent can **wait** for its turn instead of being told in chat. The
-  wait returns when you hand off, or when you close the review. *(Planned,
-  #36.)*
+- An agent can **wait** for its turn instead of being told in chat
+  (`ptal wait`). The wait returns when you hand off (with your hand-off and
+  note), or when you close the review (with the verdict); a wait on a
+  review already on the agent's turn, or closed, returns at once, so a
+  hand-off between two waits is never missed. A wait can also give up after
+  a timeout, still on your turn. Writes out of turn don't end it.
+- You don't wait: the TUI shows the agent's writes as they land (live
+  refresh), and the banner flips to `your turn` when it hands back. A
+  hand-off or close is made against the file as the screen shows it; if
+  the agent changed the file since, it is refused until you've seen the
+  change, so your last look is always what you were shown.
 
 ## Closing and the verdict
 

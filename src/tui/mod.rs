@@ -24,6 +24,7 @@ use std::io::{self, Write};
 use std::ops::ControlFlow;
 use std::panic;
 use std::path::Path;
+use std::time::Instant;
 
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -35,9 +36,9 @@ use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::{Side, Thread};
-use crate::review::{Clock, ReviewStatus, Reviews};
+use crate::review::{Clock, POLL_INTERVAL, ReviewStatus, Reviews, Stamp, View};
 
 use app::{App, Done, Effect, Event, Reread, update};
 use render::render;
@@ -48,7 +49,6 @@ use render::render;
 /// Loading is split from [`Loaded::into_app`] so that a missing file is
 /// reported before the terminal is queried or touched.
 pub struct Loaded {
-    lines: Vec<String>,
     view: Reread,
 }
 
@@ -59,15 +59,21 @@ pub struct Loaded {
 /// [`crate::Error::FileUnreadable`] plus any store error.
 pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<Loaded> {
     // One read: the lines shown are the ones the threads are mapped to.
-    let view = reviews.view(file, true)?;
     Ok(Loaded {
-        lines: view.lines,
-        view: Reread {
+        view: reviews.view(file, true)?.into(),
+    })
+}
+
+impl From<View> for Reread {
+    fn from(view: View) -> Self {
+        Reread {
+            lines: view.lines,
+            sha256: view.sha256,
             threads: view.threads,
             review: view.review,
             changes: view.changes,
-        },
-    })
+        }
+    }
 }
 
 impl Loaded {
@@ -75,11 +81,10 @@ impl Loaded {
     /// its markdown structure highlighted when `file` is markdown
     /// ([`highlight::is_markdown`]) and `color` is wanted.
     pub fn into_app(self, file: &Path, author: &str, size: (u16, u16), color: bool) -> App {
-        App::open(self.lines, &self.view.threads, author, size)
-            .with_review(self.view.review)
-            .with_changes(self.view.changes)
+        App::open(Vec::new(), &[], author, size)
             .labeled(file.display().to_string())
             .highlighted(color && highlight::is_markdown(file))
+            .with_reread(self.view)
     }
 }
 
@@ -180,16 +185,93 @@ pub fn run<C: Clock>(
     install_restore_hook(restore_terminal);
     let _session = TerminalSession::new(enter_terminal, restore_terminal)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let mut watch = Watch::default();
+    let mut next_check = Instant::now();
+    let mut dirty = true;
     loop {
-        terminal.draw(|frame| render(&app, frame))?;
-        let event = match event::read()? {
-            TermEvent::Key(key) => Event::Key(key),
-            TermEvent::Resize(width, height) => Event::Resize(width, height),
-            TermEvent::Paste(text) => Event::Paste(text),
-            _ => continue,
-        };
-        if step(&mut app, event, reviews, file, author).is_break() {
-            return Ok(());
+        if dirty {
+            terminal.draw(|frame| render(&app, frame))?;
+            dirty = false;
+        }
+        // Wait for a key only until the next check is due, and check
+        // whether or not keys arrived, so fast typing can't starve it.
+        if event::poll(next_check.saturating_duration_since(Instant::now()))? {
+            let event = match event::read()? {
+                TermEvent::Key(key) => Some(Event::Key(key)),
+                TermEvent::Resize(width, height) => Some(Event::Resize(width, height)),
+                TermEvent::Paste(text) => Some(Event::Paste(text)),
+                _ => None,
+            };
+            if let Some(event) = event {
+                if step(&mut app, event, reviews, file, author).is_break() {
+                    return Ok(());
+                }
+                dirty = true;
+            }
+        }
+        if Instant::now() >= next_check {
+            let before = app.status().map(String::from);
+            // Redraw only when the check changed what is shown.
+            dirty |=
+                refresh(&mut app, reviews, file, &mut watch) || app.status() != before.as_deref();
+            next_check = Instant::now() + POLL_INTERVAL;
+        }
+    }
+}
+
+/// How many checks in a row [`refresh`] lets fail silently before it says
+/// so in the footer: about a second, so an editor's save that briefly
+/// removes the file is never reported, but a corrupt review is.
+pub const REFRESH_FAILURES_SHOWN: u32 = 4;
+
+/// What [`refresh`] last saw on disk.
+#[derive(Debug, Clone, Default)]
+pub struct Watch {
+    /// The stamp of the last re-read; `None` before the first, so the first
+    /// check always re-reads.
+    stamp: Option<Stamp>,
+    /// Checks that failed since the last one that read.
+    failures: u32,
+}
+
+/// Show the other side's writes: when the file or its review changed on
+/// disk since the last check ([`Reviews::stamp`]), re-read them into `app`
+/// as [`Event::Refreshed`]. Returns whether it did.
+///
+/// Only reads. A check that can't read (the file briefly missing while an
+/// editor saves it) leaves the screen as it was, to try again next time;
+/// once [`REFRESH_FAILURES_SHOWN`] checks in a row have failed, the footer
+/// says why ([`Event::RefreshFailed`]), once per run of failures.
+pub fn refresh<C: Clock>(
+    app: &mut App,
+    reviews: &Reviews<C>,
+    file: &Path,
+    watch: &mut Watch,
+) -> bool {
+    let read = reviews.stamp(file).and_then(|stamp| {
+        if watch.stamp.as_ref() == Some(&stamp) {
+            Ok(None)
+        } else {
+            reviews.view(file, true).map(|view| Some((stamp, view)))
+        }
+    });
+    match read {
+        Ok(None) => {
+            watch.failures = 0;
+            false
+        }
+        Ok(Some((stamp, view))) => {
+            watch.failures = 0;
+            update(app, Event::Refreshed(view.into()));
+            watch.stamp = Some(stamp);
+            true
+        }
+        Err(error) => {
+            watch.failures = watch.failures.saturating_add(1);
+            if watch.failures == REFRESH_FAILURES_SHOWN {
+                update(app, Event::RefreshFailed(format!("can't refresh: {error}")));
+            }
+            false
         }
     }
 }
@@ -198,6 +280,11 @@ pub fn run<C: Clock>(
 /// only place effects happen: all writes go through `reviews`, then the
 /// threads and the review's state are re-read so the screen shows what is
 /// on disk. The TUI writes as the human side.
+///
+/// A new thread, a hand-off and a close are made against the content on
+/// screen ([`Reviews::against`] with [`App::seen`]): if the file changed
+/// since, the write is refused, the draft is kept, and the screen is
+/// refreshed at once so the next save is made against what is shown.
 ///
 /// Returns [`ControlFlow::Break`] when the user quit.
 pub fn step<C: Clock>(
@@ -211,7 +298,10 @@ pub fn step<C: Clock>(
         None => ControlFlow::Continue(()),
         Some(Effect::Quit) => ControlFlow::Break(()),
         Some(Effect::Add { start, end, body }) => {
-            let written = reviews.add_thread(file, start, end, &body, author);
+            let seen = app.seen().to_string();
+            let written = reviews
+                .against(&seen)
+                .add_thread(file, start, end, &body, author);
             answer(app, reviews, file, Done::Added, written)
         }
         Some(Effect::Reply { id, body }) => {
@@ -227,7 +317,9 @@ pub fn step<C: Clock>(
             answer(app, reviews, file, Done::Reopened, written)
         }
         Some(Effect::HandOff { note }) => {
+            let seen = app.seen().to_string();
             let written = reviews
+                .against(&seen)
                 .hand_off(file, Side::Human, author, note.as_deref())
                 .map(|handed| {
                     let message = match handed.waiting.as_slice() {
@@ -239,7 +331,9 @@ pub fn step<C: Clock>(
             answer_review(app, reviews, file, written)
         }
         Some(Effect::Close { verdict, note }) => {
+            let seen = app.seen().to_string();
             let written = reviews
+                .against(&seen)
                 .close(file, author, verdict, note.as_deref())
                 .map(|review| ("closed".to_string(), review));
             answer_review(app, reviews, file, written)
@@ -260,14 +354,17 @@ pub fn step<C: Clock>(
 /// the screen loses its markers rather than offering a retry that would
 /// duplicate the comment, and keeps the `current` review state rather than
 /// showing a fresh review's.
-fn reread<C: Clock>(reviews: &Reviews<C>, file: &Path, current: &ReviewStatus) -> Reread {
+fn reread<C: Clock>(
+    reviews: &Reviews<C>,
+    file: &Path,
+    app: &App,
+    current: &ReviewStatus,
+) -> Reread {
     match reviews.view(file, true) {
-        Ok(view) => Reread {
-            threads: view.threads,
-            review: view.review,
-            changes: view.changes,
-        },
+        Ok(view) => view.into(),
         Err(_) => Reread {
+            lines: app.lines().to_vec(),
+            sha256: app.seen().to_string(),
             review: current.clone(),
             ..Reread::default()
         },
@@ -287,11 +384,29 @@ fn answer<C: Clock>(
         Ok(thread) => Event::Saved {
             id: thread.id,
             done,
-            reread: reread(reviews, file, app.review()),
+            reread: reread(reviews, file, app, app.review()),
         },
-        Err(error) => Event::SaveFailed(error.to_string()),
+        Err(error) => return failed(app, reviews, file, &error),
     };
     update(app, event);
+    ControlFlow::Continue(())
+}
+
+/// Show a failed write. When it was refused because the file changed under
+/// the screen, re-read it first, so the message sits over what is now on
+/// disk and the next save is made against it.
+fn failed<C: Clock>(
+    app: &mut App,
+    reviews: &Reviews<C>,
+    file: &Path,
+    error: &Error,
+) -> ControlFlow<()> {
+    if let Error::FileChanged = error
+        && let Ok(view) = reviews.view(file, true)
+    {
+        update(app, Event::Refreshed(view.into()));
+    }
+    update(app, Event::SaveFailed(error.to_string()));
     ControlFlow::Continue(())
 }
 
@@ -308,9 +423,9 @@ fn answer_review<C: Clock>(
     let event = match written {
         Ok((message, written)) => Event::ReviewSaved {
             message,
-            reread: reread(reviews, file, &written),
+            reread: reread(reviews, file, app, &written),
         },
-        Err(error) => Event::SaveFailed(error.to_string()),
+        Err(error) => return failed(app, reviews, file, &error),
     };
     update(app, event);
     ControlFlow::Continue(())
@@ -327,8 +442,10 @@ mod tests {
     /// Whether `path`, opened with `color`, shows its `# Title` bold.
     fn heading_is_bold(path: &str, color: bool) -> bool {
         let loaded = Loaded {
-            lines: vec!["# Title".into()],
-            view: Reread::default(),
+            view: Reread {
+                lines: vec!["# Title".into()],
+                ..Reread::default()
+            },
         };
         let app = loaded.into_app(Path::new(path), "scott", (40, 5), color);
         let row = &app.screen_rows()[0].text;
@@ -440,17 +557,26 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_re_read_keeps_the_review_state_it_had() {
+    fn a_failed_re_read_keeps_the_review_state_and_the_text_it_had() {
         let tmp = tempfile::tempdir().unwrap();
         let reviews = Reviews::new(crate::store::Store::new(tmp.path().join("data")));
         let current = ReviewStatus {
             state: crate::model::ReviewState::Turn(Side::Agent),
             latest: None,
         };
+        let app = App::open(vec!["one".into()], &[], "scott", (40, 5)).with_reread(Reread {
+            lines: vec!["one".into()],
+            sha256: "shown".into(),
+            ..Reread::default()
+        });
 
-        let reread = reread(&reviews, &tmp.path().join("gone.md"), &current);
+        let reread = reread(&reviews, &tmp.path().join("gone.md"), &app, &current);
 
         assert!(reread.threads.is_empty());
         assert_eq!(reread.review, current);
+        assert_eq!(
+            (reread.lines, reread.sha256.as_str()),
+            (vec!["one".to_string()], "shown")
+        );
     }
 }

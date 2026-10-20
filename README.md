@@ -14,12 +14,13 @@ Comments, replies, resolved state and whose turn it is persist across rounds
 and revisions.
 
 > **Status:** core library, the agent CLI (`comments`, `add`, `resolve`, `reply`,
-> `reopen`, `handoff`), and a TUI implemented: scroll a file (long lines wrap, markdown
+> `reopen`, `handoff`, `wait`), and a TUI implemented: scroll a file (long lines wrap, markdown
 > tables align, markdown structure is highlighted), comment on a line or a
 > selected range, read threads and the agent's replies, jump between threads,
 > search, write multi-line comments, reply, resolve, reopen, hand the turn to
-> the agent and close a review with a verdict, `?` lists the keys. Live
-> refresh and waiting for a turn are planned. See
+> the agent and close a review with a verdict, `?` lists the keys, and the
+> screen refreshes live as the agent writes; agents block on `ptal wait`
+> for their turn. See
 > [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why not a PR?
@@ -161,6 +162,14 @@ latest hand-off or close: `┃` (green) on lines added or edited since then,
 `}` / `{` jump between them. Opening ptal is not a look, so the markers stay
 until you hand off or close again; nothing is marked before your first one.
 
+The screen keeps itself current: about every 250 ms ptal checks whether the
+file or its review changed, and shows the agent's replies, resolves, new
+threads, hand-backs and edits to the file without a restart. The cursor
+stays on the text it was on, and a half-typed comment or note is kept. If
+the file changed after the screen last showed it, a new comment, hand-off
+or close is refused (`the file changed: look again`), the screen refreshes,
+and `ctrl+s` again saves against what you now see.
+
 The TUI needs an interactive terminal: run without one it
 exits `1` with a `not_a_terminal` JSON error.
 
@@ -174,8 +183,10 @@ exits `1` with a `not_a_terminal` JSON error.
 
 ### For agents
 
-Everything an agent needs to use the tool is on the CLI: `ptal --help` says what
-each command does and what the output means. How you want reviews to run (when
+Everything an agent needs to use the tool is on the CLI. `ptal --help` is the
+one page to read: the turn loop, the concepts (threads, turns and the verdict,
+revisions), exit codes and environment. Each `ptal <command> --help` has that
+command's output shape, the errors it can return, and examples. How you want reviews to run (when
 to resolve, when to ask, when to publish) is yours to put in your own skill or
 prompt. Output is JSON when stdout is not a terminal (or always, with
 `--json`).
@@ -188,16 +199,33 @@ ptal reply plan.md c3 "Which of the two do you mean?" --as claude
 ptal resolve plan.md c3 --as claude --note "Done, see step 2."
 ptal reopen plan.md c3 --as scott --note "Not fixed."
 ptal handoff plan.md --as claude --note "Addressed all but c4."   # your turn, human
+ptal wait plan.md              # block until it's the agent's turn or the review closes
+ptal wait plan.md --timeout 300   # ...or give up after 5 minutes: reason "timeout"
 ptal reopen plan.md --as claude   # a closed review, when asked to revise again
-ptal --help                    # the full agent guide: workflow, JSON shape, exit codes
+ptal --help                    # the agent guide: the turn loop, concepts, exit codes
+ptal comments --help           # one command's output shape, errors and examples
 ```
+
+The loop `ptal --help` walks through:
+
+1. `ptal wait <file>`: on `"turn"`, read the human's note; on `"closed"`, act
+   on the verdict (`approved`: take the next step; `dropped`: stop) and stop;
+   on `"timeout"`, wait again.
+2. `ptal comments <file>`, edit the file, `ptal comments` again (edits can
+   leave threads outdated).
+3. `ptal reply` / `ptal resolve` / `ptal reopen` each thread.
+4. `ptal handoff <file>`, then back to 1.
+
+Run `ptal wait` in the background if your agent's command tool can; otherwise
+pass a `--timeout` below the tool's time limit and loop.
 
 Writes require `--as <name>` (or `PTAL_AUTHOR`) so every message is attributed.
 Failures print nothing on stdout and one JSON error line on stderr; exit `2`
 means the invocation can be fixed, `1` is a runtime failure (see
 [docs/interfaces.md](docs/interfaces.md#exit-codes)). A skill or prompt for
-your agent of choice is just: *"run `ptal comments <file>`, edit the file to
-address each thread, `ptal resolve` it, then `ptal handoff`."*
+your agent of choice is just: *"run `ptal wait <file>`, then `ptal comments`,
+edit the file to address each thread, `ptal resolve` it, `ptal handoff`, and
+wait again."*
 
 **Planned, not built:** `ptal schema` (JSON Schema for all output).
 
@@ -207,8 +235,8 @@ How a review runs between you and the agent (threads, revisions, turns,
 closing with a verdict) is in [docs/protocol.md](docs/protocol.md).
 
 **Turns.** A review is on your turn or the agent's, or closed. You hand off
-with `H` in the TUI; the agent sees `"turn": "agent"` and your note in
-`ptal comments`, and hands back with `ptal handoff`. You close with `C` and a
+with `H` in the TUI; the agent's `ptal wait` returns with your note (and
+`ptal comments` shows `"turn": "agent"`), and it hands back with `ptal handoff`. You close with `C` and a
 verdict (`approved`: go ahead; `dropped`: don't), and either side can reopen
 a closed review. The turn is a signal, not a lock: both sides can comment at
 any time.

@@ -34,9 +34,9 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 |---|---|
 | `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State`, the review log (`Entry`, `Event`, `Side`, `Verdict`), its derived `ReviewState`, and the human's last look (`Review::last_look`) |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
-| `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state, changes since the human's last look), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review` |
-| `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff` |
-| `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, hand off (`H`), close with a verdict (`C`), reopen the review (`O`), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
+| `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state, changes since the human's last look), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review`, `wait`, `against` (writes against the content shown), `stamp` |
+| `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff`, `wait` |
+| `tui` | Built: live refresh (the agent's writes and file edits show within 250 ms, the cursor following its text, drafts kept; writes against content not shown are refused), `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, hand off (`H`), close with a verdict (`C`), reopen the review (`O`), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor` | Built: `map_range`, `Diff` (with `Diff::changes`), `clamp` (Myers line diff via `similar`) |
 
@@ -210,6 +210,11 @@ a snapshot and returns its hash, and an `Err` from the closure writes nothing,
 snapshots included. `load(file)` and `load_revision(file, sha) ->
 Option<bytes>` take no lock: rename makes each read a consistent snapshot. A
 review with no `review.json` loads as empty without touching disk.
+`reader(file) -> ReviewReader` resolves the review's location once;
+`ReviewReader::load()` then reads only `review.json` (`load` is
+`reader(file)?.load()`) and `ReviewReader::bytes()` its raw bytes (`None`
+before the first write), so a poller survives the reviewed file briefly
+missing while an editor saves it by rename.
 `content_hash(bytes)` is the one hashing rule, shared with `review`.
 
 ### `review`
@@ -220,12 +225,13 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 
 - `add_thread(file, start, end, body, author)` — anchors a new open thread to
   lines `start..=end` of the file as it is now, storing the quote.
-- `view(file, include_resolved) -> View { revision, lines, threads, review,
-  changes }` — threads in id order, open only by default, each with its
+- `view(file, include_resolved) -> View { revision, sha256, lines, threads,
+  review, changes }` — threads in id order, open only by default, each with its
   anchor's lines mapped to the file as it is now and a computed `state`;
   `revision` is the current content's id, or `None` if nothing has been
   written against it yet; `review` is the `ReviewStatus`; `changes` are the
-  `anchor::Change` hunks since the human's last look (`Review::last_look`).
+  `anchor::Change` hunks since the human's last look (`Review::last_look`);
+  `sha256` is the content hash of that read.
   One read of the file serves all of them.
 - `resolve`, `reply` and `reopen` return the thread with its lines mapped to
   the content they read (the stored anchor is unchanged); `add_thread`'s
@@ -253,6 +259,33 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 - `reopen_review(file, side, author, note?) -> ReviewStatus` — either side
   brings a closed review back, on the human's turn. On an active review it
   is `NotClosed`.
+- `against(sha256) -> Against` — the writes that depend on what a front end
+  showed: `add_thread`, `hand_off` and `close`, each refused with
+  `FileChanged` (writing nothing) when the file now hashes differently from
+  `sha256` (a `View.sha256`). The TUI makes these three through it, so a
+  hand-off or close records the content shown as the last look and a new
+  thread lands on the lines shown. `reply`, `resolve` and `reopen` are by
+  id and stay unguarded; the plain methods take no hash (the CLI's agent
+  reads the file itself).
+- `stamp(file) -> Stamp` — the SHA-256 of the file's bytes and of
+  `review.json`'s bytes (`ReviewReader::bytes`), so a poller can tell that
+  either changed without a full `view`. Hashes, not mtimes: mtime
+  granularity can miss a same-second, same-length write. Never writes.
+- `wait(file, timeout?, &dyn Ticker) -> Waited { reason, review }` — blocks
+  until it is not the human's turn: `Woke::Turn` on the agent's turn,
+  `Woke::Closed` when closed, `Woke::Timeout` once `timeout` passes on the
+  ticker's clock. Level-triggered on the state, checked before the first
+  sleep, so a wait on a closed review or on the agent's turn returns at once
+  and a hand-off between two waits can't be missed. It polls `review.json`
+  every `POLL_INTERVAL` (250 ms) through a `store::ReviewReader` resolved
+  once, after checking the file is readable; it never writes. An `Io`
+  error reading `review.json` is retried on the next poll, up to
+  `WAIT_READ_RETRIES` (20, about 5 s) in a row; any other error (a corrupt
+  or newer review) ends the wait at once. `Ticker {
+  now, sleep }` is injected like the clock (`SystemTicker` for real), so
+  tests hand off from inside a fake `sleep`. Polling, not file watching:
+  `review.json` and editors' saves replace files by rename, which breaks
+  per-file watches, and the files are a few KB.
 
 `ReviewStatus { state, latest }` is the review's state as front ends see
 it: the `ReviewState` and the last log entry, if any. It serializes as
@@ -313,11 +346,13 @@ quotes and where each thread is.
   is allocated only after the thread is found, so a failed write never burns
   one. `hand_off` checks author, file, then the turn under the lock;
   `close` checks author, verdict, file, then whether it is closed;
-  `reopen_review` checks author, file, then whether it is closed.
+  `reopen_review` checks author, file, then whether it is closed. Through
+  `against`, `FileChanged` is checked right after the file is read, before
+  the range, the turn or whether the review is closed.
 
 **Contract:** returns typed results and typed errors (`NotFound`,
 `AlreadyOpen`, `AlreadyResolved`, `NotYourTurn`, `MissingVerdict`,
-`NotClosed`, `AlreadyClosed`, `InvalidRange`, `FileUnreadable`, `Locked`,
+`NotClosed`, `AlreadyClosed`, `FileChanged`, `InvalidRange`, `FileUnreadable`, `Locked`,
 `UnsupportedSchema`, `EmptyAuthor`, `EmptyBody`, `Io`, `Corrupt`). No printing, no terminal awareness. This is the
 API both front ends share. Mapping errors to exit codes belongs to `cli`.
 
@@ -327,11 +362,11 @@ API both front ends share. Mapping errors to exit codes belongs to `cli`.
 
 **Role:** the agent-facing front end (`src/cli.rs`, clap derive). Parses args,
 calls `review`, prints. The whole flow is `run(args, &Env, out, err) -> u8`,
-with the process facts (store, clock, `PTAL_AUTHOR`, TTY flags) injected via
+with the process facts (store, clock, ticker, `PTAL_AUTHOR`, TTY flags) injected via
 `Env`, so every path is testable in-process; `main` only fills `Env` from the
 real process.
 
-Commands: `comments`, `add`, `resolve`, `reply`, `reopen`, `handoff`. Bare `ptal <file>` launches the TUI
+Commands: `comments`, `add`, `resolve`, `reply`, `reopen`, `handoff`, `wait`. Bare `ptal <file>` launches the TUI
 (`args_conflicts_with_subcommands`; a file named like a subcommand is written
 `./name`). `run` splits into `run_command` and `launch_tui`; the latter
 refuses everything it can before the terminal is touched: no TTY on stdin and
@@ -365,6 +400,13 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   overrides it on these two (a flag, not an environment variable, so an
   agent can't inherit it). `--side` on a thread reopen is `usage`: threads
   have no side. There is no CLI close; only the human closes, in the TUI.
+- `wait <file> [--timeout SECS]` prints `{"file", "reason", "review"}`
+  (`reason` is the core's `Woke`: `turn`, `closed`, `timeout`) and exits `0`
+  for all three: a timeout is an outcome the agent loops on, not a failure.
+  It takes no `--as` (a read) and no `--side` (only the agent waits). One
+  blocking call per turn, not a stream: an agent's command tool reads a
+  command's output when it exits. The ticker comes from `Env.ticker`
+  (`SystemTicker` in `main`), so in-process tests never sleep.
 - Threads carry no `waiting_on` field. A thread is waiting on an agent when
   its last comment's `author` is not the agent's `--as` name (exact match);
   the help says so and tells agents to use one stable name. A hand-off's
@@ -378,9 +420,16 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   CLI never invents an author and never reads `$USER`.
 - `--lines` is `N` or `A-B`; syntax errors are `usage`, range validity
   against the file is the core's `InvalidRange`.
-- `--help` is part of the product: the top-level help carries the agent
-  workflow, the JSON shape, exit codes, and env vars; every command has an
-  example. It states facts about the tool (what a command does, what a field
+- `--help` is part of the product, split so each fact lives in one place.
+  The top-level help is the one page an agent must read: the human's entry
+  point, the turn loop (`wait` first, what each `reason` and verdict means,
+  backgrounding or `--timeout`), the concepts, author, output and error
+  conventions, the full exit-code table and env vars, and a pointer to each
+  command's help. Each command's `after_long_help` (one `*_HELP` const) has
+  its output shape, the errors it can return, and examples. Tests pin the
+  split: every `Failure::classify` code is in the top-level table, every
+  subcommand is named there, and every subcommand's help says what it prints
+  and has an example. It states facts about the tool (what a command does, what a field
   means), not policy: when to resolve, what to ask, how to hand over to the
   human belong to the user's own skill or prompt, which ptal does not ship.
 
@@ -396,9 +445,11 @@ Depends on `review` and `model` (and the crate-wide `error`), never on
 Its parts:
 
 - `tui::app`: `App` state (`lines`, their `tables` rows from `tui::table`
-  at `text_width()`, recomputed on open and on resize, their `stylings` from
-  `tui::highlight`, computed once by `App::highlighted(true)` since the file
-  never changes in a session, `cursor`, `top`, terminal `cols` and
+  at `text_width()`, recomputed on open, on resize and when a re-read changes
+  the lines, their `stylings` from `tui::highlight`, computed by
+  `App::highlighted(true)` and again when a re-read changes the lines (the
+  `highlight` flag remembers which), `seen`, the content hash of the lines
+  shown, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
   outdated ones, the `review`'s `ReviewStatus`, the `changes` since the
   human's last look (`View.changes`, one `anchor::Change` per hunk; `change(line)`
@@ -432,7 +483,7 @@ Its parts:
   one cell for a cursor after a full row), at least 1, capped at
   `min(10, rows / 2 - 2)` (at least 1), plus its 2 border rows; the view
   shrinks to stay above it. A thread covers its range as
-  `view` maps it to the file read at open (or after a save), whatever its
+  `view` maps it to the file as last re-read, whatever its
   `state`, so an outdated thread sits at its best-guess lines; `Marker = Waiting | Open | Resolved` is derived
   per line (waiting > open > resolved). Waiting means open and last comment
   not by `author`. The panel's thread set is recomputed from the threads and
@@ -446,9 +497,26 @@ Its parts:
   not. `render` draws from it, and the view clamp in `update` counts the
   same rows; `lines()` stays the raw file.
   `Event` is `Key | Resize | Saved { id, done, reread } |
-  ReviewSaved { message, reread } | SaveFailed | Paste(text)` (the
-  terminal's bracketed paste), where `reread` is the `Reread { threads,
-  review, changes }` the driver read back after the write, and
+  ReviewSaved { message, reread } | SaveFailed | Refreshed(reread) |
+  RefreshFailed(message) | Paste(text)` (the terminal's bracketed paste), where `reread` is the
+  `Reread { lines, sha256, threads, review, changes }` (one `View`) the
+  driver read back after the write, or after noticing the other side's
+  writes for `Refreshed`. All three apply it the same way: when the lines
+  changed, the cursor, `top`, a Visual (or a box from Visual) `anchor` and
+  the search prompt's `anchor`, `origin` and `hit` are mapped through an
+  `anchor::Diff` from the old lines to the new (inserted lines above you
+  leave you on the same text; an edited line goes to the best guess), then
+  clamped, so an anchor past a shrunk file is clamped with the cursor;
+  mapping from no lines (the app is built from an empty view, then
+  `with_reread`) starts at the top. Tables and styling are recomputed. The
+  panel, and the panel a reply box returns to (`Back::Panel`), keep their
+  selected thread by id: at its new index on the cursor line, or, when the
+  thread now starts elsewhere, by moving the cursor to its first line; a
+  thread that is gone leaves the index to the clamp, and the panel closes
+  when the line has no threads left. A draft is
+  never touched; a close box's `confirm_asked` is cleared (its open-thread
+  count may be stale), `discard_asked` and `status` are kept. `Refreshed`
+  changes nothing else, and
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
   always the thread id; `Effect` is `Add { start, end, body } | Reply { id,
   body } | Resolve { id } | Reopen { id } | HandOff { note } | Close {
@@ -463,9 +531,8 @@ Its parts:
   returns nothing, a second `ctrl+s` sends `Close`, and any other key clears
   it. A close with no verdict is still sent, as `verdict: None`, so the
   core's `MissingVerdict` is the one rule. `O` sends `ReopenReview` at once.
-  The TUI never checks the turn itself: its state can be stale until live
-  refresh (#36), so the core decides and a refusal shows like any failed
-  write. `ReviewSaved` stores the re-read threads, state and changes (a
+  The TUI never checks the turn itself: its state can be a refresh behind,
+  so the core decides and a refusal shows like any failed write. `ReviewSaved` stores the re-read threads, state and changes (a
   hand-off or close makes the current content the last look, so its changes
   are empty and the markers clear), returns to
   Normal and shows `message` in the footer.
@@ -646,19 +713,36 @@ Its parts:
   prompt, which wins over the hint. Border text (error or hint) that does
   not fit between the corners is `wrap::cut`, so it ends in `…` and a wide
   character that would cross the corner is left out whole.
-- `tui` (module root): the driver. `load` takes the lines, all threads, the
-  review's state and the changes since the last look from one
-  `Reviews::view`, so they come from the same read of the file; `Loaded::into_app` highlights the file only when it is
+- `tui` (module root): the driver. `load` takes the lines, their hash, all
+  threads, the review's state and the changes since the last look from one
+  `Reviews::view` (`Reread: From<View>`), so they come from the same read of
+  the file; `Loaded::into_app` builds an empty `App` and applies that
+  `Reread` (`with_reread`), and highlights the file only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
   `color_wanted(NO_COLOR)`, read once at startup); `step(app, event, reviews, file, author)` is the only
-  place effects are performed (`Add` → `Reviews::add_thread`, `Reply` →
+  place effects are performed (`Add` → `Reviews::against(app.seen()).add_thread`, `Reply` →
   `Reviews::reply`, `Resolve`/`Reopen` → `Reviews::resolve`/`reopen` with no
   note, then `Reviews::view(file, true)` → `Event::Saved`; `HandOff` →
-  `Reviews::hand_off` as `Side::Human`, `Close` → `Reviews::close`,
+  `against(app.seen()).hand_off` as `Side::Human`, `Close` →
+  `against(app.seen()).close`,
   `ReopenReview` → `Reviews::reopen_review` as `Side::Human`, then the same
   re-read → `Event::ReviewSaved`, whose message for a hand-off lists the
-  `waiting` threads); `run` is the blocking loop (read event →
-  `step` → draw) on a `TerminalSession`. Setup turns on raw mode, the
+  `waiting` threads). A write refused with `FileChanged` re-reads the view
+  at once (`Event::Refreshed`) and then reports the error as `SaveFailed`,
+  so the draft and mode stay, the footer says `the file changed: look
+  again`, and the next save is made against what is now shown.
+  `refresh(app, reviews, file, &mut Watch) -> bool` is the live refresh:
+  it takes `Reviews::stamp` and, only when it differs from the `Watch`'s
+  last one (`None` at first), runs a full `view` and sends
+  `Event::Refreshed`. A stamp or view that fails (an editor's save briefly
+  removing the file) changes nothing and the next check retries; after
+  `REFRESH_FAILURES_SHOWN` (4, about a second) failures in a row it sends
+  `Event::RefreshFailed("can't refresh: …")` once, which sets the footer
+  `status`. It never writes. `run` is the loop on a `TerminalSession`: draw, `event::poll`
+  until the next check is due (`POLL_INTERVAL` after the last), `step` the
+  event if one came, and `refresh` once the check is due, whether or not
+  keys arrived, so typing can't starve it. It redraws only after an event
+  or a check that changed the screen, not on every idle tick. Setup turns on raw mode, the
   alternate screen and bracketed paste (best-effort: a terminal that refuses
   it still runs, its pastes arriving as keys), so a paste arrives as one
   `Event::Paste` rather than as keys (a `q` or `ctrl+s` in it is text);
@@ -696,18 +780,21 @@ Its parts:
   unwinding), and a chained panic hook restores before the panic message
   prints. `SIGTERM`/`SIGHUP` skip both and are not
   handled.
-- Display only; never mutates the reviewed file (it is read once on open).
+- Display only; never mutates the reviewed file. The file and its review
+  are re-read on open, after each of the TUI's own writes, and whenever the
+  stamp changes (within `POLL_INTERVAL`); a refresh only reads.
+- A new thread, hand-off or close is written against the content on screen
+  (`App::seen`), so a hand-off or close records what the human was shown as
+  their last look, and a thread lands on the lines they saw.
 
 *Deferred within `tui`:* character or column selection; sub-line scrolling of a
 line taller than the view; a hanging indent for wrapped list items; real tab
 stops; inline markup in laid-out table cells (a laid-out table gets only its
 header line's bold); `NO_COLOR` for the TUI's chrome as well;
 GFM padding of ragged table rows; pipes inside inline code in a cell; tables
-inside lists or blockquotes; polling the file and `review.json` mtimes and re-syncing; draft
-survival across a re-sync; mapping the cursor through `anchor`;
-editing threads; notes on resolve/reopen from the TUI. Until live refresh exists,
-the screen shows the file as read at open, while `add_thread` quotes the file
-as it is at save time.
+inside lists or blockquotes;
+editing threads; notes on resolve/reopen from the TUI; a bell or desktop
+notification when the turn comes back (the banner changes, nothing more).
 
 ### `highlight`
 Lives at `tui::highlight`. Depends on nothing else in the crate (only
@@ -738,7 +825,7 @@ the module.
   cursor owns `bg`).
 - Off when `NO_COLOR` is set and non-empty, decided once in `cli`; the TUI's
   own chrome (cursor, gutter glyphs) keeps its colors.
-- Styling is computed once per session (the file is read once); a resize
+- Styling is recomputed only when a re-read changes the lines; a resize
   only re-wraps.
 
 *Deferred:* highlighting code inside fenced blocks by language (`syntect` or
@@ -787,7 +874,13 @@ hand-off or close.
   by rule too: hand-off by either side, refusal out of turn or when closed
   (with `review.json` byte-identical), `waiting`, close during either turn,
   reopen by either side, error precedence, out-of-turn thread writes, and
-  each log entry's revision and snapshot.
+  each log entry's revision and snapshot; `wait` with a fake ticker
+  (returns at once when closed or on the agent's turn, a hand-off or close
+  from another handle inside `sleep`, timeouts on the ticker's clock, the
+  file removed mid-wait, never writes); `against` refusing stale content
+  with `review.json` byte-identical, behaving as the plain methods on the
+  current content, its error precedence, and a guarded hand-off's last look;
+  `stamp` changing with the file or `review.json` and never writing.
 - `tests/core.rs`: concurrent writers, cross-handle reads, a full review
   round, and a whole turn round (hand-off, hand-back, close, reopen) through
   separate handles, its log and state read back from disk.
@@ -796,8 +889,9 @@ hand-off or close.
   (identity, in-bounds, `Current` ⇒ identical text).
 - `cli`: in-process tests (golden JSON, TTY rendering, error table, help) in
   `src/cli.rs`; process tests in `tests/cli.rs` for streams, exit status, and
-  env, and turns passing between the library (as the TUI writes them) and
-  separate `ptal` processes. Schema conformance is deferred with `ptal schema`.
+  env, turns passing between the library (as the TUI writes them) and
+  separate `ptal` processes, and a spawned `ptal wait` woken by another
+  process's hand-off. Schema conformance is deferred with `ptal schema`.
 - `tui`: scripted key events through `update` assert on state (including the search prompt, `n`/`N` and Visual search, and the help probe that ties `tui::keys::HELP` to the key handlers); `TestBackend`
   snapshots (inline expected strings) cover Normal, Visual, Panel and Input
   rendering, gutter glyphs and styles (including the selection highlight on
@@ -825,14 +919,28 @@ hand-off or close.
   `tui::highlight` has examples per element (nesting, emphasis across a line
   break, unclosed fences, quoted lists) plus a property over a fixed corpus:
   one styling per line, spans in bounds and on `char` boundaries, and the
-  styled line's text is the raw line; `tui::app` checks that screen rows,
+  styled line's text is the raw line; `tui::app` applies re-reads (lines
+inserted above the cursor, an edited cursor line, a shrink mid-selection,
+drafts in every box kept, the close confirm cleared, the panel kept by
+thread id, banner, markers, tables and styling recomputed, the search
+origin mapped) and checks that screen rows,
   the clamp and key effects are identical with highlighting on and off;
   `tests/tui.rs` runs scripted rounds through `step` against a real
   `Reviews` (single-line and Visual range comments checked through the real
   `ptal comments`; a thread moving with lines inserted above it, then
   outdated once its line is edited; a hand-off, a hand-back seen after the
   next write, closing with and without a verdict, the approve confirmation,
-  reopening, refusals keeping the draft, and the state after a reload); the
+  reopening, refusals keeping the draft, and the state after a reload; live
+  refresh: the agent's replies, resolves, threads and file edits shown by
+  `refresh` with the cursor and a draft kept, a CLI hand-back flipping the
+  banner, no refresh and no write when nothing changed, a refresh that can't
+  read changing nothing, and a hand-off, comment or close against an unseen
+  edit refused with `file_changed` and then made against what is shown;
+  and both front ends writing at once: the TUI adding comments through
+  `step` while separate `ptal reply` processes answer and the file is
+  rewritten between them, after which every comment is there exactly once,
+  ids are unique, `review.json` parses and every revision has its
+  snapshot); the
   banner and the review overlay are covered in `tui::render` and `tui::app`;
   the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the

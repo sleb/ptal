@@ -34,12 +34,13 @@ acceptance criteria and link here instead of restating commands.
 | Resolve a thread | `ptal resolve <file> <id> --as <name> [--note "..."]` (`already_resolved` if resolved) | `x` in the thread panel resolves the selected thread (no note; already resolved: footer says so) | `resolve` |
 | Reply to a thread | `ptal reply <file> <id> "text" --as <name>` (reopens a resolved thread) | `r` in the thread panel replies to the selected thread (the box says `Reply to <id>`); `ctrl+s` saves, `esc` (or `ctrl+c`) cancels as for a new comment | `reply` |
 | Reopen a thread | `ptal reopen <file> <id> --as <name> [--note "..."]` (`already_open` if open) | `o` in the thread panel reopens the selected resolved thread (no note; already open: footer says so) | `reopen` |
-| See whose turn it is | `review` in `comments`: `turn` (`human`, `agent`, or `null` when closed), `verdict` (`approved`, `dropped`, or `null`), and `latest`, the last hand-off, close or reopen with its side, author, time, revision, `next_id` and note; on a TTY, a `turn: agent` or `closed: approved` header and the latest note | A banner on the top row: `your turn`, `agent's turn` or `closed: approved`, then ` · <author>: <note>` (its first line, `…` if cut or longer), and on the right the keys for what you can do now. `i` in Normal opens the review full-screen: the state, the latest hand-off, close or reopen with its author, side, time and revision, and the whole note (`j`/`k`, `g`/`G` scroll; `i`, `esc`, `q` or `ctrl+c` close). Read at open and after each of your own writes | `view` |
+| See whose turn it is | `review` in `comments`: `turn` (`human`, `agent`, or `null` when closed), `verdict` (`approved`, `dropped`, or `null`), and `latest`, the last hand-off, close or reopen with its side, author, time, revision, `next_id` and note; on a TTY, a `turn: agent` or `closed: approved` header and the latest note | A banner on the top row: `your turn`, `agent's turn` or `closed: approved`, then ` · <author>: <note>` (its first line, `…` if cut or longer), and on the right the keys for what you can do now. `i` in Normal opens the review full-screen: the state, the latest hand-off, close or reopen with its author, side, time and revision, and the whole note (`j`/`k`, `g`/`G` scroll; `i`, `esc`, `q` or `ctrl+c` close). Kept current by live refresh (see "Seeing the other side's writes") | `view` |
 | Hand off | `ptal handoff <file> --as <name> [--note "..."]`, as the agent (`--side human` to act as the human); prints `{"file", "review", "waiting"}`, where `waiting` lists open threads whose last comment isn't yours; `not_your_turn` if the side doesn't hold the turn or the review is closed | `H` in Normal opens a box titled `Hand off to the agent (note optional)`; `ctrl+s` hands off, even with the box blank (no note); `esc` (or `ctrl+c`) cancels as for a comment. The footer then reads `handed off`, with `· waiting on you: c3, c5` when open threads' last comment isn't yours. Out of turn, `not your turn` shows on the box's border and the draft is kept | `hand_off` |
+| Wait for your turn | `ptal wait <file> [--timeout SECS]` blocks until it is the agent's turn or the review is closed, then prints `{"file", "reason", "review"}`: `reason` is `turn`, `closed` (with the `verdict`) or `timeout` (still the human's turn), all exit `0`; `review.latest` is the hand-off or close that ended it. Returns at once if already the agent's turn or closed; `--timeout 0` checks once. On a TTY: the `turn: agent` / `closed: approved` header and the note, or `timeout: still the human's turn`. Never writes | n/a: the TUI refreshes live (see "Seeing the other side's writes") | `wait` |
 | Close a review | n/a: only the human closes; `comments` shows the `verdict` and the close's note in `latest` | `C` in Normal opens a box titled `Close as ? (tab: approved / dropped)`; `tab` picks `approved`, then `dropped`, then `approved` again, and the title follows; the text is the note (optional). `ctrl+s` closes; with no verdict chosen, the core's `missing_verdict` message shows on the border and the draft is kept. Approving with open threads asks first (`N open threads stay open: ctrl+s again to approve`): a second `ctrl+s` closes, any other key cancels the ask. Works during either turn | `close` |
 | Reopen a review | `ptal reopen <file> --as <name> [--note "..."]` (no thread id), as the agent (`--side human` to act as the human); prints `{"file", "review"}`; back to the human's turn; `not_closed` if active | `O` in Normal reopens the review at once (no note); on an active one the footer says `review is not closed` | `reopen_review` |
 | See whether a thread is stale | `state: "current" \| "outdated"` in `comments`; the range is where the anchored text is now (edits above move it), `outdated` once an anchored line is edited or removed, at a best guess with the original quote | `outdated` in the thread panel; the footer counts open outdated threads (`N outdated`); the gutter and panel follow the same mapped range | `view` |
-| Learn the tool | `ptal --help` (workflow, conversation model, JSON shape, exit codes); `ptal <command> --help` has an example | `?` in Normal mode or the thread panel opens a full-screen key listing, grouped by mode (`?`, `esc`, `q` or `ctrl+c` close it; `j`/`k`, `ctrl+d`/`ctrl+u`, `PgDn`/`PgUp`, `g`/`G`, `Home`/`End` scroll it); the footer ends with `?:help` when it fits | none |
+| Learn the tool | `ptal --help` is the one page an agent must read: the turn loop (`wait` → `comments` → edit → reply/resolve/reopen → `handoff` → `wait`) with what each `wait` reason and verdict means, the concepts (threads, waiting on you, turns, revisions, `outdated`), author, output and error conventions, the exit-code table and environment variables. Each `ptal <command> --help` has that command's output shape, the errors it can return beyond the common ones, and examples | `?` in Normal mode or the thread panel opens a full-screen key listing, grouped by mode (`?`, `esc`, `q` or `ctrl+c` close it; `j`/`k`, `ctrl+d`/`ctrl+u`, `PgDn`/`PgUp`, `g`/`G`, `Home`/`End` scroll it); the footer ends with `?:help` when it fits | none |
 
 ## Cross-cutting
 
@@ -48,7 +49,7 @@ acceptance criteria and link here instead of restating commands.
 | Author | `--as <name>` or `PTAL_AUTHOR`; never invented | `$USER` |
 | Output | JSON when stdout is not a TTY or with `--json`; readable on a TTY | Rendered screen |
 | Errors | `{"error": {"code", "message"}}` on stderr when not a TTY or with `--json`; exit codes below | A failed write shows its message in the footer (on the comment box's bottom border while writing) and keeps the draft; startup failures print as the CLI does, before the screen is taken over |
-| Seeing the other side's writes | Every call reads from disk | Re-reads threads, the review's state and the change markers after its own writes; reopen to see the agent's. Until then the banner can be stale (for example, `agent's turn` after the agent handed back): the core, not the banner, decides a hand-off, so a stale banner never writes the wrong thing. Change markers re-read after a write describe the file on disk, not the stale screen, and a hand-off or close records the file on disk as your last look even if the screen never showed it. Live refresh is #36 |
+| Seeing the other side's writes | Every call reads from disk; `ptal wait` blocks until the human hands off or closes | Live refresh: about every 250 ms the TUI checks whether the file or its review changed on disk (by content hash) and, if so, re-reads them: the agent's replies, resolves, new threads, hand-offs and edits to the file appear without a restart. The cursor stays on the text it was on (lines inserted above move it down with them; an edited line keeps a best guess), a selection's ends follow the same way, an open thread panel keeps the selected thread, and a half-typed comment, reply or note is never touched (a close waiting for its second `ctrl+s` asks again). A check that can't read the file (an editor mid-save) is skipped; if checks keep failing for about a second (a corrupt `review.json`, a file that isn't UTF-8), the footer says `can't refresh: …` once. A new comment, hand-off or close is made against the content on screen: if the file changed since, it is refused with `the file changed: look again` on the box's border, the draft is kept, the screen refreshes at once, and a second `ctrl+s` saves against what you now see, so a hand-off or close always records the content you were shown as your last look. Replies, resolves and reopens are by thread id and aren't refused |
 | Reviewed file | Read-only | Read-only |
 | Markdown highlighting | n/a (raw text) | `.md`, `.markdown` and `.mdx` files show headings, emphasis, strikethrough, code, lists, quotes and links highlighted; off when `NO_COLOR` is set and non-empty. No key toggles it |
 
@@ -61,7 +62,7 @@ stderr carries one error. The table below is pinned by a unit test in
 | Exit | Meaning | Error codes |
 |---|---|---|
 | `0` | Success (also `--help`, `--version`) | none |
-| `2` | The caller can fix the invocation | `usage`, `missing_author`, `not_found`, `invalid_range`, `empty_body`, `already_open`, `already_resolved`, `not_your_turn`, `missing_verdict`, `not_closed`, `already_closed` |
+| `2` | The caller can fix the invocation | `usage`, `missing_author`, `not_found`, `invalid_range`, `empty_body`, `already_open`, `already_resolved`, `not_your_turn`, `missing_verdict`, `not_closed`, `already_closed`, `file_changed` |
 | `1` | Runtime failure | `file_unreadable`, `locked`, `unsupported_schema`, `io`, `corrupt`, `no_data_dir`, `not_a_terminal`, `terminal` |
 
 `no_data_dir` is reported only by commands that read or write review data.
@@ -70,7 +71,10 @@ behave the same with `PTAL_DATA_DIR`, `XDG_DATA_HOME` and `HOME` all unset.
 
 `not_your_turn` is a hand-off by the side that doesn't hold the turn, or on
 a closed review. `missing_verdict` is a close without a verdict; only the TUI
-closes, so no CLI command produces it. `not_closed` is reopening an active
+closes, so no CLI command produces it. `file_changed` is TUI-only too: a
+new comment, hand-off or close from the TUI is made against the content on
+screen, and is refused when the file has changed since (the agent reads the
+file itself, so the CLI never passes a hash). `not_closed` is reopening an active
 review, and `already_closed` is closing a closed one.
 
 `not_a_terminal` is `ptal <file>` run without a terminal on stdin and
@@ -81,7 +85,7 @@ the TUI runs.
 ## Bare `ptal <file>` and subcommand names
 
 `ptal <file>` opens the TUI. A first argument that is exactly `comments`,
-`add`, `resolve`, `reply`, `reopen`, `handoff` or `help` is the subcommand; to open a file with one of those names,
+`add`, `resolve`, `reply`, `reopen`, `handoff`, `wait` or `help` is the subcommand; to open a file with one of those names,
 write `./comments`. With no arguments, `ptal` prints help and exits `2`. The
 `--json` flag is accepted with a file and has no effect on the TUI. Unlike
 the agent commands, the TUI takes its author from `$USER` only (never
@@ -92,6 +96,9 @@ the terminal is taken over.
 
 - **Changes since the last look are TUI-only.** They answer the human's "what did the agent change?"; the agent made the edits and reads the file itself, so `comments` carries no changes.
 
+- **Only the agent waits.** `ptal wait` blocks the agent until its turn; the
+  human's side of waiting is the TUI's live refresh, so `wait` has no
+  `--side`, and no `--as`, since it only reads.
 - **Only the human closes a review.** The CLI has no close command; the
   agent reads the verdict and note from `comments`.
 - **Navigation and quitting** are TUI-only; the agent has no cursor.
