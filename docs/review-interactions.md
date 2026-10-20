@@ -580,6 +580,7 @@ Collected from the scenarios above, unanswered here on purpose:
   a hand-off a snapshot? (A5, B1, E1, E2) *Proposed: see [Turn](#turn).*
 - **Resolution:** who may resolve, and are fixed / won't fix / deferred /
   superseded / withdrawn kinds of resolution or just prose? (A3, A6, A7, C1, D4)
+  *Proposed: see [Resolution](#resolution).*
 - **Acknowledgement:** does the human's acceptance of an agent's resolve
   need recording? (A1, C2)
 - **Revision:** which revision is a thread, a comment, a resolve anchored
@@ -984,3 +985,35 @@ command takes a round, and nothing a side must do depends on one.
   started": the revision on the hand-back that began it ([Revision](#revision)).
 - **TUI (later):** the thread panel can group a thread's comments by
   round, and mark out-of-turn ones. Not tied to any v0.3.0 story.
+
+### Resolution
+
+**Definition.** A thread's *resolution* is its status: `open` or
+`resolved`, as built today. Why a thread was resolved (fixed, won't fix,
+deferred, withdrawn, superseded) is said in the comment that goes with it,
+the resolve note.
+
+**Rules.**
+
+1. **Two states.** `open` and `resolved`, nothing else. Reopening, or
+   replying to a resolved thread, makes it `open` again.
+2. **The reason is prose.** A resolve may carry a note, recorded as a
+   comment by the resolver. It is where "fixed in step 3", "won't fix,
+   because ..." and "deferred to a follow-up" go.
+3. **Either side may resolve or reopen.** Whether the agent closes its own
+   fixes (A1) or leaves them for the human to confirm (A3) is a
+   convention for the agent's skill or prompt, not a ptal rule.
+4. **Thread status and the verdict are separate.** An `approved` close
+   accepts open threads as they stand ([Turn](#turn) rule 12) but doesn't
+   resolve them; they stay `open` in the record.
+
+**Considered and dropped.**
+
+- **Resolution kinds** (`fixed`, `wont_fix`, `deferred`, `withdrawn`,
+  `superseded`). The verdict is an enum because the agent does something
+  different for each value; no one acts differently on a thread resolved
+  as "fixed" versus "won't fix". The human reads the note either way.
+- **Only the opener may resolve, or only the human.** A1 and A3 are both
+  common; which one a review follows is the agent's convention.
+- **An `approved` close resolves its open threads.** Rewrites what
+  happened: the threads were accepted, not answered.
