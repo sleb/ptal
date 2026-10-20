@@ -813,6 +813,52 @@ fn a_comment_of_two_paragraphs_reads_back_the_same_in_the_cli_and_the_panel() {
 }
 
 #[test]
+fn a_pasted_tab_indented_snippet_saves_with_its_line_breaks_and_tabs() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let _ = sb.press(&mut app, &["j", "j", "enter"]);
+    let paste = Event::Paste("make:\n\tcargo build\r\n\tcargo test\n".into());
+    let _ = step(&mut app, paste, &sb.reviews, &sb.file, "scott");
+
+    let flow = sb.press(&mut app, &["ctrl+s"]);
+
+    assert_eq!(flow, ControlFlow::Continue(()));
+    assert_eq!(
+        cli_comments(&sb)["threads"][0]["comments"][0]["body"],
+        "make:\n\tcargo build\n\tcargo test"
+    );
+    let mut reopened = sb.open();
+    let _ = sb.press(&mut reopened, &["j", "j", "enter"]);
+    let panel = screen(&reopened);
+    let column = |text: &str| {
+        panel
+            .lines()
+            .find_map(|row| row.find(text))
+            .unwrap_or_else(|| panic!("{text:?} not in {panel}"))
+    };
+    assert_eq!(column("cargo build"), column("make:") + 4, "{panel}");
+    assert_eq!(column("cargo test"), column("make:") + 4, "{panel}");
+}
+
+#[test]
+fn a_paste_with_esc_and_ctrl_s_in_it_stays_in_the_box_and_writes_nothing() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let _ = sb.press(&mut app, &["enter"]);
+
+    let paste = Event::Paste("a\u{1b}\u{13}\u{1b}b".into());
+    let flow = step(&mut app, paste, &sb.reviews, &sb.file, "scott");
+
+    assert_eq!(flow, ControlFlow::Continue(()));
+    assert!(
+        matches!(app.mode(), Mode::Input { draft, .. } if draft.text() == "ab"),
+        "{:?}",
+        app.mode()
+    );
+    assert!(sb.reviews.view(&sb.file, true).unwrap().threads.is_empty());
+}
+
+#[test]
 fn a_multi_line_reply_lands_last_with_its_newline() {
     let sb = sandbox(PLAN);
     sb.reviews
