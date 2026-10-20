@@ -32,7 +32,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 
 | Component | State |
 |---|---|
-| `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State` |
+| `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State`, the review log (`Entry`, `Event`, `Side`, `Verdict`) and its derived `ReviewState` |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
 | `review` | Built: `add_thread`, `view` (anchors mapped across revisions), `resolve`, `reply`, `reopen` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
@@ -72,7 +72,7 @@ threads are never silently dropped or silently re-pointed at the wrong text.
 **Role:** the data types that are persisted and exposed to agents.
 
 - `Review` — one per reviewed file: `schema_version`, `path`, `next_id`,
-  `revisions`, `threads`.
+  `revisions`, `threads`, `log`.
 - `Revision` — `{ id, sha256 }`: one kept version of the file, `r1`, `r2`, …
   in the order first written against. `Review::revision_for(sha)` returns the
   known id or appends the next one; there is no separate counter, because
@@ -94,6 +94,18 @@ threads are never silently dropped or silently re-pointed at the wrong text.
   `review.json` still loads.
 - `State` — `current | outdated`. Computed by `review` when viewing, never
   persisted.
+- `Entry` — one hand-off, close or reopen in `Review.log`:
+  `{ event, side, author, created_at, revision, next_id, note }`. On the wire
+  `event` is `"hand_off" | "close" | "reopen"`, a close also carries
+  `verdict` (`Verdict`: `approved | dropped`), and `note` is skipped when
+  `None`. `side` (`Side`: `human | agent`) is who wrote it; `next_id` is the
+  review's counter at that moment, so every comment id below it came first.
+  `log` defaults to empty, so a `review.json` from before turns still loads.
+- `ReviewState` — `Turn(Side) | Closed(Verdict)`, from `Review::state()`:
+  an empty log is the human's turn; a hand-off by one side gives the turn to
+  the other, a close sets the verdict, a reopen gives the turn to the human.
+  Each entry sets the state outright, so it is the latest entry's. Never
+  persisted.
 
 **Invariants**
 - Comment ids are short, human-typeable, and unique within a review (`c1`,
@@ -102,6 +114,8 @@ threads are never silently dropped or silently re-pointed at the wrong text.
 - `start_line <= end_line`, both within the file when the thread is created;
   `quote` is exactly those lines.
 - Status lives on the thread.
+- The log is append-only: entries are only ever pushed, and the review's
+  state is derived from it, never stored beside it.
 
 **Contract:** serde (de)serialization is the on-disk and on-wire format. The
 golden-JSON test in `model` pins it. Every persisted file carries
