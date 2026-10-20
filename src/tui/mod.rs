@@ -35,7 +35,7 @@ use ratatui::crossterm::terminal::{
 
 use crate::error::Result;
 use crate::model::Thread;
-use crate::review::{Clock, Reviews, ThreadView, file_lines};
+use crate::review::{Clock, Reviews, ThreadView};
 
 use app::{App, Done, Effect, Event, update};
 use render::render;
@@ -54,9 +54,12 @@ pub struct Loaded {
 /// # Errors
 /// [`crate::Error::FileUnreadable`] plus any store error.
 pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<Loaded> {
-    let lines = file_lines(file)?;
-    let threads = reviews.view(file, true)?.threads;
-    Ok(Loaded { lines, threads })
+    // One read: the lines shown are the ones the threads are mapped to.
+    let view = reviews.view(file, true)?;
+    Ok(Loaded {
+        lines: view.lines,
+        threads: view.threads,
+    })
 }
 
 impl Loaded {

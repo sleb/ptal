@@ -38,7 +38,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
 | `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Help` modes, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
-| `anchor` | Built: `map_range` (Myers line diff via `similar`) |
+| `anchor` | Built: `map_range`, `Diff`, `clamp` (Myers line diff via `similar`) |
 | `diffview` | Deferred |
 
 Deferred within built components: nested replies, edit, delete, and
@@ -115,12 +115,15 @@ golden-JSON test in `model` pins it. Every persisted file carries
 
 ```
 map_range(old: &[&str], new: &[&str], range: LineRange) -> Mapped { range, state }
+Diff::new(old, new).map(range) -> Mapped     // one diff, many ranges
+clamp(range, len) -> LineRange               // into 1..=max(len, 1), no diff
 ```
 
 `LineRange { start, end }` is 1-based and inclusive; `state` is the model's
 `State`. It takes lines, not text, so the caller splits them (`review` uses
-`str::lines`, like `file_lines`). The diff is `similar`'s Myers over whole
-lines.
+`str::lines`). The diff is `similar`'s Myers over whole lines; `map_range`
+is `Diff::new(old, new).map(range)`. Checking a range costs one pass over
+the diff ops, not one per line.
 
 - `Current` iff every anchored line is in an unchanged run of the diff **and**
   the mapped lines are contiguous: a line inserted inside the range makes it
@@ -209,27 +212,27 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
   is appended as a comment by the reopener. Reopening an open thread is
   `AlreadyOpen` and writes nothing, so the note is dropped.
 
-Free function `file_lines(file)` returns the file's lines under the rule
-below, so a front end that displays the file shows exactly what
-`add_thread` quotes.
+`View.lines` is the file's lines from the same read the threads were mapped
+against, so a front end that displays them shows exactly what `add_thread`
+quotes and where each thread is.
 
 **Invariants**
 - Lines are read with `str::lines()` (`\n` or `\r\n`, final newline
-  ignored); the file must be valid UTF-8. `file_lines` is the one helper: it
-  supplies the quote at `add_thread`, the check in `view`, and the TUI's
-  display.
+  ignored); the file must be valid UTF-8. One rule supplies the quote at
+  `add_thread`, the mapping in `view`, and `View.lines` for the TUI's display.
 - Anchors are never rewritten on disk. `view` maps each one from its own
-  revision's snapshot to the current file with `anchor::map_range`, so an
-  edit that is later reverted maps back to `current`. The snapshot text is
-  loaded once per revision per call.
+  revision's snapshot to the current file with an `anchor::Diff`, so an edit
+  that is later reverted maps back to `current`. Each revision is loaded and
+  diffed against the current file at most once per call.
 - `state` is `current` iff the mapping is `Current` **and** the lines at the
   mapped range read as `quote` (the second check keeps an adopted legacy
   anchor whose quote no longer matched from turning `current`). Otherwise it
   is `outdated`, at the best-guess range, with the original `quote`.
 - An anchor with no revision (from before revisions, not yet adopted) is
   checked in place against the current file. One whose snapshot is missing
-  (deleted by hand) is `outdated` at its stored range clamped to the file; it
-  is still listed and never an error.
+  or unreadable (deleted or damaged by hand) is `outdated` at its stored
+  range clamped to the file; it is still listed, and mapping never fails a
+  read or a write.
 - A mutation that fails (unknown id, bad range, empty author or body) changes
   nothing, snapshots included.
 - Every write reads the file once, outside the lock, and records the revision
@@ -237,7 +240,8 @@ below, so a front end that displays the file shows exactly what
   next ordinal if the content is new. `add_thread` sets `anchor.revision` and
   the comment's `revision`; `reply` sets the comment's; `resolve` sets
   `resolved_revision` and the note's; `reopen` sets only its note's (a reopen
-  itself is not recorded). Reads hash the file but never write.
+  itself is not recorded, so one without a note keeps no snapshot and
+  assigns no ordinal). Reads hash the file but never write.
 - A thread anchored before revisions existed (`anchor.revision` absent) is
   anchored to the revision of the first write after the upgrade, "the file as
   first seen"; its old comments keep no revision.
@@ -515,8 +519,8 @@ Its parts:
   prompt, which wins over the hint. Border text (error or hint) that does
   not fit between the corners is `wrap::cut`, so it ends in `…` and a wide
   character that would cross the corner is left out whole.
-- `tui` (module root): the driver. `load` reads lines (`review::file_lines`)
-  and all threads; `Loaded::into_app` highlights the file only when it is
+- `tui` (module root): the driver. `load` takes the lines and all threads
+  from one `Reviews::view`, so they come from the same read of the file; `Loaded::into_app` highlights the file only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
   `color_wanted(NO_COLOR)`, read once at startup); `step(app, event, reviews, file, author)` is the only
   place effects are performed (`Add` → `Reviews::add_thread`, `Reply` →

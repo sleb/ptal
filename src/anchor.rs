@@ -9,8 +9,11 @@
 //! - otherwise → [`State::Outdated`] at a best-guess range, always within the
 //!   new file.
 //!
+//! [`Diff`] computes the diff once to map many ranges; [`clamp`] keeps a
+//! range inside a text without diffing.
+//!
 //! No I/O, no clock, deterministic. Callers split the text into lines; the
-//! core uses [`str::lines`] everywhere (see [`crate::review::file_lines`]).
+//! core uses [`str::lines`] everywhere (see [`crate::review::View::lines`]).
 
 use similar::{Algorithm, DiffOp, capture_diff_slices};
 
@@ -40,8 +43,10 @@ pub struct Mapped {
 ///
 /// An outdated range is a best guess: each end follows the diff, and an end
 /// on an edited or deleted line goes to where that change starts in `new`.
-/// It is clamped to the new text; an empty `new` gives `1-1`. A `range`
+/// It is [`clamp`]ed to the new text; an empty `new` gives `1-1`. A `range`
 /// outside `old` is outdated, never a panic.
+///
+/// To map several ranges between the same two texts, build one [`Diff`].
 ///
 /// # Examples
 /// ```
@@ -55,51 +60,93 @@ pub struct Mapped {
 /// assert_eq!(mapped.state, State::Current);
 /// ```
 pub fn map_range(old: &[&str], new: &[&str], range: LineRange) -> Mapped {
-    let ops = capture_diff_slices(Algorithm::Myers, old, new);
-    let first = range.start.saturating_sub(1) as usize;
-    let last = range.end.saturating_sub(1) as usize;
-
-    let (new_first, start_kept) = position(&ops, first, new.len());
-    let (new_last, end_kept) = position(&ops, last, new.len());
-    let current = range.start >= 1
-        && range.start <= range.end
-        && start_kept
-        && end_kept
-        && new_last - new_first == last - first
-        && (first..=last).all(|i| position(&ops, i, new.len()).1);
-
-    let max = new.len().max(1);
-    let clamp = |i: usize| u32::try_from((i + 1).clamp(1, max)).unwrap_or(u32::MAX);
-    let start = clamp(new_first);
-    let end = clamp(new_last).max(start);
-    Mapped {
-        range: LineRange { start, end },
-        state: if current {
-            State::Current
-        } else {
-            State::Outdated
-        },
-    }
+    Diff::new(old, new).map(range)
 }
 
-/// Where 0-based line `i` of the old text goes in the new text, and whether
-/// it is unchanged there. An edited or deleted line goes to the start of its
-/// change in the new text; a line past the end goes past the end.
-fn position(ops: &[DiffOp], i: usize, new_len: usize) -> (usize, bool) {
-    for op in ops {
-        if !op.old_range().contains(&i) {
-            continue;
+/// `range` moved inside a text of `len` lines: `1 <= start <= end <=
+/// max(len, 1)`. A range already inside is unchanged.
+pub fn clamp(range: LineRange, len: usize) -> LineRange {
+    let max = u32::try_from(len.max(1)).unwrap_or(u32::MAX);
+    let start = range.start.clamp(1, max);
+    let end = range.end.clamp(1, max).max(start);
+    LineRange { start, end }
+}
+
+/// The line diff of two texts, computed once and used to map any number of
+/// ranges with [`Diff::map`], as [`map_range`] does for one.
+#[derive(Debug, Clone)]
+pub struct Diff {
+    ops: Vec<DiffOp>,
+    new_len: usize,
+}
+
+impl Diff {
+    /// Diff `old` against `new` by whole lines (Myers).
+    pub fn new(old: &[&str], new: &[&str]) -> Self {
+        Self {
+            ops: capture_diff_slices(Algorithm::Myers, old, new),
+            new_len: new.len(),
         }
-        return match *op {
-            DiffOp::Equal {
-                old_index,
-                new_index,
-                ..
-            } => (new_index + (i - old_index), true),
-            _ => (op.new_range().start, false),
-        };
     }
-    (new_len, false)
+
+    /// Map `range` of the old text; see [`map_range`].
+    pub fn map(&self, range: LineRange) -> Mapped {
+        let first = range.start.saturating_sub(1) as usize;
+        let last = range.end.saturating_sub(1) as usize;
+        let (new_first, start_kept) = self.position(first);
+        let (new_last, end_kept) = self.position(last);
+        let current = range.start >= 1
+            && range.start <= range.end
+            && start_kept
+            && end_kept
+            && new_last - new_first == last - first
+            && self.unchanged(first, last);
+
+        let guess = LineRange {
+            start: u32::try_from(new_first + 1).unwrap_or(u32::MAX),
+            end: u32::try_from(new_last + 1).unwrap_or(u32::MAX),
+        };
+        Mapped {
+            range: clamp(guess, self.new_len),
+            state: if current {
+                State::Current
+            } else {
+                State::Outdated
+            },
+        }
+    }
+
+    /// Whether every op touching 0-based old lines `first..=last` is equal.
+    fn unchanged(&self, first: usize, last: usize) -> bool {
+        self.ops
+            .iter()
+            .filter(|op| {
+                let old = op.old_range();
+                old.start <= last && old.end > first
+            })
+            .all(|op| matches!(op, DiffOp::Equal { .. }))
+    }
+
+    /// Where 0-based line `i` of the old text goes in the new text, and
+    /// whether it is unchanged there. An edited or deleted line goes to the
+    /// start of its change in the new text; a line past the end goes past the
+    /// end.
+    fn position(&self, i: usize) -> (usize, bool) {
+        for op in &self.ops {
+            if !op.old_range().contains(&i) {
+                continue;
+            }
+            return match *op {
+                DiffOp::Equal {
+                    old_index,
+                    new_index,
+                    ..
+                } => (new_index + (i - old_index), true),
+                _ => (op.new_range().start, false),
+            };
+        }
+        (self.new_len, false)
+    }
 }
 
 #[cfg(test)]
@@ -184,6 +231,26 @@ mod tests {
         assert_eq!(map(&OLD, &OLD, 4, 9), (range(4, 4), State::Outdated));
         assert_eq!(map(&OLD, &OLD, 0, 1), (range(1, 1), State::Outdated));
         assert_eq!(map(&OLD, &OLD, 3, 2).1, State::Outdated);
+    }
+
+    #[test]
+    fn one_diff_maps_many_ranges_like_map_range() {
+        let new = ["zero", "one", "TWO", "three", "four"];
+        let diff = Diff::new(&OLD, &new);
+
+        for r in ranges(OLD.len()) {
+            assert_eq!(diff.map(r), map_range(&OLD, &new, r), "{r:?}");
+        }
+    }
+
+    #[test]
+    fn clamp_keeps_a_range_inside_a_text_of_len_lines() {
+        assert_eq!(clamp(range(2, 3), 4), range(2, 3));
+        assert_eq!(clamp(range(3, 9), 4), range(3, 4));
+        assert_eq!(clamp(range(7, 9), 4), range(4, 4));
+        assert_eq!(clamp(range(0, 0), 4), range(1, 1));
+        assert_eq!(clamp(range(3, 2), 4), range(3, 3));
+        assert_eq!(clamp(range(2, 3), 0), range(1, 1));
     }
 
     // --- properties, exhaustive over a small corpus ---

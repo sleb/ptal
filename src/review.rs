@@ -10,9 +10,9 @@ use std::path::Path;
 use jiff::Timestamp;
 use serde::Serialize;
 
-use crate::anchor::{LineRange, map_range};
+use crate::anchor::{Diff, LineRange, Mapped, clamp};
 use crate::error::{Error, Result};
-use crate::model::{Anchor, Comment, Review, Revision, State, Status, Thread};
+use crate::model::{Anchor, Comment, Review, State, Status, Thread};
 use crate::store::{Snapshots, Store, content_hash};
 
 /// Source of timestamps, injected so tests are deterministic.
@@ -57,6 +57,11 @@ pub struct View {
     /// The current content's revision id, or `None` if no write has been
     /// made against this content yet.
     pub revision: Option<String>,
+    /// The file's lines as read for this view, split by [`str::lines`]
+    /// (`\n` or `\r\n`, a final newline ignored): exactly the lines
+    /// `add_thread` quotes from and the threads are mapped to, so a front end
+    /// that displays them shows what gets anchored.
+    pub lines: Vec<String>,
     pub threads: Vec<ThreadView>,
 }
 
@@ -149,7 +154,7 @@ impl<C: Clock> Reviews<C> {
     /// now, with its [`State`].
     ///
     /// Each anchor is mapped from its own revision's snapshot (see
-    /// [`map_range`]): it is `current` only if the anchored lines are
+    /// [`map_range`](crate::anchor::map_range)): it is `current` only if the anchored lines are
     /// unchanged and still read as its `quote`. Otherwise it is `outdated`
     /// at a best-guess range within the file. A thread from before revisions
     /// existed is checked in place, and one whose snapshot is missing is
@@ -176,23 +181,23 @@ impl<C: Clock> Reviews<C> {
     /// ```
     pub fn view(&self, file: &Path, include_resolved: bool) -> Result<View> {
         let content = Content::read(file)?;
-        let Review {
-            revisions, threads, ..
-        } = self.store.load(file)?;
-        let mut mapper = Mapper::new(&self.store, file, &revisions, &content);
-        let threads = threads
-            .into_iter()
+        let review = self.store.load(file)?;
+        let mut mapper = Mapper::new(&self.store, file, &review, &content);
+        let threads = review
+            .threads
+            .iter()
             .filter(|t| include_resolved || t.status == Status::Open)
+            .cloned()
             .map(|mut thread| {
-                let state = mapper.map(&mut thread.anchor)?;
-                Ok(ThreadView { thread, state })
+                let state = mapper.map(&mut thread.anchor);
+                ThreadView { thread, state }
             })
-            .collect::<Result<_>>()?;
-        let revision = revisions
-            .into_iter()
-            .find(|r| r.sha256 == content.sha256)
-            .map(|r| r.id);
-        Ok(View { revision, threads })
+            .collect();
+        Ok(View {
+            revision: review.revision_id(&content.sha256).map(String::from),
+            lines: content.text.lines().map(String::from).collect(),
+            threads,
+        })
     }
 
     /// Resolve thread `id`, optionally appending `note` as a comment by
@@ -302,8 +307,10 @@ impl<C: Clock> Reviews<C> {
             if review.threads[index].status == Status::Open {
                 return Err(Error::AlreadyOpen(id.to_string()));
             }
-            let revision = record_revision(review, snapshots, &content);
-            let note_comment = note.map(|body| new_comment(review, author, body, &now, &revision));
+            let note_comment = note.map(|body| {
+                let revision = record_revision(review, snapshots, &content);
+                new_comment(review, author, body, &now, &revision)
+            });
             let thread = &mut review.threads[index];
             thread.status = Status::Open;
             thread.comments.extend(note_comment);
@@ -370,7 +377,7 @@ impl<C: Clock> Reviews<C> {
         content: &Content,
     ) -> Result<Thread> {
         let mut thread = review.threads[index].clone();
-        Mapper::new(&self.store, file, &review.revisions, content).map(&mut thread.anchor)?;
+        Mapper::new(&self.store, file, review, content).map(&mut thread.anchor);
         Ok(thread)
     }
 }
@@ -418,89 +425,80 @@ impl Content {
     }
 }
 
-/// Maps anchors from their own revision to one current content, loading
-/// each snapshot at most once.
+/// Maps anchors from their own revision to one current content, diffing
+/// each revision against it at most once.
 struct Mapper<'a> {
     store: &'a Store,
     file: &'a Path,
-    revisions: &'a [Revision],
+    review: &'a Review,
     current: &'a Content,
-    /// Snapshot text by revision id; `None` if it is missing.
-    snapshots: HashMap<String, Option<String>>,
+    lines: Vec<&'a str>,
+    /// Diff from each revision (by hash) to the current content; `None` if
+    /// its snapshot is missing or unreadable.
+    diffs: HashMap<String, Option<Diff>>,
 }
 
 impl<'a> Mapper<'a> {
-    fn new(
-        store: &'a Store,
-        file: &'a Path,
-        revisions: &'a [Revision],
-        current: &'a Content,
-    ) -> Self {
+    fn new(store: &'a Store, file: &'a Path, review: &'a Review, current: &'a Content) -> Self {
         Self {
             store,
             file,
-            revisions,
+            review,
             current,
-            snapshots: HashMap::new(),
+            lines: current.lines(),
+            diffs: HashMap::new(),
         }
     }
 
     /// Rewrite `anchor`'s lines to the current file and say whether it is
     /// still current. Its `revision` and `quote` are left as stored.
     ///
-    /// # Errors
-    /// [`Error::Io`] if a snapshot exists but cannot be read.
-    fn map(&mut self, anchor: &mut Anchor) -> Result<State> {
-        let current = self.current.lines();
+    /// An anchor from before revisions is checked in place. One whose
+    /// snapshot is missing or unreadable is outdated at its stored range,
+    /// clamped: mapping never fails.
+    fn map(&mut self, anchor: &mut Anchor) -> State {
         let stored = LineRange {
             start: anchor.start_line,
             end: anchor.end_line,
         };
-        let mapped = match self.old_text(anchor.revision.as_deref())? {
-            Some(old) => map_range(&old.lines().collect::<Vec<_>>(), &current, stored),
-            None => {
-                // Snapshot missing: in place, never current.
-                let mut clamped = map_range(&current, &current, stored);
-                clamped.state = State::Outdated;
-                clamped
-            }
+        let sha = match anchor.revision.as_deref() {
+            None => Some(self.current.sha256.as_str()),
+            Some(id) => self.review.revision_sha(id),
+        };
+        let mapped = match sha.and_then(|sha| self.diff(sha)) {
+            Some(diff) => diff.map(stored),
+            None => Mapped {
+                range: clamp(stored, self.lines.len()),
+                state: State::Outdated,
+            },
         };
         anchor.start_line = mapped.range.start;
         anchor.end_line = mapped.range.end;
-        let reads_as_quote = quote_of(&current, mapped.range.start, mapped.range.end)
+        let reads_as_quote = quote_of(&self.lines, mapped.range.start, mapped.range.end)
             .is_some_and(|q| q == anchor.quote);
-        Ok(if mapped.state == State::Current && reads_as_quote {
+        if mapped.state == State::Current && reads_as_quote {
             State::Current
         } else {
             State::Outdated
-        })
+        }
     }
 
-    /// The text `revision` refers to, or `None` if its snapshot is missing.
-    /// An anchor from before revisions (`None`) refers to the current text.
-    fn old_text(&mut self, revision: Option<&str>) -> Result<Option<&str>> {
-        let Some(id) = revision else {
-            return Ok(Some(&self.current.text));
-        };
-        let sha = self
-            .revisions
-            .iter()
-            .find(|r| r.id == id)
-            .map(|r| &r.sha256);
-        if sha == Some(&self.current.sha256) {
-            return Ok(Some(&self.current.text));
-        }
-        if !self.snapshots.contains_key(id) {
-            let text = match sha {
-                Some(sha) => self
-                    .store
-                    .load_revision(self.file, sha)?
-                    .and_then(|bytes| String::from_utf8(bytes).ok()),
-                None => None,
+    /// The diff from the revision hashing to `sha` to the current content.
+    fn diff(&mut self, sha: &str) -> Option<&Diff> {
+        if !self.diffs.contains_key(sha) {
+            let diff = if sha == self.current.sha256 {
+                Some(Diff::new(&self.lines, &self.lines))
+            } else {
+                self.store
+                    .load_revision(self.file, sha)
+                    .ok()
+                    .flatten()
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                    .map(|old| Diff::new(&old.lines().collect::<Vec<_>>(), &self.lines))
             };
-            self.snapshots.insert(id.to_string(), text);
+            self.diffs.insert(sha.to_string(), diff);
         }
-        Ok(self.snapshots[id].as_deref())
+        self.diffs[sha].as_ref()
     }
 }
 
@@ -536,33 +534,6 @@ fn require_author(author: &str) -> Result<()> {
     } else {
         Ok(())
     }
-}
-
-/// The lines of `file`, split the way the core splits them everywhere.
-///
-/// Splitting is [`str::lines`]: `\n` or `\r\n`, ignoring a final trailing
-/// newline. `add_thread` quotes from, and `view` checks against, this same
-/// list, so a front end that displays it shows exactly what gets anchored.
-///
-/// # Errors
-/// [`Error::FileUnreadable`] if the file is missing, unreadable, or not
-/// UTF-8.
-///
-/// # Examples
-/// ```
-/// # use ptal::review::file_lines;
-/// # let dir = tempfile::tempdir()?;
-/// # let file = dir.path().join("plan.md");
-/// std::fs::write(&file, "# Plan\r\nstep one\n")?;
-/// assert_eq!(file_lines(&file)?, ["# Plan", "step one"]);
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-pub fn file_lines(file: &Path) -> Result<Vec<String>> {
-    Ok(Content::read(file)?
-        .text
-        .lines()
-        .map(String::from)
-        .collect())
 }
 
 /// Lines `start..=end` (1-based) of `lines` joined by `\n`, or `None` if the
@@ -640,35 +611,37 @@ mod tests {
         }
     }
 
-    // --- file_lines ---
+    // --- lines ---
 
     #[test]
-    fn file_lines_splits_like_str_lines() {
+    fn view_lines_split_like_str_lines() {
         let fx = fixture();
         fs::write(&fx.file, "one\r\ntwo\nthree").unwrap();
 
-        assert_eq!(file_lines(&fx.file).unwrap(), ["one", "two", "three"]);
+        let lines = fx.reviews.view(&fx.file, true).unwrap().lines;
+
+        assert_eq!(lines, ["one", "two", "three"]);
     }
 
     #[test]
-    fn file_lines_of_a_missing_or_non_utf8_file_is_unreadable() {
+    fn view_of_a_missing_or_non_utf8_file_is_unreadable() {
         let fx = fixture();
         let binary = fx.file.with_file_name("bin.md");
         fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
 
         for path in [fx.file.with_file_name("nope.md"), binary] {
             assert!(matches!(
-                file_lines(&path),
+                fx.reviews.view(&path, true),
                 Err(Error::FileUnreadable { .. })
             ));
         }
     }
 
     #[test]
-    fn add_thread_quote_is_the_file_lines_entry() {
+    fn add_thread_quote_is_the_view_lines_entry() {
         let fx = fixture();
         fs::write(&fx.file, "a\r\nb\r\n\r\nd").unwrap();
-        let lines = file_lines(&fx.file).unwrap();
+        let lines = fx.reviews.view(&fx.file, true).unwrap().lines;
 
         for n in 1..=lines.len() as u32 {
             let thread = fx.reviews.add_thread(&fx.file, n, n, "x", "s").unwrap();
@@ -1445,5 +1418,33 @@ mod tests {
         }
         let stored = &fx.store.load(&fx.file).unwrap().threads[0];
         assert_eq!(lines(stored), (2, 3), "anchors are never rewritten");
+    }
+
+    #[test]
+    fn an_unreadable_snapshot_is_outdated_not_an_error() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 3, 4, "x", "s").unwrap();
+        let dir = fx.store.review_dir(&fx.file).unwrap().join("revisions");
+        fs::remove_dir_all(&dir).unwrap();
+        let sha = content_hash(b"one\ntwo\nthree\nfour\n");
+        fs::create_dir_all(dir.join(sha)).unwrap();
+        fs::write(&fx.file, "one\ntwo\nthree\n").unwrap();
+
+        assert_eq!(lines_of(&view_of(&fx, "c1")), (3, 3, State::Outdated));
+        let replied = fx.reviews.reply(&fx.file, "c1", "hi", "s").unwrap();
+        assert_eq!(replied.anchor.start_line, 3);
+    }
+
+    #[test]
+    fn a_reopen_without_a_note_records_no_revision() {
+        let fx = fixture();
+        resolved_thread(&fx);
+        fs::write(&fx.file, "changed\n").unwrap();
+
+        fx.reviews.reopen(&fx.file, "c1", "scott", None).unwrap();
+
+        assert_eq!(fx.store.load(&fx.file).unwrap().revisions.len(), 1);
+        assert_eq!(snapshot_of(&fx, "changed\n"), None);
+        assert_eq!(fx.reviews.view(&fx.file, true).unwrap().revision, None);
     }
 }
