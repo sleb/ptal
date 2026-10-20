@@ -174,6 +174,8 @@ address each thread, then `ptal resolve` it."*
 
 The full command and key map, agent and human side by side, is in
 [docs/interfaces.md](docs/interfaces.md).
+How a review runs between you and the agent (threads, revisions, turns,
+closing with a verdict) is in [docs/protocol.md](docs/protocol.md).
 
 ## Troubleshooting
 
