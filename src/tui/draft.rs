@@ -1,7 +1,9 @@
 //! The comment box's text being edited: a pure value, no widgets.
 //!
-//! The text holds printable characters and `\n` only, so none of it is
-//! dropped by [`wrap`] and its rows map 1:1 to byte ranges of it. (A
+//! The text holds printable characters, `\t` and `\n` only, so none of it
+//! is dropped by [`wrap`] and its rows map 1:1 to byte ranges of it. A tab
+//! comes only from a paste ([`Draft::paste`]); it is one cluster, four
+//! cells wide, and is drawn as four spaces. (A
 //! zero-width cluster, such as a zero-width space, has a range but takes no
 //! cell, so the cursor seems to stay put as it steps over one.) The cursor
 //! is a byte offset that always sits on a grapheme cluster boundary, so it
@@ -62,6 +64,36 @@ impl Draft {
         self.goal = None;
         self.text.insert(self.cursor, c);
         self.cursor += c.len_utf8();
+        self.snap();
+    }
+
+    /// Insert pasted `text` at the cursor in one step and move past it.
+    /// Every line break (`\r\n`, `\r` or `\n`) becomes `\n` and tabs are
+    /// kept; other control characters are dropped. If the pasted text joins
+    /// a cluster either side of it, the cursor is left on a boundary, as for
+    /// [`Draft::insert`]. A paste with nothing left to insert changes
+    /// nothing.
+    pub fn paste(&mut self, text: &str) {
+        let mut kept = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\r' => {
+                    chars.next_if_eq(&'\n');
+                    kept.push('\n');
+                }
+                '\n' | '\t' => kept.push(c),
+                c if c.is_control() => {}
+                c => kept.push(c),
+            }
+        }
+        let text = kept;
+        if text.is_empty() {
+            return;
+        }
+        self.goal = None;
+        self.text.insert_str(self.cursor, &text);
+        self.cursor += text.len();
         self.snap();
     }
 
@@ -195,12 +227,15 @@ impl Draft {
             .get(target + 1)
             .is_some_and(|next| next.start == row.end);
         let mut landing = row.start;
+        // Cells from the row's start to the end of `cluster`.
+        let mut used = 0;
         for cluster in self.clusters() {
             if cluster.start < row.start {
                 continue;
             }
+            used += wrap::width(&self.text[cluster.clone()]);
             let past = cluster.end > row.end || (soft && cluster.end == row.end);
-            if past || wrap::width(&self.text[row.start..cluster.end]) > goal {
+            if past || used > goal {
                 break;
             }
             landing = cluster.end;
@@ -314,12 +349,14 @@ mod tests {
         assert_eq!(draft.cursor(), draft.text().len());
     }
 
-    /// `text` typed, with every `\n` from [`Draft::newline`].
+    /// `text` typed, with every `\n` from [`Draft::newline`] and every tab
+    /// pasted (it cannot be typed).
     fn lines(text: &str) -> Draft {
         let mut draft = Draft::default();
         for c in text.chars() {
             match c {
                 '\n' => draft.newline(),
+                '\t' => draft.paste("\t"),
                 c => draft.insert(c),
             }
         }
@@ -460,7 +497,7 @@ mod tests {
 
     #[test]
     fn every_boundary_is_reachable_by_down_then_right_and_editable() {
-        let text = "First para, long enough to wrap.\n\nSecond 漢字 e\u{301} line.\nThird.";
+        let text = "First para, long enough to wrap.\n\nSecond 漢字 e\u{301} line.\n\tTabbed\tline.\nThird.";
         let width = 10;
         let start = at_start(lines(text), width);
         // Every cluster boundary, with the row it shows on.
@@ -514,6 +551,106 @@ mod tests {
                 draft.cursor()
             );
         }
+    }
+
+    #[test]
+    fn a_tab_is_four_cells_and_moves_and_deletes_as_one_cluster() {
+        let mut draft = lines("\tab");
+        draft.home();
+        draft.right();
+        assert_eq!((draft.cursor(), draft.cursor_at(20)), (1, (0, 4)));
+        draft.left();
+        assert_eq!(draft.cursor(), 0);
+        draft.delete();
+        assert_eq!(draft.text(), "ab");
+
+        let mut draft = lines("a\t");
+        draft.backspace();
+        assert_eq!((draft.text(), draft.cursor()), ("a", 1));
+    }
+
+    #[test]
+    fn up_and_down_keep_the_column_across_a_tab_indented_line() {
+        let mut draft = lines("abcdef\n\tx\nabcdef");
+        draft.left();
+
+        draft.up(20);
+        assert_eq!(draft.cursor_at(20), (1, 5), "end of `\tx`");
+        draft.up(20);
+        assert_eq!(draft.cursor_at(20), (0, 5));
+        draft.down(20);
+        draft.home();
+        draft.right();
+        draft.down(20);
+        assert_eq!(draft.cursor_at(20), (2, 4), "under the tab's end");
+    }
+
+    #[test]
+    fn a_tab_indented_line_wraps_with_the_tab_counted_four() {
+        assert_eq!(shown(&lines("\tab cd"), 6), ["\tab ", "cd"]);
+    }
+
+    #[test]
+    fn a_paste_makes_every_line_break_a_newline_and_keeps_tabs() {
+        let mut draft = Draft::default();
+        draft.paste("a\r\nb\rc\nd\te");
+
+        assert_eq!(draft.text(), "a\nb\nc\nd\te");
+        assert_eq!(draft.cursor(), draft.text().len());
+    }
+
+    #[test]
+    fn a_paste_drops_other_control_characters() {
+        let mut draft = Draft::default();
+        draft.paste("a\u{7}b\u{1b}c\u{7f}d\u{85}e\u{2028}");
+
+        assert_eq!(draft.text(), "abcde\u{2028}");
+    }
+
+    #[test]
+    fn a_paste_goes_in_at_the_cursor_and_the_cursor_ends_after_it() {
+        let mut draft = typed("ad");
+        draft.left();
+        draft.paste("b\nc");
+
+        assert_eq!(draft.text(), "ab\ncd");
+        assert_eq!(draft.cursor(), 4);
+    }
+
+    #[test]
+    fn a_paste_clears_the_sticky_column() {
+        let mut draft = lines("aaaaaaaa\nb\naaaaaaaa");
+        draft.up(20);
+        draft.paste("x");
+        draft.up(20);
+
+        assert_eq!(draft.cursor_at(20), (0, 2), "column of `bx`, not 8");
+    }
+
+    #[test]
+    fn an_empty_paste_changes_nothing() {
+        let mut draft = typed("ab");
+        draft.left();
+        let before = draft.clone();
+        draft.paste("");
+        draft.paste("\u{7}\u{1b}");
+
+        assert_eq!(draft.text(), before.text());
+        assert_eq!(draft.cursor(), before.cursor());
+    }
+
+    #[test]
+    fn a_paste_joining_the_clusters_around_it_leaves_the_cursor_on_a_boundary() {
+        let mut lead = typed("eb");
+        lead.left();
+        lead.paste("\u{301}x");
+        assert_eq!((lead.text(), lead.cursor()), ("e\u{301}xb", 4));
+
+        let (us, a) = ("\u{1f1fa}", "\u{1f1f8}");
+        let mut trail = typed(a);
+        trail.home();
+        trail.paste(us);
+        assert_eq!(trail.cursor(), trail.text().len(), "after the joined flag");
     }
 
     #[test]

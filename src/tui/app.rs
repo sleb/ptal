@@ -142,6 +142,10 @@ pub enum Event {
     },
     /// The driver could not perform the write. A pending draft is kept.
     SaveFailed(String),
+    /// Text was pasted (the terminal's bracketed paste). In
+    /// [`Mode::Input`] it goes into the draft in one step
+    /// ([`Draft::paste`]); everywhere else it is ignored.
+    Paste(String),
 }
 
 /// Which write an [`Event::Saved`] reports; it picks the footer message.
@@ -904,6 +908,19 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             }
         }
         Event::Key(_) => None,
+        Event::Paste(text) => {
+            if let Mode::Input {
+                draft,
+                discard_asked,
+                ..
+            } = &mut app.mode
+            {
+                app.status = None;
+                *discard_asked = false;
+                draft.paste(&text);
+            }
+            None
+        }
     }
 }
 
@@ -2101,6 +2118,90 @@ mod tests {
                 "{key:?}: asks again rather than discarding"
             );
             assert!(draft(&a).0.starts_with('x'), "{key:?}");
+        }
+    }
+
+    fn paste(text: &str) -> Event {
+        Event::Paste(text.into())
+    }
+
+    #[test]
+    fn a_paste_inserts_at_the_cursor_and_the_box_grows_to_fit() {
+        let mut a = app(5, 40);
+        send(&mut a, [press(KeyCode::Enter)]);
+        typed(&mut a, "az");
+        send(&mut a, [press(KeyCode::Left)]);
+
+        assert_eq!(update(&mut a, paste("b\n\tc\r\ny\n")), None);
+
+        assert_eq!(draft(&a), ("ab\n\tc\ny\nz", 8));
+        assert_eq!(a.chrome_rows(), 6, "four text rows");
+    }
+
+    #[test]
+    fn a_paste_of_control_keys_neither_saves_cancels_nor_leaves_the_box() {
+        let mut a = input_app();
+        typed(&mut a, "x");
+
+        assert_eq!(update(&mut a, paste("y\u{13}\u{1b}\u{3}\u{1b}\r")), None);
+
+        assert_eq!(draft(&a), ("xy\n", 3));
+        assert!(!discard_asked(&a));
+    }
+
+    #[test]
+    fn a_paste_keeps_the_draft_and_stops_asking_to_discard() {
+        let mut a = input_app();
+        typed(&mut a, "x");
+        send(&mut a, [press(KeyCode::Esc), paste("y")]);
+        assert!(!discard_asked(&a));
+
+        send(&mut a, [press(KeyCode::Esc)]);
+
+        assert!(discard_asked(&a), "asks again rather than discarding");
+        assert_eq!(draft(&a).0, "xy");
+    }
+
+    #[test]
+    fn a_paste_clears_a_failed_save_message() {
+        let mut a = input_app();
+        typed(&mut a, "why?");
+        update(&mut a, ctrl('s'));
+        update(&mut a, Event::SaveFailed("review is locked".into()));
+
+        update(&mut a, paste("!"));
+
+        assert_eq!(a.status, None);
+        assert_eq!(draft(&a).0, "why?!");
+    }
+
+    #[test]
+    fn outside_the_comment_box_a_paste_does_nothing() {
+        let threads = [chatty("c1", (2, 2), 1)];
+        let normal = panel_app(&threads, 20);
+        let mut visual = normal.clone();
+        send(&mut visual, [ch('v'), ch('j')]);
+        let mut search = normal.clone();
+        send(&mut search, [ch('/'), ch('l')]);
+        let mut panel = normal.clone();
+        send(&mut panel, [ch('j'), press(KeyCode::Enter)]);
+        let mut help = normal.clone();
+        send(&mut help, [ch('?')]);
+
+        for mut a in [normal, visual, search, panel, help] {
+            a.status = Some("flash".into());
+            let before = a.clone();
+
+            assert_eq!(
+                update(&mut a, paste("q\nj\u{3}")),
+                None,
+                "{:?}",
+                before.mode
+            );
+
+            assert_eq!(a.mode, before.mode);
+            assert_eq!(at(&a), at(&before), "{:?}", before.mode);
+            assert_eq!(a.status, before.status, "{:?}", before.mode);
         }
     }
 

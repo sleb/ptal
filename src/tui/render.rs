@@ -314,7 +314,8 @@ fn one_line(text: &str) -> String {
 }
 
 /// The comment box: the draft's rows from its scroll, wrapped at
-/// [`App::draft_width`] exactly as `update` counts them, and the cursor as a
+/// [`App::draft_width`] exactly as `update` counts them (a tab drawn as four
+/// spaces, the cells the cursor counts it as), and the cursor as a
 /// reversed cell, with `border` (text and style, from [`box_border`]) on the
 /// bottom border.
 fn draw_input(
@@ -353,7 +354,7 @@ fn draw_input(
     let width = app.draft_width();
     let rows = draft.rows(width);
     for (y, row) in (inner.top()..inner.bottom()).zip(rows.into_iter().skip(draft.scroll())) {
-        let text = &draft.text()[row];
+        let text = wrap::expand_tabs(&draft.text()[row]);
         buf.set_stringn(inner.x, y, text, usize::from(inner.width), Style::new());
     }
     let (row, col) = draft.cursor_at(width);
@@ -945,6 +946,45 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:sea�
 
         assert_eq!(box_rows(&terminal, 3)[1], "│abcdefghijklmnopq │");
         assert!(reversed_at(&terminal, 18, 8));
+    }
+
+    #[test]
+    fn a_pasted_tab_draws_as_four_spaces_with_the_cursor_after_the_text() {
+        let mut app = box_with("", (20, 10));
+        update(&mut app, Event::Paste("\tab".into()));
+
+        let terminal = draw(&app, 20, 10);
+
+        assert_eq!(box_rows(&terminal, 3)[1], "│    ab            │");
+        assert!(reversed_at(&terminal, 7, 8), "the cell after `b`");
+        assert!(!reversed_at(&terminal, 6, 8));
+    }
+
+    #[test]
+    fn a_combining_mark_after_a_tab_draws_on_it_with_the_cursor_after_the_text() {
+        let mut app = box_with("", (20, 10));
+        update(&mut app, Event::Paste("\t\u{301}x".into()));
+
+        let terminal = draw(&app, 20, 10);
+
+        assert_eq!(
+            box_rows(&terminal, 3)[1],
+            "│   \u{20}\u{301}x             │"
+        );
+        assert!(reversed_at(&terminal, 6, 8), "the cell after `x`");
+    }
+
+    #[test]
+    fn a_tab_indented_line_that_wraps_continues_at_the_left_edge() {
+        let mut app = box_with("", (20, 10));
+        update(&mut app, Event::Paste("\taaaa bbbbbbbbbbb".into()));
+
+        let terminal = draw(&app, 20, 10);
+
+        assert_eq!(
+            box_rows(&terminal, 4)[1..3],
+            ["│    aaaa          │", "│bbbbbbbbbbb       │"]
+        );
     }
 
     #[test]

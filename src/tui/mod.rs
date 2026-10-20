@@ -20,14 +20,16 @@ pub mod search;
 pub mod table;
 pub mod wrap;
 
-use std::io;
+use std::io::{self, Write};
 use std::ops::ControlFlow;
 use std::panic;
 use std::path::Path;
 
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, Event as TermEvent};
+use ratatui::crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event as TermEvent,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -82,17 +84,34 @@ pub fn terminal_size() -> io::Result<(u16, u16)> {
     ratatui::crossterm::terminal::size()
 }
 
-/// Put the terminal into TUI mode: raw input on the alternate screen.
+/// Put the terminal into TUI mode: raw input on the alternate screen, with
+/// bracketed paste so a paste arrives as one [`TermEvent::Paste`].
 fn enter_terminal() -> io::Result<()> {
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)
+    enter_screen(&mut io::stdout())
+}
+
+/// The escape sequences of [`enter_terminal`]: switch to the alternate
+/// screen and turn bracketed paste on. Bracketed paste is best-effort: a
+/// terminal without it still runs, and a paste there arrives as keys.
+fn enter_screen(out: &mut impl Write) -> io::Result<()> {
+    execute!(out, EnterAlternateScreen)?;
+    let _ = execute!(out, EnableBracketedPaste);
+    Ok(())
 }
 
 /// Undo [`enter_terminal`]. Idempotent and infallible: it runs from `Drop`
 /// and from the panic hook, where there is nobody to report to.
 fn restore_terminal() {
-    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    leave_screen(&mut io::stdout());
     let _ = disable_raw_mode();
+}
+
+/// Undo [`enter_screen`], in reverse: bracketed paste off, then back to the
+/// normal screen. Each step is tried even if the one before failed.
+fn leave_screen(out: &mut impl Write) {
+    let _ = execute!(out, DisableBracketedPaste);
+    let _ = execute!(out, LeaveAlternateScreen);
 }
 
 /// Holds the terminal in TUI mode and puts it back on drop, whether the
@@ -158,6 +177,7 @@ pub fn run<C: Clock>(
         let event = match event::read()? {
             TermEvent::Key(key) => Event::Key(key),
             TermEvent::Resize(width, height) => Event::Resize(width, height),
+            TermEvent::Paste(text) => Event::Paste(text),
             _ => continue,
         };
         if step(&mut app, event, reviews, file, author).is_break() {
@@ -253,6 +273,59 @@ mod tests {
         assert!(heading_is_bold("plan.md", true));
         assert!(!heading_is_bold("plan.md", false));
         assert!(!heading_is_bold("plan.txt", true));
+    }
+
+    /// Where `needle` first occurs in `bytes`.
+    fn find(bytes: &[u8], needle: &[u8]) -> Option<usize> {
+        bytes.windows(needle.len()).position(|w| w == needle)
+    }
+
+    #[test]
+    fn entering_the_screen_switches_to_the_alternate_screen_and_bracketed_paste() {
+        let mut out = Vec::new();
+
+        enter_screen(&mut out).unwrap();
+
+        assert!(find(&out, b"\x1b[?1049h").is_some(), "{out:?}");
+        assert!(find(&out, b"\x1b[?2004h").is_some(), "{out:?}");
+    }
+
+    /// A terminal that takes everything but the bracketed-paste sequences.
+    #[derive(Default)]
+    struct NoPaste(Vec<u8>);
+
+    impl Write for NoPaste {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if find(buf, b"?2004").is_some() {
+                return Err(io::Error::other("unsupported"));
+            }
+            self.0.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_terminal_without_bracketed_paste_still_gets_the_alternate_screen() {
+        let mut out = NoPaste::default();
+
+        enter_screen(&mut out).unwrap();
+
+        assert!(find(&out.0, b"\x1b[?1049h").is_some(), "{:?}", out.0);
+    }
+
+    #[test]
+    fn leaving_the_screen_turns_bracketed_paste_off_before_the_alternate_screen() {
+        let mut out = Vec::new();
+
+        leave_screen(&mut out);
+
+        let paste = find(&out, b"\x1b[?2004l").expect("bracketed paste off");
+        let screen = find(&out, b"\x1b[?1049l").expect("alternate screen left");
+        assert!(paste < screen, "{out:?}");
     }
 
     #[test]
