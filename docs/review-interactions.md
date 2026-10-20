@@ -586,6 +586,7 @@ Collected from the scenarios above, unanswered here on purpose:
   to? Who authored a revision? Is a rewrite still the same review? (B2, B3,
   C1, C4, D3) *Proposed: see [Revision](#revision).*
 - **Round:** first-class (numbered) or implied by hand-offs? (D2)
+  *Proposed: see [Round](#round).*
 - **Comment intent:** question, change request, nit; explicit or prose? (A4, C2)
 - **Verdict:** does approval with open threads block, and does a later edit
   undo it? Which outcomes are there? (C2, C6) *Answered in [Turn](#turn):
@@ -906,3 +907,80 @@ against them.
   rule 6).
 - **Not decided here:** whether rounds are numbered from hand-offs or
   revisions (Round).
+
+### Round
+
+**Definition.** A *round* is one human turn followed by the agent turn that
+answers it: the human reviews, the agent revises. Rounds are derived from
+the turn log, never stored. They are vocabulary for people reading a
+review ("round 3", "comments from round 2"), not part of the protocol: no
+command takes a round, and nothing a side must do depends on one.
+
+**Rules.**
+
+1. **A round starts whenever the human's turn starts.** That is the start
+   of the review ([Turn](#turn) rule 3), an agent's hand-off, or a reopen
+   (rule 14). It ends when the next one starts, or at a close.
+2. **Numbered by counting.** Round *n* is the *n*th time the human's turn
+   started, counted along the log. The log is append-only, so a number
+   never changes once given. No counter is stored.
+3. **A round has up to two turns.** The human's turn always; the agent's
+   only if the human handed off. A close ends the round inside the human's
+   turn (D2's round 3), or, when the human closes during the agent's turn,
+   cuts that turn short.
+4. **A round reviews one revision.** The revision on the entry that
+   started it (the agent's hand-back, or the reopen) is what the human
+   reviews in that round; the one on the agent's hand-back that ends it is
+   what the round produced. Round 1 reviews the revision the human first
+   writes against ([Revision](#revision) rule 2). A round with no file
+   change (A5) reviews and produces the same revision.
+5. **Every write belongs to one round and one turn.** The hand-off marks
+   ([Turn](#turn) rule 6) bound each turn in the log, so a comment's id
+   alone places it: after the mark that started the round, before or
+   after the human's hand-off. Out-of-turn writes (E1, E2) land in the
+   round and turn they were written during, and can be shown as such.
+6. **Threads span rounds.** A thread belongs to the round it was created
+   in; its later comments belong to theirs. A thread's history can be read
+   round by round (D1).
+
+**The scenarios under this definition.**
+
+| Scenario | How rounds play out |
+|---|---|
+| A1, A3–A6 | One round: the human's comment and hand-off, the agent's answer and hand-back. A5's question-only turn is still a full round (rule 4). |
+| A2, A5, B4, D1, D4 | Two rounds. In D1, `c1` was created in round 1 and gets comments in round 2; the panel can group them (rule 6). |
+| C3 | The agent's seeded threads are written in round 1, during the human's turn (rule 5). |
+| C6 | The close ends the round; the agent's reopen starts the next one (rule 1). |
+| D2 | Three rounds; round 3 is only a human turn, ended by the `approved` close (rule 3). |
+| D3 | `c4` is created in round 2, anchored to the revision round 2 reviews (rule 4). |
+| E1 | The human's late `c3` belongs to round *n*, written during the agent's turn (rule 5); it shows as late rather than as part of the human's hand-off. |
+
+**Considered and dropped.**
+
+- **A stored round counter, or an explicit "new round" command.** Says
+  nothing the turn log doesn't, and two sources of truth can disagree.
+- **Round = revision** (each plan version is a round, as critty numbers
+  plan versions). A5's rounds change nothing, C4's human edit makes a
+  revision inside a turn, and A → B → A revisits one. Revisions are what
+  a round reviews and produces (rule 4), not what it is.
+- **Round = one turn.** Then "round" is a second name for "turn"; the
+  useful unit for people is review-plus-revision.
+- **Agent turn first** (the agent revises, then the human reviews). The
+  review starts with the human, and C3's seeded questions fit in the
+  human's turn of round 1. Starting rounds at the agent would make the
+  first one half-empty.
+- **Rounds per thread** (each reply-and-answer in a thread is its own
+  round). That is the thread's comment history; review-level rounds
+  already slice it (rule 6).
+- **Rounds in the protocol** (a command or wait keyed by round number).
+  The turn log and revisions already carry everything a side needs; a
+  round number would only restate them.
+
+**What it means for open stories.**
+
+- **#35, #36:** nothing to store. Status output and the TUI can show the
+  current round number next to whose turn it is, computed from the log.
+- **#46:** "since my last look" can be stated as "since this round
+  started": the revision on the hand-back that began it ([Revision](#revision)).
+- **TUI (later):** the thread panel can group a thread's comments by
+  round, and mark out-of-turn ones. Not tied to any v0.3.0 story.
