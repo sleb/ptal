@@ -52,6 +52,10 @@ impl Failure {
                 Error::AlreadyResolved(_) => ("already_resolved", EXIT_CALLER),
                 Error::InvalidRange { .. } => ("invalid_range", EXIT_CALLER),
                 Error::EmptyBody => ("empty_body", EXIT_CALLER),
+                Error::NotYourTurn => ("not_your_turn", EXIT_CALLER),
+                Error::MissingVerdict => ("missing_verdict", EXIT_CALLER),
+                Error::NotClosed => ("not_closed", EXIT_CALLER),
+                Error::AlreadyClosed => ("already_closed", EXIT_CALLER),
                 Error::FileUnreadable { .. } => ("file_unreadable", EXIT_RUNTIME),
                 Error::Locked => ("locked", EXIT_RUNTIME),
                 Error::UnsupportedSchema { .. } => ("unsupported_schema", EXIT_RUNTIME),
@@ -188,7 +192,8 @@ Errors: nothing on stdout; stderr gets one line,
 Exit codes:
   0  success
   2  fix the invocation: usage, missing_author, not_found, invalid_range,
-     empty_body, already_open, already_resolved
+     empty_body, already_open, already_resolved, not_your_turn,
+     missing_verdict, not_closed, already_closed
   1  runtime failure: file_unreadable, locked, unsupported_schema, io,
      corrupt, no_data_dir, not_a_terminal, terminal
 
@@ -687,6 +692,10 @@ mod tests {
                 1,
             ),
             (Failure::Core(Error::NoDataDir), "no_data_dir", 1),
+            (Failure::Core(Error::NotYourTurn), "not_your_turn", 2),
+            (Failure::Core(Error::MissingVerdict), "missing_verdict", 2),
+            (Failure::Core(Error::NotClosed), "not_closed", 2),
+            (Failure::Core(Error::AlreadyClosed), "already_closed", 2),
         ];
 
         for (failure, code, exit) in table {
@@ -1566,14 +1575,21 @@ c2  open  outdated  lines 3-4
     }
 
     #[test]
-    fn top_level_help_lists_already_open_and_already_resolved_as_caller_errors() {
+    fn top_level_help_lists_the_state_errors_as_caller_errors() {
         let fx = fixture("one\n");
 
         let help = fx.run(&["--help"]).stdout;
 
         let exit_2 = help.find("  2  ").expect("exit 2 line");
         let exit_1 = help.find("  1  ").expect("exit 1 line");
-        for code in ["already_open", "already_resolved"] {
+        for code in [
+            "already_open",
+            "already_resolved",
+            "not_your_turn",
+            "missing_verdict",
+            "not_closed",
+            "already_closed",
+        ] {
             assert!(help[exit_2..exit_1].contains(code), "{code}: {help}");
         }
     }

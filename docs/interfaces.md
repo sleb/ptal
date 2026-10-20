@@ -56,12 +56,17 @@ stderr carries one error. The table below is pinned by a unit test in
 | Exit | Meaning | Error codes |
 |---|---|---|
 | `0` | Success (also `--help`, `--version`) | none |
-| `2` | The caller can fix the invocation | `usage`, `missing_author`, `not_found`, `invalid_range`, `empty_body`, `already_open`, `already_resolved` |
+| `2` | The caller can fix the invocation | `usage`, `missing_author`, `not_found`, `invalid_range`, `empty_body`, `already_open`, `already_resolved`, `not_your_turn`, `missing_verdict`, `not_closed`, `already_closed` |
 | `1` | Runtime failure | `file_unreadable`, `locked`, `unsupported_schema`, `io`, `corrupt`, `no_data_dir`, `not_a_terminal`, `terminal` |
 
 `no_data_dir` is reported only by commands that read or write review data.
 `--help`, `--version` and usage errors never touch the data directory, so they
 behave the same with `PTAL_DATA_DIR`, `XDG_DATA_HOME` and `HOME` all unset.
+
+`not_your_turn` is a hand-off by the side that doesn't hold the turn, or on
+a closed review. `missing_verdict` is a close without a verdict; only the TUI
+closes, so no CLI command produces it. `not_closed` is reopening an active
+review, and `already_closed` is closing a closed one.
 
 `not_a_terminal` is `ptal <file>` run without a terminal on stdin and
 stdout (an agent running it by mistake gets this JSON error instead of a hung

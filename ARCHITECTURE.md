@@ -225,6 +225,16 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 - `reopen(file, id, author, note?)` — makes a resolved thread `open`; a note
   is appended as a comment by the reopener. Reopening an open thread is
   `AlreadyOpen` and writes nothing, so the note is dropped.
+- `hand_off(file, side, author, note?) -> HandedOff { review, waiting }` —
+  appends a `hand_off` entry by `side` to the log and passes the turn to the
+  other side. `review` is the resulting `ReviewStatus`; `waiting` lists the
+  open threads whose last comment isn't by `author` (exact match), the same
+  "waiting on you" rule the TUI's gutter uses. A hand-off by the side
+  without the turn, or on a closed review, is `NotYourTurn`.
+
+`ReviewStatus { turn, verdict, latest }` is the review's state as front ends
+see it: `turn` is `None` exactly when the review is closed, `verdict` is
+`Some` exactly then, and `latest` is the last log entry, if any.
 
 `View.lines` is the file's lines from the same read the threads were mapped
 against, so a front end that displays them shows exactly what `add_thread`
@@ -260,16 +270,21 @@ quotes and where each thread is.
   anchored to the revision of the first write after the upgrade, "the file as
   first seen"; its old comments keep no revision.
 - Every message has a non-empty `author` and `body`.
+- The turn is a signal, not a lock: no write but `hand_off` reads it, and
+  no other write moves it. Comments, replies, resolves and reopens succeed
+  during either side's turn, or on a closed review, and leave the log alone.
+- A log entry records the revision of the file as it is now, like any other
+  write, and the review's `next_id`. A blank note is no note.
 - `resolve` on a resolved thread is `AlreadyResolved` and `reopen` on an open
   thread is `AlreadyOpen`: both write nothing, so a note is dropped.
 - Error precedence: `reply` checks author, body, file, then thread id;
   `resolve` and `reopen` check author, file, thread id, then status. A file
   that is missing or not UTF-8 fails every write with `FileUnreadable`. An id
   is allocated only after the thread is found, so a failed write never burns
-  one.
+  one. `hand_off` checks author, file, then the turn under the lock.
 
 **Contract:** returns typed results and typed errors (`NotFound`,
-`AlreadyOpen`, `AlreadyResolved`, `InvalidRange`, `FileUnreadable`, `Locked`,
+`AlreadyOpen`, `AlreadyResolved`, `NotYourTurn`, `InvalidRange`, `FileUnreadable`, `Locked`,
 `UnsupportedSchema`, `EmptyAuthor`, `EmptyBody`, `Io`, `Corrupt`). No printing, no terminal awareness. This is the
 API both front ends share. Mapping errors to exit codes belongs to `cli`.
 
