@@ -310,13 +310,20 @@ fn turns_pass_between_the_tui_and_separate_cli_processes() {
 fn a_waiting_process_wakes_on_a_hand_off_from_another_process() {
     let sb = sandbox("one\n");
     let file = sb.file.to_str().unwrap();
-    let waiter = sb
-        .command(&["wait", file])
+    let check = sb.run_json(&["wait", "FILE", "--timeout", "0"]);
+    assert_eq!(check["reason"], "timeout", "starts on the human's turn");
+    // Bounded, so a broken wake-up fails as "timeout" instead of hanging.
+    let mut waiter = sb
+        .command(&["wait", file, "--timeout", "10"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        waiter.try_wait().unwrap().is_none(),
+        "still waiting before the hand-off"
+    );
 
     sb.run_json(&[
         "handoff", "FILE", "--side", "human", "--as", "scott", "--note", "Go",
@@ -339,7 +346,7 @@ fn a_wait_on_a_closed_review_returns_at_once() {
         .unwrap();
 
     let start = std::time::Instant::now();
-    let json = sb.run_json(&["wait", "FILE"]);
+    let json = sb.run_json(&["wait", "FILE", "--timeout", "10"]);
 
     assert!(start.elapsed() < std::time::Duration::from_secs(5));
     assert_eq!(json["reason"], "closed");
