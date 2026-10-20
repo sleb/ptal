@@ -36,7 +36,7 @@ use ratatui::crossterm::terminal::{
 };
 
 use crate::error::Result;
-use crate::model::Thread;
+use crate::model::{Side, Thread};
 use crate::review::{Clock, ReviewStatus, Reviews, ThreadView};
 
 use app::{App, Done, Effect, Event, update};
@@ -193,7 +193,8 @@ pub fn run<C: Clock>(
 
 /// Feed one event to `app` and perform whatever it asks for. This is the
 /// only place effects happen: all writes go through `reviews`, then the
-/// threads are re-read so the screen shows what is on disk.
+/// threads and the review's state are re-read so the screen shows what is
+/// on disk. The TUI writes as the human side.
 ///
 /// Returns [`ControlFlow::Break`] when the user quit.
 pub fn step<C: Clock>(
@@ -222,6 +223,27 @@ pub fn step<C: Clock>(
             let written = reviews.reopen(file, &id, author, None);
             answer(app, reviews, file, Done::Reopened, written)
         }
+        Some(Effect::HandOff { note }) => {
+            let written = reviews
+                .hand_off(file, Side::Human, author, note.as_deref())
+                .map(|handed| match handed.waiting.as_slice() {
+                    [] => "handed off".to_string(),
+                    waiting => format!("handed off · waiting on you: {}", waiting.join(", ")),
+                });
+            answer_review(app, reviews, file, written)
+        }
+        Some(Effect::Close { verdict, note }) => {
+            let written = reviews
+                .close(file, author, verdict, note.as_deref())
+                .map(|_| "closed".to_string());
+            answer_review(app, reviews, file, written)
+        }
+        Some(Effect::ReopenReview) => {
+            let written = reviews
+                .reopen_review(file, Side::Human, author, None)
+                .map(|_| "reopened".to_string());
+            answer_review(app, reviews, file, written)
+        }
     }
 }
 
@@ -238,11 +260,39 @@ fn answer<C: Clock>(
     written: Result<Thread>,
 ) -> ControlFlow<()> {
     let event = match written {
-        Ok(thread) => Event::Saved {
-            id: thread.id,
-            done,
-            threads: reviews.view(file, true).unwrap_or_default().threads,
-        },
+        Ok(thread) => {
+            let view = reviews.view(file, true).unwrap_or_default();
+            Event::Saved {
+                id: thread.id,
+                done,
+                threads: view.threads,
+                review: view.review,
+            }
+        }
+        Err(error) => Event::SaveFailed(error.to_string()),
+    };
+    update(app, event);
+    ControlFlow::Continue(())
+}
+
+/// Turn the result of a hand-off, close or reopen (the footer message on
+/// success) into the event that tells `app` about it, re-reading the view
+/// as [`answer`] does.
+fn answer_review<C: Clock>(
+    app: &mut App,
+    reviews: &Reviews<C>,
+    file: &Path,
+    written: Result<String>,
+) -> ControlFlow<()> {
+    let event = match written {
+        Ok(message) => {
+            let view = reviews.view(file, true).unwrap_or_default();
+            Event::ReviewSaved {
+                message,
+                threads: view.threads,
+                review: view.review,
+            }
+        }
         Err(error) => Event::SaveFailed(error.to_string()),
     };
     update(app, event);

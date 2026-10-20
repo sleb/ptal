@@ -59,6 +59,9 @@ Normal mode:
 | `esc` | Clear the active search and its highlight |
 | `v` (or `V`) | Select lines from the cursor (see Visual select below) |
 | `enter` | On a threaded line: open the thread panel. Otherwise comment on the line |
+| `H` | Hand off to the agent: type an optional note, `ctrl+s` (even blank) hands off |
+| `C` | Close the review: `tab` picks `approved` or `dropped`, type an optional note, `ctrl+s` closes (approving with open threads asks once more) |
+| `O` | Reopen a closed review |
 | `i` | Show the review full-screen: whose turn it is (or the verdict), the latest hand-off, close or reopen, and its whole note |
 | `?` | Show the key listing (Normal and thread-panel keys), grouped by mode; the footer ends with `?:help` when it fits |
 | `q` (or `ctrl+c`) | Quit |

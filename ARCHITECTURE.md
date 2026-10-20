@@ -36,7 +36,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
 | `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review` |
 | `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff` |
-| `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
+| `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, hand off (`H`), close with a verdict (`C`), reopen the review (`O`), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor` | Built: `map_range`, `Diff`, `clamp` (Myers line diff via `similar`) |
 | `diffview` | Deferred |
@@ -386,8 +386,10 @@ Its parts:
   `search` query, the `help` and review overlay listings laid out for
   `cols`, the `file` label), `Mode = Normal | Visual { anchor } |
   Search { query, anchor, origin, hit } |
-  Panel { selected, scroll } | Input { draft, discard_asked, back, reply_to } |
-  Overlay { kind, back, scroll }` (`kind` is `Overlay::Help | Review`)
+  Panel { selected, scroll } | Input { draft, discard_asked, back, target } |
+  Overlay { kind, back, scroll }` (`kind` is `Overlay::Help | Review`;
+  `target` is what saving the box writes: `Target::NewThread | Reply(id) |
+  HandOff | Close { verdict, confirm_asked }`)
   (`draft` is a `tui::draft::Draft`;
   `back` is the `Back` the box returns to on `esc`: `Normal | Panel {
   selected, scroll } | Visual { anchor }`), and
@@ -423,14 +425,27 @@ Its parts:
   text, so layout, the clamp and every key behave the same highlighted or
   not. `render` draws from it, and the view clamp in `update` counts the
   same rows; `lines()` stays the raw file.
-  `Event` is `Key | Resize | Saved { id, done, threads } | SaveFailed |
-  Paste(text)` (the terminal's bracketed paste), where
+  `Event` is `Key | Resize | Saved { id, done, threads, review } |
+  ReviewSaved { message, threads, review } | SaveFailed | Paste(text)` (the
+  terminal's bracketed paste), where
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
   always the thread id; `Effect` is `Add { start, end, body } | Reply { id,
-  body } | Resolve { id } | Reopen { id } | Quit`, where `start..=end` is
+  body } | Resolve { id } | Reopen { id } | HandOff { note } | Close {
+  verdict, note } | ReopenReview | Quit`, where `start..=end` is
   1-based (`start == end` for one line). The target thread id is captured when `r`, `x` or `o` is pressed, never
   an index; `x` on a resolved thread and `o` on an open one are refused in
   `update` with a footer message. `update` does no I/O and reads no clock.
+  `H` opens a box with `Target::HandOff` and `C` one with `Target::Close`;
+  both save on `ctrl+s` even when blank (no note), unlike a comment. In a
+  close box `tab` cycles the verdict (`approved`, `dropped`, `approved`);
+  `ctrl+s` with `approved` and open threads first sets `confirm_asked` and
+  returns nothing, a second `ctrl+s` sends `Close`, and any other key clears
+  it. A close with no verdict is still sent, as `verdict: None`, so the
+  core's `MissingVerdict` is the one rule. `O` sends `ReopenReview` at once.
+  The TUI never checks the turn itself: its state can be stale until live
+  refresh (#36), so the core decides and a refusal shows like any failed
+  write. `ReviewSaved` stores the re-read threads and state, returns to
+  Normal and shows `message` in the footer.
 - `tui::draft`: `Draft { text, cursor, goal, scroll }`, pure, no widgets:
   the comment being typed. `text` holds printable characters, `\t` and
   `\n` only, so `wrap` drops none of it and rows are byte ranges of it; a
@@ -579,7 +594,12 @@ Its parts:
   `N outdated` (open threads only), key hints, the whole row `wrap::cut` to
   the terminal width, so a footer too wide ends in `…`. The input box is titled
   `Comment on line N as <author>`, `Comment on lines A-B as <author>` for a
-  range, or `Reply to <id> as <author>`. In `Panel`
+  range, `Reply to <id> as <author>`, `Hand off to the agent (note
+  optional)`, or `Close as <verdict or ?> (tab: approved / dropped)`; its
+  bottom border's hint names what saving does (`ctrl+s:hand off`,
+  `tab:verdict ctrl+s:close`), and a close waiting to confirm shows
+  `N open threads stay open: ctrl+s again to approve` there (after a
+  pending error or discard prompt). In `Panel`
   a bordered box of half the terminal (at least 4 rows), titled
   `Threads on line N`, sits above the footer and the view shrinks to stay
   above it. A title too wide for its box is `wrap::cut` to end in `…`
@@ -606,7 +626,11 @@ Its parts:
   `color_wanted(NO_COLOR)`, read once at startup); `step(app, event, reviews, file, author)` is the only
   place effects are performed (`Add` → `Reviews::add_thread`, `Reply` →
   `Reviews::reply`, `Resolve`/`Reopen` → `Reviews::resolve`/`reopen` with no
-  note, then `Reviews::view(file, true)` → `Event::Saved`); `run` is the blocking loop (read event →
+  note, then `Reviews::view(file, true)` → `Event::Saved`; `HandOff` →
+  `Reviews::hand_off` as `Side::Human`, `Close` → `Reviews::close`,
+  `ReopenReview` → `Reviews::reopen_review` as `Side::Human`, then the same
+  re-read → `Event::ReviewSaved`, whose message for a hand-off lists the
+  `waiting` threads); `run` is the blocking loop (read event →
   `step` → draw) on a `TerminalSession`. Setup turns on raw mode, the
   alternate screen and bracketed paste (best-effort: a terminal that refuses
   it still runs, its pastes arriving as keys), so a paste arrives as one

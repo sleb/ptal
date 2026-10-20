@@ -9,9 +9,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Widget};
 
-use super::app::{App, BANNER_ROWS, Marker, Mode, OVERLAY_CHROME_ROWS, Overlay, ScreenRow};
+use super::app::{App, BANNER_ROWS, Marker, Mode, OVERLAY_CHROME_ROWS, Overlay, ScreenRow, Target};
 use super::draft::Draft;
 use super::wrap;
+use crate::model::Verdict;
 
 /// Draw `app` onto `frame`. Reads state only; never mutates it.
 pub fn render(app: &App, frame: &mut Frame) {
@@ -70,11 +71,11 @@ pub fn render(app: &App, frame: &mut Frame) {
         Mode::Input {
             draft,
             discard_asked,
-            reply_to,
+            target,
             ..
         } => {
-            let border = box_border(app, *discard_asked, bottom.width);
-            draw_input(app, draft, border, reply_to.as_deref(), buf, bottom);
+            let border = box_border(app, *discard_asked, target, bottom.width);
+            draw_input(app, draft, border, target, buf, bottom);
         }
     }
 }
@@ -298,6 +299,16 @@ fn border_room(width: u16) -> usize {
 const INPUT_HINT: &str = "ctrl+s:save enter:newline esc:cancel";
 /// [`INPUT_HINT`] for a box too narrow for it: how to save and cancel.
 const INPUT_HINT_SHORT: &str = "ctrl+s:save esc:cancel";
+/// [`INPUT_HINT`] in a hand-off box, and its short form.
+const HAND_OFF_HINTS: [&str; 2] = [
+    "ctrl+s:hand off enter:newline esc:cancel",
+    "ctrl+s:hand off esc:cancel",
+];
+/// [`INPUT_HINT`] in a close box, and its short form.
+const CLOSE_HINTS: [&str; 2] = [
+    "tab:verdict ctrl+s:close esc:cancel",
+    "tab:verdict ctrl+s:close",
+];
 /// The bottom border while an `esc` waits to discard a draft.
 const DISCARD_HINT: &str = "esc:discard the draft  any other key:keep it";
 /// [`DISCARD_HINT`] for a box too narrow for it.
@@ -306,13 +317,20 @@ const DISCARD_HINT_SHORT: &str = "esc:discard other:keep";
 const DISCARD_HINT_TINY: &str = "esc:discard?";
 
 /// The text on the comment box's bottom border and its style, for a box
-/// `width` cells wide. A pending [`App::status`] (a failed save's error) wins,
-/// red and bold, unless [`one_line`] leaves it empty; then the discard prompt
-/// while `discard_asked`; else the key hint. Hints pick the longest form that
+/// writing `target` `width` cells wide. A pending [`App::status`] (a failed
+/// save's error) wins, red and bold, unless [`one_line`] leaves it empty;
+/// then the discard prompt while `discard_asked`; then, for a close asking
+/// to confirm, how many open threads stay open; else the key hint for
+/// `target`. Hints pick the longest form that
 /// fits inside the corners, falling back to the shortest. The error is put on
 /// one row by [`one_line`]. Whatever is chosen is [`wrap::cut`] to fit
 /// between the corners, so text that does not fit ends in `…`.
-fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'static, str>, Style) {
+fn box_border(
+    app: &App,
+    discard_asked: bool,
+    target: &Target,
+    width: u16,
+) -> (Cow<'static, str>, Style) {
     let room = border_room(width);
     let error = app.status().map(one_line).filter(|error| !error.is_empty());
     if let Some(error) = error {
@@ -327,10 +345,24 @@ fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'static, str>,
             Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
         );
     }
-    let hints: &[&str] = if discard_asked {
-        &[DISCARD_HINT, DISCARD_HINT_SHORT, DISCARD_HINT_TINY]
-    } else {
-        &[INPUT_HINT, INPUT_HINT_SHORT]
+    if !discard_asked
+        && let Target::Close {
+            confirm_asked: true,
+            ..
+        } = target
+    {
+        let ask = match app.open_threads() {
+            1 => "1 open thread stays open: ctrl+s again to approve".to_string(),
+            n => format!("{n} open threads stay open: ctrl+s again to approve"),
+        };
+        let style = Style::new().add_modifier(Modifier::BOLD);
+        return (Cow::Owned(wrap::cut(&ask, room).into_owned()), style);
+    }
+    let hints: &[&str] = match target {
+        _ if discard_asked => &[DISCARD_HINT, DISCARD_HINT_SHORT, DISCARD_HINT_TINY],
+        Target::NewThread | Target::Reply(_) => &[INPUT_HINT, INPUT_HINT_SHORT],
+        Target::HandOff => &HAND_OFF_HINTS,
+        Target::Close { .. } => &CLOSE_HINTS,
     };
     let hint = hints
         .iter()
@@ -362,16 +394,25 @@ fn draw_input(
     app: &App,
     draft: &Draft,
     (hint, hint_style): (Cow<'_, str>, Style),
-    reply_to: Option<&str>,
+    target: &Target,
     buf: &mut Buffer,
     area: Rect,
 ) {
     if area.is_empty() {
         return;
     }
-    let title = match reply_to {
-        Some(id) => format!("Reply to {id} as {}", app.author()),
-        None => match app.selection() {
+    let title = match target {
+        Target::Reply(id) => format!("Reply to {id} as {}", app.author()),
+        Target::HandOff => "Hand off to the agent (note optional)".to_string(),
+        Target::Close { verdict, .. } => {
+            let verdict = match verdict {
+                Some(Verdict::Approved) => "approved",
+                Some(Verdict::Dropped) => "dropped",
+                None => "?",
+            };
+            format!("Close as {verdict} (tab: approved / dropped)")
+        }
+        Target::NewThread => match app.selection() {
             (first, last) if first == last => {
                 format!("Comment on line {} as {}", first + 1, app.author())
             }
@@ -1275,7 +1316,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:sea�
         let mut app = box_with("hi", (2, 8));
         update(&mut app, Event::SaveFailed(LOCKED.into()));
 
-        let (text, _) = box_border(&app, false, 2);
+        let (text, _) = box_border(&app, false, &Target::NewThread, 2);
 
         assert_eq!(text, "");
     }
@@ -2236,5 +2277,69 @@ plan.md  L1/5  enter:thread/c…"
     #[test]
     fn a_banner_too_narrow_for_its_hint_drops_the_hint() {
         assert_eq!(banner(ReviewStatus::default(), 16), "your turn");
+    }
+
+    // --- hand-off and close boxes ---
+
+    fn shift_key(app: &mut App, c: char) {
+        update(
+            app,
+            Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)),
+        );
+    }
+
+    #[test]
+    fn the_hand_off_box_says_what_saving_does() {
+        let mut app = app_with(lines(3), &[], 8);
+        shift_key(&mut app, 'H');
+
+        let rows = box_rows(&draw(&app, W, 8), 3);
+
+        assert!(
+            rows[0].starts_with("┌Hand off to the agent (note optional)─"),
+            "{rows:?}"
+        );
+        assert!(
+            rows[2].starts_with("└ctrl+s:hand off enter:newline esc:cancel─"),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn the_close_box_title_follows_the_verdict() {
+        let mut app = app_with(lines(3), &[], 8);
+        shift_key(&mut app, 'C');
+        let title = |app: &App| box_rows(&draw(app, W, 8), 3)[0].clone();
+
+        assert!(title(&app).starts_with("┌Close as ? (tab: approved / dropped)─"));
+        assert!(
+            box_rows(&draw(&app, W, 8), 3)[2].starts_with("└tab:verdict ctrl+s:close esc:cancel─")
+        );
+        key(&mut app, KeyCode::Tab);
+        assert!(title(&app).starts_with("┌Close as approved (tab: approved / dropped)─"));
+        key(&mut app, KeyCode::Tab);
+        assert!(title(&app).starts_with("┌Close as dropped (tab: approved / dropped)─"));
+    }
+
+    #[test]
+    fn approving_with_open_threads_asks_on_the_border() {
+        let threads = [
+            open_thread("c1", (1, 1), State::Current),
+            open_thread("c2", (2, 2), State::Current),
+        ];
+        let mut app = app_with(lines(3), &threads, 8);
+        shift_key(&mut app, 'C');
+        key(&mut app, KeyCode::Tab);
+        update(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+        );
+
+        let rows = box_rows(&draw(&app, W, 8), 3);
+
+        assert!(
+            rows[2].starts_with("└2 open threads stay open: ctrl+s again to approve─"),
+            "{rows:?}"
+        );
     }
 }

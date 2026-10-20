@@ -9,7 +9,7 @@ use std::process::Command;
 use ptal::model::Side;
 use ptal::review::{Reviews, SystemClock};
 use ptal::store::Store;
-use ptal::tui::app::{App, Back, Event, Mode};
+use ptal::tui::app::{App, Back, Event, Mode, Target};
 use ptal::tui::render::render;
 use ptal::tui::{load, step};
 use ratatui::Terminal;
@@ -224,7 +224,7 @@ fn a_save_against_a_file_that_shrank_fails_and_keeps_the_draft() {
     assert!(
         matches!(
             app.mode(),
-            Mode::Input { draft, back: Back::Normal, reply_to: None, .. }
+            Mode::Input { draft, back: Back::Normal, target: Target::NewThread, .. }
                 if draft.text() == "ok" && draft.cursor() == 2
         ),
         "{:?}",
@@ -499,7 +499,7 @@ fn a_failed_reply_keeps_the_draft_and_shows_the_error() {
     }
     assert_eq!(flow, ControlFlow::Continue(()));
     assert!(
-        matches!(app.mode(), Mode::Input { draft, reply_to: Some(id), .. } if draft.text() == "ok" && id == "c1"),
+        matches!(app.mode(), Mode::Input { draft, target: Target::Reply(id), .. } if draft.text() == "ok" && id == "c1"),
         "{:?}",
         app.mode()
     );
@@ -1022,4 +1022,171 @@ fn opening_the_tui_shows_the_review_state_and_the_latest_note() {
         "{top}"
     );
     assert!(top.trim_end().ends_with("C:close"), "{top}");
+}
+
+/// The banner: the screen's top row, trailing spaces trimmed.
+fn banner(app: &App) -> String {
+    screen(app).lines().next().unwrap().trim_end().to_string()
+}
+
+/// The footer: the screen's last row, trailing spaces trimmed.
+fn footer(app: &App) -> String {
+    screen(app).lines().last().unwrap().trim_end().to_string()
+}
+
+#[test]
+fn the_human_hands_off_and_the_agent_hands_back_with_a_note() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    assert!(banner(&app).starts_with("your turn"), "{}", banner(&app));
+
+    let _ = sb.press_typing(&mut app, &["H"], "Over to you", &["ctrl+s"]);
+
+    assert_eq!(app.mode(), &Mode::Normal);
+    assert!(
+        banner(&app).starts_with("agent's turn · scott: Over to you"),
+        "{}",
+        banner(&app)
+    );
+    assert!(footer(&app).starts_with("handed off"), "{}", footer(&app));
+    let review = &cli_comments(&sb)["review"];
+    assert_eq!(review["turn"], "agent");
+    assert_eq!(review["latest"]["side"], "human");
+
+    sb.reviews
+        .hand_off(&sb.file, Side::Agent, "claude", Some("Revised"))
+        .unwrap();
+    let _ = sb.press_typing(&mut app, &["enter"], "hi", &["ctrl+s"]);
+
+    assert!(
+        banner(&app).starts_with("your turn · claude: Revised"),
+        "a write re-reads the state: {}",
+        banner(&app)
+    );
+    let reloaded = sb.open();
+    assert_eq!(
+        banner(&reloaded),
+        banner(&app),
+        "the state survives a restart"
+    );
+}
+
+#[test]
+fn a_hand_off_lists_the_threads_still_waiting_on_you() {
+    let sb = sandbox(PLAN);
+    sb.reviews
+        .add_thread(&sb.file, 1, 1, "?", "claude")
+        .unwrap();
+    sb.reviews
+        .add_thread(&sb.file, 2, 2, "?", "claude")
+        .unwrap();
+    let mut app = sb.open();
+
+    let _ = sb.press(&mut app, &["H", "ctrl+s"]);
+
+    assert!(
+        footer(&app).starts_with("handed off · waiting on you: c1, c2"),
+        "{}",
+        footer(&app)
+    );
+}
+
+#[test]
+fn a_hand_off_out_of_turn_is_refused_and_keeps_the_draft() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let _ = sb.press(&mut app, &["H", "ctrl+s"]);
+    let before = fs::read(review_json(&sb)).unwrap();
+
+    let _ = sb.press_typing(&mut app, &["H"], "again", &["ctrl+s"]);
+
+    assert!(
+        matches!(app.mode(), Mode::Input { draft, target: Target::HandOff, .. } if draft.text() == "again"),
+        "{:?}",
+        app.mode()
+    );
+    assert!(screen(&app).contains("not your turn"), "{}", screen(&app));
+    assert_eq!(fs::read(review_json(&sb)).unwrap(), before);
+}
+
+#[test]
+fn the_human_closes_with_a_verdict_and_reopens() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+
+    let _ = sb.press_typing(&mut app, &["C", "tab"], "Ship it", &["ctrl+s"]);
+
+    assert!(
+        banner(&app).starts_with("closed: approved · scott: Ship it"),
+        "{}",
+        banner(&app)
+    );
+    let review = &cli_comments(&sb)["review"];
+    assert_eq!(review["verdict"], "approved");
+    assert_eq!(review["latest"]["note"], "Ship it");
+
+    let _ = sb.press(&mut app, &["O"]);
+
+    assert!(banner(&app).starts_with("your turn"), "{}", banner(&app));
+    assert_eq!(cli_comments(&sb)["review"]["turn"], "human");
+}
+
+#[test]
+fn a_close_without_a_verdict_shows_why_and_writes_nothing() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+
+    let _ = sb.press_typing(&mut app, &["C"], "hm", &["ctrl+s"]);
+
+    assert!(
+        matches!(app.mode(), Mode::Input { draft, .. } if draft.text() == "hm"),
+        "{:?}",
+        app.mode()
+    );
+    assert!(screen(&app).contains("needs a verdict"), "{}", screen(&app));
+    assert!(!review_json(&sb).exists());
+}
+
+#[test]
+fn approving_with_open_threads_asks_to_confirm_first() {
+    let sb = sandbox(PLAN);
+    sb.reviews
+        .add_thread(&sb.file, 1, 1, "?", "claude")
+        .unwrap();
+    let mut app = sb.open();
+
+    let _ = sb.press(&mut app, &["C", "tab", "ctrl+s"]);
+
+    assert!(
+        screen(&app).contains("1 open thread stays open: ctrl+s again to approve"),
+        "{}",
+        screen(&app)
+    );
+    assert_eq!(cli_comments(&sb)["review"]["turn"], "human");
+    let _ = sb.press(&mut app, &["ctrl+s"]);
+    assert_eq!(cli_comments(&sb)["review"]["verdict"], "approved");
+    assert_eq!(cli_comments(&sb)["threads"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn reopening_an_active_review_says_it_is_not_closed() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+
+    let _ = sb.press(&mut app, &["O"]);
+
+    assert!(
+        footer(&app).starts_with("review is not closed"),
+        "{}",
+        footer(&app)
+    );
+    assert!(!review_json(&sb).exists());
+}
+
+/// Where the sandbox's `review.json` is, written or not.
+fn review_json(sb: &Sandbox) -> PathBuf {
+    Store::new(&sb.data)
+        .review_dir(&sb.file)
+        .unwrap()
+        .join("review.json")
 }

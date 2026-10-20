@@ -67,6 +67,18 @@ pub const HELP: &[Section] = &[
                 what: "open the line's threads, or comment on the line",
             },
             Entry {
+                keys: "H",
+                what: "hand off to the agent, with an optional note",
+            },
+            Entry {
+                keys: "C",
+                what: "close the review: tab picks approved or dropped, then a note",
+            },
+            Entry {
+                keys: "O",
+                what: "reopen a closed review",
+            },
+            Entry {
                 keys: "i",
                 what: "show the review: whose turn, the latest note in full",
             },

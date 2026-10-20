@@ -63,11 +63,8 @@ pub enum Mode {
         /// Whether an `esc` (or `ctrl+c`) on a draft that is not blank is
         /// waiting for a second one to discard it.
         discard_asked: bool,
-        /// The id of the thread being replied to; `None` adds a new thread.
-        ///
-        /// Captured when `r` is pressed, so a re-read between the keypress
-        /// and the write cannot retarget the reply.
-        reply_to: Option<String>,
+        /// What saving the box writes.
+        target: Target,
     },
     /// Reading a full-screen overlay, which replaces the whole screen.
     ///
@@ -110,15 +107,45 @@ impl Overlay {
 }
 
 impl Mode {
-    /// An empty comment box that returns to `back`, adding a thread or, with
-    /// `reply_to`, replying to that thread.
-    fn input(back: Back, reply_to: Option<String>) -> Self {
+    /// An empty comment box that returns to `back` and writes `target`.
+    fn input(back: Back, target: Target) -> Self {
         Mode::Input {
             draft: Draft::default(),
             discard_asked: false,
             back,
-            reply_to,
+            target,
         }
+    }
+}
+
+/// What a comment box writes when saved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// A new thread on the selection.
+    NewThread,
+    /// A reply to the thread with this id.
+    ///
+    /// Captured when `r` is pressed, so a re-read between the keypress and
+    /// the write cannot retarget the reply.
+    Reply(String),
+    /// A hand-off to the agent; the text is its note, and a blank box hands
+    /// off with none.
+    HandOff,
+    /// A close of the review; the text is its note.
+    Close {
+        /// The verdict chosen with `tab`; `None` until one is.
+        verdict: Option<Verdict>,
+        /// Whether a `ctrl+s` approving with open threads is waiting for a
+        /// second one to confirm.
+        confirm_asked: bool,
+    },
+}
+
+impl Target {
+    /// Whether saving a blank box writes: a hand-off or a close needs no
+    /// note, a comment needs a body.
+    fn saves_blank(&self) -> bool {
+        matches!(self, Target::HandOff | Target::Close { .. })
     }
 }
 
@@ -168,6 +195,15 @@ pub enum Event {
         id: String,
         done: Done,
         threads: Vec<ThreadView>,
+        /// The review's state, re-read with the threads.
+        review: ReviewStatus,
+    },
+    /// The driver wrote a hand-off, close or reopen; `message` is the
+    /// footer's, and `threads` and `review` are the re-read view.
+    ReviewSaved {
+        message: String,
+        threads: Vec<ThreadView>,
+        review: ReviewStatus,
     },
     /// The driver could not perform the write. A pending draft is kept.
     SaveFailed(String),
@@ -214,6 +250,17 @@ pub enum Effect {
     Resolve { id: String },
     /// Reopen thread `id` with no note; answered like [`Effect::Add`].
     Reopen { id: String },
+    /// Hand the turn to the agent with `note`, then answer with
+    /// [`Event::ReviewSaved`] or [`Event::SaveFailed`].
+    HandOff { note: Option<String> },
+    /// Close the review with `verdict` (`None` if none was chosen, which the
+    /// core refuses) and `note`; answered like [`Effect::HandOff`].
+    Close {
+        verdict: Option<Verdict>,
+        note: Option<String>,
+    },
+    /// Reopen the closed review; answered like [`Effect::HandOff`].
+    ReopenReview,
     /// Leave the TUI.
     Quit,
 }
@@ -345,9 +392,21 @@ impl App {
     /// Show `review` as the review's state.
     #[must_use]
     pub fn with_review(mut self, review: ReviewStatus) -> Self {
-        self.review = review;
-        self.relayout();
+        self.set_review(review);
         self
+    }
+
+    fn set_review(&mut self, review: ReviewStatus) {
+        self.review_rows = review_rows(&review, self.cols);
+        self.review = review;
+    }
+
+    /// How many threads are open.
+    pub fn open_threads(&self) -> usize {
+        self.threads
+            .iter()
+            .filter(|t| t.thread.status == Status::Open)
+            .count()
     }
 
     /// Style the file view's markdown structure when `on`; plain otherwise.
@@ -1042,8 +1101,14 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.relayout();
             None
         }
-        Event::Saved { id, done, threads } => {
+        Event::Saved {
+            id,
+            done,
+            threads,
+            review,
+        } => {
             app.threads = threads;
+            app.set_review(review);
             let from_panel = matches!(
                 app.mode,
                 Mode::Panel { .. }
@@ -1057,6 +1122,17 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
                 app.back_to_panel(&id);
             }
             app.status = Some(format!("{} {id}", done.verb()));
+            None
+        }
+        Event::ReviewSaved {
+            message,
+            threads,
+            review,
+        } => {
+            app.threads = threads;
+            app.set_review(review);
+            app.mode = Mode::Normal;
+            app.status = Some(message);
             None
         }
         Event::SaveFailed(message) => {
@@ -1149,6 +1225,15 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     match key.code {
         KeyCode::Char('?') if !ctrl => app.open_overlay(Overlay::Help, Back::Normal),
         KeyCode::Char('i') if !ctrl => app.open_overlay(Overlay::Review, Back::Normal),
+        KeyCode::Char('H') if !ctrl => app.mode = Mode::input(Back::Normal, Target::HandOff),
+        KeyCode::Char('C') if !ctrl => {
+            let close = Target::Close {
+                verdict: None,
+                confirm_asked: false,
+            };
+            app.mode = Mode::input(Back::Normal, close);
+        }
+        KeyCode::Char('O') if !ctrl => return Some(Effect::ReopenReview),
         KeyCode::Char('v' | 'V') if !ctrl && !app.lines.is_empty() => {
             app.mode = Mode::Visual { anchor: app.cursor };
         }
@@ -1156,7 +1241,7 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Esc => app.search = None,
         KeyCode::Enter if !app.threads_on(app.cursor).is_empty() => app.open_panel(),
         KeyCode::Enter if !app.lines.is_empty() => {
-            app.mode = Mode::input(Back::Normal, None);
+            app.mode = Mode::input(Back::Normal, Target::NewThread);
         }
         _ => {}
     }
@@ -1181,7 +1266,7 @@ fn visual_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Char('v' | 'V') if !ctrl => app.mode = Mode::Normal,
         KeyCode::Char('/') if !ctrl => app.start_search(Some(anchor)),
         KeyCode::Enter => {
-            app.mode = Mode::input(Back::Visual { anchor }, None);
+            app.mode = Mode::input(Back::Visual { anchor }, Target::NewThread);
         }
         _ => {}
     }
@@ -1288,7 +1373,7 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             app.open_overlay(Overlay::Help, Back::Panel { selected, scroll })
         }
         KeyCode::Char('a') if !ctrl => {
-            app.mode = Mode::input(Back::Panel { selected, scroll }, None);
+            app.mode = Mode::input(Back::Panel { selected, scroll }, Target::NewThread);
         }
         KeyCode::Char('r') if !ctrl => {
             let id = app
@@ -1296,7 +1381,7 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 .get(selected)
                 .map(|view| view.thread.id.clone());
             if let Some(id) = id {
-                app.mode = Mode::input(Back::Panel { selected, scroll }, Some(id));
+                app.mode = Mode::input(Back::Panel { selected, scroll }, Target::Reply(id));
             }
         }
         KeyCode::Char('x') if !ctrl => return app.change_status(selected, true),
@@ -1330,28 +1415,29 @@ fn saved_body(draft: &str) -> &str {
 }
 
 /// A key in the comment box: `ctrl+s` (either case, as some terminals
-/// report it with shift or caps lock) saves a draft that is not blank, as
-/// [`saved_body`] trims it; `enter` starts a new line; the rest edit the
-/// draft. `esc` or `ctrl+c` returns to where the box came from: at once for
-/// a blank draft, else on a second press, any other key in between keeping
-/// the draft.
+/// report it with shift or caps lock) saves, as [`save`] decides; `tab` picks
+/// a close's verdict; `enter` starts a new line; the rest edit the draft.
+/// `esc` or `ctrl+c` returns to where the box came from: at once for a
+/// blank draft, else on a second press, any other key in between keeping
+/// the draft (and cancelling a pending confirmation).
 fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let width = app.draft_width();
+    let selection = app.selection();
+    let open_threads = app.open_threads();
     let Mode::Input {
         draft,
         discard_asked,
         back,
-        reply_to,
+        target,
     } = &mut app.mode
     else {
         return None;
     };
     let back = back.mode();
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let blank = draft.text().trim().is_empty();
     let cancel = key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c'));
     if cancel {
-        if blank || *discard_asked {
+        if draft.text().trim().is_empty() || *discard_asked {
             app.mode = back;
         } else {
             *discard_asked = true;
@@ -1359,25 +1445,21 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         return None;
     }
     *discard_asked = false;
+    let save = matches!(key.code, KeyCode::Char('s' | 'S')) && ctrl;
+    if let Target::Close { confirm_asked, .. } = target
+        && !save
+    {
+        *confirm_asked = false;
+    }
     match key.code {
-        KeyCode::Char('s' | 'S') if ctrl && blank => {}
-        KeyCode::Char('s' | 'S') if ctrl => {
-            let body = saved_body(draft.text()).to_owned();
-            return Some(match reply_to {
-                Some(id) => Effect::Reply {
-                    id: id.clone(),
-                    body,
-                },
-                None => {
-                    let (first, last) = app.selection();
-                    let one_based = |line: usize| u32::try_from(line + 1).unwrap_or(u32::MAX);
-                    Effect::Add {
-                        start: one_based(first),
-                        end: one_based(last),
-                        body,
-                    }
-                }
-            });
+        _ if save => return save_box(draft.text(), target, selection, open_threads),
+        KeyCode::Tab => {
+            if let Target::Close { verdict, .. } = target {
+                *verdict = Some(match verdict {
+                    Some(Verdict::Approved) => Verdict::Dropped,
+                    None | Some(Verdict::Dropped) => Verdict::Approved,
+                });
+            }
         }
         KeyCode::Char(c) if !ctrl => draft.insert(c),
         KeyCode::Enter => draft.newline(),
@@ -1394,10 +1476,58 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     None
 }
 
+/// What `ctrl+s` in a box writing `target` asks for, with `text` as typed:
+/// the text as [`saved_body`] trims it, as the body of a comment (on the
+/// 0-based `selection`, for a new thread) or as the note of a hand-off or
+/// close (none when blank). A blank comment saves nothing. Approving with
+/// `open_threads` asks first: the first press sets `confirm_asked` and
+/// returns `None`, a second one closes.
+fn save_box(
+    text: &str,
+    target: &mut Target,
+    (first, last): (usize, usize),
+    open_threads: usize,
+) -> Option<Effect> {
+    let body = saved_body(text);
+    if body.trim().is_empty() && !target.saves_blank() {
+        return None;
+    }
+    let note = (!body.trim().is_empty()).then(|| body.to_owned());
+    let body = body.to_owned();
+    Some(match target {
+        Target::Reply(id) => Effect::Reply {
+            id: id.clone(),
+            body,
+        },
+        Target::NewThread => {
+            let one_based = |line: usize| u32::try_from(line + 1).unwrap_or(u32::MAX);
+            Effect::Add {
+                start: one_based(first),
+                end: one_based(last),
+                body,
+            }
+        }
+        Target::HandOff => Effect::HandOff { note },
+        Target::Close {
+            verdict,
+            confirm_asked,
+        } => {
+            if *verdict == Some(Verdict::Approved) && open_threads > 0 && !*confirm_asked {
+                *confirm_asked = true;
+                return None;
+            }
+            Effect::Close {
+                verdict: *verdict,
+                note,
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Entry, ReviewState, Side};
+    use crate::model::{Entry, ReviewState, Side, Verdict};
     use crate::review::ReviewStatus;
     use ratatui::crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
     use ratatui::style::{Color, Modifier, Style};
@@ -2199,6 +2329,7 @@ mod tests {
                 id: "c3".into(),
                 done: Done::Added,
                 threads: vec![],
+                review: ReviewStatus::default(),
             },
         );
 
@@ -2745,6 +2876,7 @@ mod tests {
                 id: "c1".into(),
                 done: Done::Added,
                 threads,
+                review: ReviewStatus::default(),
             },
         );
 
@@ -3043,6 +3175,7 @@ mod tests {
                 id: "c9".into(),
                 done: Done::Added,
                 threads: vec![],
+                review: ReviewStatus::default(),
             }],
         );
 
@@ -3104,6 +3237,7 @@ mod tests {
                 id: "c9".into(),
                 done: Done::Added,
                 threads,
+                review: ReviewStatus::default(),
             },
         );
 
@@ -3283,7 +3417,11 @@ mod tests {
 
     fn reply_target(a: &App) -> Option<&str> {
         match &a.mode {
-            Mode::Input { reply_to, .. } => reply_to.as_deref(),
+            Mode::Input {
+                target: Target::Reply(id),
+                ..
+            } => Some(id),
+            Mode::Input { .. } => None,
             other => panic!("not in Input mode: {other:?}"),
         }
     }
@@ -3371,6 +3509,7 @@ mod tests {
                 id: "c2".into(),
                 done: Done::Replied,
                 threads,
+                review: ReviewStatus::default(),
             },
         );
 
@@ -3480,6 +3619,7 @@ mod tests {
                     id: "c2".into(),
                     done,
                     threads,
+                    review: ReviewStatus::default(),
                 },
             );
 
@@ -3653,7 +3793,7 @@ mod tests {
             a.mode,
             Mode::Input {
                 back: Back::Visual { anchor: 1 },
-                reply_to: None,
+                target: Target::NewThread,
                 ..
             }
         ));
@@ -3690,6 +3830,7 @@ mod tests {
                 id: "c4".into(),
                 done: Done::Added,
                 threads,
+                review: ReviewStatus::default(),
             },
         );
 
@@ -4386,5 +4527,188 @@ mod tests {
         let text = overlay_text(&a).join("\n");
         assert!(text.contains("your turn"), "{text}");
         assert!(text.contains("no hand-off yet"), "{text}");
+    }
+
+    // --- hand off, close, reopen ---
+
+    fn target(a: &App) -> &Target {
+        match &a.mode {
+            Mode::Input { target, .. } => target,
+            other => panic!("not in Input mode: {other:?}"),
+        }
+    }
+
+    fn shift(c: char) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT))
+    }
+
+    #[test]
+    fn capital_h_opens_a_hand_off_box_that_saves_even_when_blank() {
+        let mut a = app(5, 10);
+
+        send(&mut a, [shift('H')]);
+        assert_eq!(target(&a), &Target::HandOff);
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::HandOff { note: None })
+        );
+
+        let mut a = app(5, 10);
+        send(&mut a, [shift('H')]);
+        typed(&mut a, "\nall yours  ");
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::HandOff {
+                note: Some("all yours".into())
+            })
+        );
+    }
+
+    #[test]
+    fn esc_leaves_a_hand_off_box_like_a_comment() {
+        let mut a = app(5, 10);
+        send(&mut a, [shift('H'), press(KeyCode::Esc)]);
+        assert_eq!(a.mode, Mode::Normal);
+
+        send(&mut a, [shift('H')]);
+        typed(&mut a, "x");
+        send(&mut a, [press(KeyCode::Esc)]);
+        assert!(discard_asked(&a));
+        send(&mut a, [press(KeyCode::Esc)]);
+        assert_eq!(a.mode, Mode::Normal);
+    }
+
+    fn verdict(a: &App) -> Option<Verdict> {
+        match target(a) {
+            Target::Close { verdict, .. } => *verdict,
+            other => panic!("not a close: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capital_c_opens_a_close_box_and_tab_picks_the_verdict() {
+        let mut a = app(5, 10);
+
+        send(&mut a, [shift('C')]);
+        assert_eq!(verdict(&a), None);
+        send(&mut a, [press(KeyCode::Tab)]);
+        assert_eq!(verdict(&a), Some(Verdict::Approved));
+        send(&mut a, [press(KeyCode::Tab)]);
+        assert_eq!(verdict(&a), Some(Verdict::Dropped));
+        send(&mut a, [press(KeyCode::Tab)]);
+        assert_eq!(verdict(&a), Some(Verdict::Approved));
+    }
+
+    #[test]
+    fn a_close_with_no_verdict_still_asks_the_core() {
+        let mut a = app(5, 10);
+        send(&mut a, [shift('C')]);
+        typed(&mut a, "done");
+
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::Close {
+                verdict: None,
+                note: Some("done".into())
+            })
+        );
+    }
+
+    fn with_an_open_thread() -> App {
+        let threads = [said_by(
+            view("c1", (1, 1), Status::Open, State::Current),
+            &["claude"],
+        )];
+        App::open(
+            vec!["one".into(), "two".into()],
+            &threads,
+            "scott",
+            (80, 10),
+        )
+    }
+
+    #[test]
+    fn approving_with_open_threads_asks_once_more_and_any_other_key_cancels_the_ask() {
+        let mut a = with_an_open_thread();
+        send(&mut a, [shift('C'), press(KeyCode::Tab)]);
+
+        assert_eq!(update(&mut a, ctrl('s')), None, "the first press asks");
+        assert!(matches!(
+            target(&a),
+            Target::Close {
+                confirm_asked: true,
+                ..
+            }
+        ));
+        typed(&mut a, "x");
+        assert!(matches!(
+            target(&a),
+            Target::Close {
+                confirm_asked: false,
+                ..
+            }
+        ));
+        assert_eq!(update(&mut a, ctrl('s')), None, "asked again");
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::Close {
+                verdict: Some(Verdict::Approved),
+                note: Some("x".into())
+            })
+        );
+    }
+
+    #[test]
+    fn dropping_or_approving_with_no_open_threads_closes_at_once() {
+        let mut a = with_an_open_thread();
+        send(
+            &mut a,
+            [shift('C'), press(KeyCode::Tab), press(KeyCode::Tab)],
+        );
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::Close {
+                verdict: Some(Verdict::Dropped),
+                note: None
+            })
+        );
+
+        let mut a = app(5, 10);
+        send(&mut a, [shift('C'), press(KeyCode::Tab)]);
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::Close {
+                verdict: Some(Verdict::Approved),
+                note: None
+            })
+        );
+    }
+
+    #[test]
+    fn capital_o_asks_to_reopen_the_review() {
+        let mut a = app(5, 10);
+
+        assert_eq!(update(&mut a, shift('O')), Some(Effect::ReopenReview));
+        assert_eq!(a.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn a_review_write_updates_the_state_and_returns_to_normal() {
+        let mut a = app(5, 10);
+        send(&mut a, [shift('H')]);
+
+        update(
+            &mut a,
+            Event::ReviewSaved {
+                message: "handed off".into(),
+                threads: vec![],
+                review: handed_off("ok"),
+            },
+        );
+
+        assert_eq!(a.mode, Mode::Normal);
+        assert_eq!(a.status(), Some("handed off"));
+        assert_eq!(a.review().state, ReviewState::Turn(Side::Agent));
+        assert!(a.banner().0.starts_with("agent's turn · scott: ok"));
     }
 }
