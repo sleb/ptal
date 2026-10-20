@@ -196,6 +196,9 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
   file as it is now and a computed `state`; `revision` is the current
   content's id, or `None` if nothing has been written against it yet. One
   read of the file serves both.
+- `resolve`, `reply` and `reopen` return the thread with its lines mapped to
+  the content they read (the stored anchor is unchanged); `add_thread`'s
+  range is as given, since it anchors to the current content.
 - `resolve(file, id, author, note?)` — marks the thread resolved; a note is
   appended as a second comment by the resolver. Resolving a resolved thread
   is `AlreadyResolved` and writes nothing, so the note is dropped.
@@ -279,7 +282,9 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   open threads; `--all` includes resolved. Threads are in id order. Replies are
   flat: there is no reply tree yet.
 - `add`, `reply`, `resolve` and `reopen` print `{"file", "thread"}` (no
-  `state`: it is a read-time concept). Resolving a resolved thread fails with
+  `state`: it is a read-time concept). The printed anchor's lines are mapped
+  to the file as it is now, like `comments`, so the CLI never shows unmapped
+  lines; `anchor.revision` stays the revision the thread was created on. Resolving a resolved thread fails with
   `already_resolved` and reopening an open thread with `already_open` (both
   exit `2`).
 - There is no `waiting_on` field. A thread is waiting on an agent when its

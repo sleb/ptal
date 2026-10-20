@@ -201,6 +201,9 @@ impl<C: Clock> Reviews<C> {
     /// A blank note adds no comment. The resolve (`resolved_revision`) and
     /// the note record the revision of the file as it is now.
     ///
+    /// The returned thread's lines are mapped to the file as it is now, as
+    /// [`Reviews::view`] shows them; the stored anchor is unchanged.
+    ///
     /// # Errors
     /// [`Error::EmptyAuthor`], [`Error::FileUnreadable`], [`Error::NotFound`]
     /// if no thread has this id, [`Error::AlreadyResolved`] if the thread is
@@ -247,7 +250,7 @@ impl<C: Clock> Reviews<C> {
                 resolved_revision: Some(revision),
             };
             thread.comments.extend(note_comment);
-            Ok(thread.clone())
+            self.mapped(file, review, index, &content)
         })
     }
 
@@ -257,6 +260,9 @@ impl<C: Clock> Reviews<C> {
     /// The resolution record is dropped. A blank note adds no comment; a
     /// note records the revision of the file as it is now (a reopen itself
     /// is not recorded, so one without a note records none).
+    ///
+    /// The returned thread's lines are mapped to the file as it is now, as
+    /// [`Reviews::view`] shows them; the stored anchor is unchanged.
     ///
     /// # Errors
     /// [`Error::EmptyAuthor`], [`Error::FileUnreadable`], [`Error::NotFound`]
@@ -301,7 +307,7 @@ impl<C: Clock> Reviews<C> {
             let thread = &mut review.threads[index];
             thread.status = Status::Open;
             thread.comments.extend(note_comment);
-            Ok(thread.clone())
+            self.mapped(file, review, index, &content)
         })
     }
 
@@ -310,6 +316,9 @@ impl<C: Clock> Reviews<C> {
     /// Replying to a resolved thread reopens it in the same write; no
     /// separate "reopened" comment is added. The body is stored verbatim,
     /// and the comment records the revision of the file as it is now.
+    ///
+    /// The returned thread's lines are mapped to the file as it is now, as
+    /// [`Reviews::view`] shows them; the stored anchor is unchanged.
     ///
     /// # Errors
     /// [`Error::EmptyAuthor`], [`Error::EmptyBody`], [`Error::FileUnreadable`],
@@ -347,8 +356,22 @@ impl<C: Clock> Reviews<C> {
             let thread = &mut review.threads[index];
             thread.comments.push(comment);
             thread.status = Status::Open;
-            Ok(thread.clone())
+            self.mapped(file, review, index, &content)
         })
+    }
+
+    /// Thread `index` of `review` with its lines mapped to `content`, for
+    /// output; the stored anchor is unchanged.
+    fn mapped(
+        &self,
+        file: &Path,
+        review: &Review,
+        index: usize,
+        content: &Content,
+    ) -> Result<Thread> {
+        let mut thread = review.threads[index].clone();
+        Mapper::new(&self.store, file, &review.revisions, content).map(&mut thread.anchor)?;
+        Ok(thread)
     }
 }
 
@@ -1403,5 +1426,24 @@ mod tests {
             );
         }
         assert_eq!(fx.review_json(), bytes);
+    }
+
+    #[test]
+    fn mutations_return_the_thread_mapped_to_the_file_as_it_is_now() {
+        let fx = fixture();
+        fx.reviews.add_thread(&fx.file, 2, 3, "x", "s").unwrap();
+        fs::write(&fx.file, "zero\none\ntwo\nthree\nfour\n").unwrap();
+        let lines = |t: &Thread| (t.anchor.start_line, t.anchor.end_line);
+
+        let replied = fx.reviews.reply(&fx.file, "c1", "r", "s").unwrap();
+        let resolved = fx.reviews.resolve(&fx.file, "c1", "s", None).unwrap();
+        let reopened = fx.reviews.reopen(&fx.file, "c1", "s", None).unwrap();
+
+        for thread in [&replied, &resolved, &reopened] {
+            assert_eq!(lines(thread), (3, 4));
+            assert_eq!(thread.anchor.revision.as_deref(), Some("r1"));
+        }
+        let stored = &fx.store.load(&fx.file).unwrap().threads[0];
+        assert_eq!(lines(stored), (2, 3), "anchors are never rewritten");
     }
 }
