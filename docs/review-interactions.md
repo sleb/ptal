@@ -591,7 +591,8 @@ Collected from the scenarios above, unanswered here on purpose:
 - **Comment intent:** question, change request, nit; explicit or prose? (A4, C2)
 - **Verdict:** does approval with open threads block, and does a later edit
   undo it? Which outcomes are there? (C2, C6) *Partly proposed: the
-  verdict is carried by closing, see [Turn](#turn) rules 10–14.*
+  verdict is carried by closing, and open threads don't block `approved`;
+  see [Turn](#turn) rule 12.*
 
 ---
 
@@ -666,6 +667,11 @@ next. Rules 1–9 describe an active review; rules
 
     There is no close without a verdict (`missing_verdict`, exit `2`,
     nothing written), and a verdict is set only by closing.
+
+    Open threads don't block `approved`. Approving with threads open
+    accepts them as they stand: the agent owes nothing on them. The TUI
+    may ask for confirmation when threads are open (`approve with 2 open
+    threads?`).
 13. **A closed review still takes writes, and they don't reopen it.** A
     nit fix asked for in an `approved` close's note (C2), a reply to a last question, or a note about what shipped
     is valid (rule 5 again). Threads left open at close stay open; the
@@ -779,5 +785,5 @@ next. Rules 1–9 describe an active review; rules
 - **#46:** "last look" could be the human's last hand-off rather than a
   separate marker. Left to that story.
 - **#45:** a hand-off records the revision once revisions exist.
-- **Not decided here:** whether open threads block `approved`, and whether
-  the agent needs more verdicts than three (Verdict); whether rounds are numbered from the log (Round).
+- **Not decided here:** whether the agent needs more verdicts than three
+  (Verdict); whether rounds are numbered from the log (Round).
