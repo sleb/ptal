@@ -3,6 +3,7 @@
 //! Front ends (`cli` for agents, `tui` for humans) are thin layers over this
 //! library.
 
+pub mod anchor;
 pub mod cli;
 pub mod error;
 pub mod model;

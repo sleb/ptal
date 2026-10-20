@@ -38,7 +38,8 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
 | `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Help` modes, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
-| `anchor`, `diffview` | Deferred |
+| `anchor` | Built: `map_range` (Myers line diff via `similar`) |
+| `diffview` | Deferred |
 
 Deferred within built components: revisions and snapshots, anchor mapping
 between file versions, nested replies, edit, delete, and
@@ -103,21 +104,33 @@ golden-JSON test in `model` pins it. Every persisted file carries
 `ptal schema`, revisions.
 
 ### `anchor`
-*Deferred.* Not part of the MVP.
-
 **Role:** pure functions mapping line ranges between revisions.
 
 ```
-map_range(old_text, new_text, range) -> Mapped { range, state: Current | Outdated }
-changed_lines(old_text, new_text)    -> Vec<Range>      // for gutter markers
+map_range(old: &[&str], new: &[&str], range: LineRange) -> Mapped { range, state }
 ```
+
+`LineRange { start, end }` is 1-based and inclusive; `state` is the model's
+`State`. It takes lines, not text, so the caller splits them (`review` uses
+`str::lines`, like `file_lines`). The diff is `similar`'s Myers over whole
+lines.
+
+- `Current` iff every anchored line is in an unchanged run of the diff **and**
+  the mapped lines are contiguous: a line inserted inside the range makes it
+  `Outdated`, since the anchored text no longer reads the same.
+- `Outdated` best guess: each end follows the diff; an end on an edited or
+  deleted line goes to where that change starts in the new text. The result
+  is clamped to `1..=max(new_len, 1)` with `end >= start`, so an empty file
+  gives `1-1`.
 
 **Invariants**
 - Pure: no I/O, no clock, deterministic for the same inputs.
 - `Current` implies the mapped lines are byte-identical to the originals.
 - `Outdated` always carries a best-guess range clamped to the new file, never
-  out of bounds.
+  out of bounds. A range outside the old text is `Outdated`, never a panic.
 - Identity: mapping a range between identical texts returns it unchanged.
+
+*Deferred:* `changed_lines(old, new)` for gutter change markers (#46).
 
 ### `store`
 **Role:** persistence. Reads and writes `Review`s.
@@ -579,8 +592,9 @@ state or `review`.
 - `review`: one test per rule, with an injected clock; editing the file between
   calls to exercise `state`.
 - `tests/core.rs`: concurrent writers, cross-handle reads, a full review round.
-- `anchor` (deferred): property tests (identity, in-bounds, `Current` ⇒
-  identical text).
+- `anchor`: one example per diff shape plus properties checked exhaustively
+  over every pair of texts of 0–4 lines over `{a, b, c}` and every range
+  (identity, in-bounds, `Current` ⇒ identical text).
 - `cli`: in-process tests (golden JSON, TTY rendering, error table, help) in
   `src/cli.rs`; process tests in `tests/cli.rs` for streams, exit status, and
   env. Schema conformance is deferred with `ptal schema`.

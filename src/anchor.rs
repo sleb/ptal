@@ -1,0 +1,258 @@
+//! Pure mapping of line ranges between two versions of a file.
+//!
+//! A thread is anchored to a range in the revision it was created on.
+//! [`map_range`] diffs that revision against the current one (Myers, by whole
+//! lines) and says where the range is now:
+//!
+//! - every anchored line is unchanged and still contiguous → [`State::Current`]
+//!   at the new line numbers;
+//! - otherwise → [`State::Outdated`] at a best-guess range, always within the
+//!   new file.
+//!
+//! No I/O, no clock, deterministic. Callers split the text into lines; the
+//! core uses [`str::lines`] everywhere (see [`crate::review::file_lines`]).
+
+use similar::{Algorithm, DiffOp, capture_diff_slices};
+
+use crate::model::State;
+
+/// A 1-based, inclusive line range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LineRange {
+    pub start: u32,
+    pub end: u32,
+}
+
+/// Where a range lands in the new text, and whether it still reads the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mapped {
+    /// In bounds of the new text: `1 <= start <= end <= max(new.len(), 1)`.
+    pub range: LineRange,
+    pub state: State,
+}
+
+/// Map `range` of `old` to the matching lines of `new`.
+///
+/// The result is [`State::Current`] only if every line of `range` is
+/// unchanged and the lines are still contiguous, so the mapped lines of `new`
+/// are byte-identical to `range` of `old`. A line inserted inside the range
+/// makes it [`State::Outdated`].
+///
+/// An outdated range is a best guess: each end follows the diff, and an end
+/// on an edited or deleted line goes to where that change starts in `new`.
+/// It is clamped to the new text; an empty `new` gives `1-1`. A `range`
+/// outside `old` is outdated, never a panic.
+///
+/// # Examples
+/// ```
+/// # use ptal::anchor::{map_range, LineRange};
+/// # use ptal::model::State;
+/// let old = ["a", "b", "c"];
+/// let new = ["new", "a", "b", "c"];
+///
+/// let mapped = map_range(&old, &new, LineRange { start: 2, end: 3 });
+/// assert_eq!(mapped.range, LineRange { start: 3, end: 4 });
+/// assert_eq!(mapped.state, State::Current);
+/// ```
+pub fn map_range(old: &[&str], new: &[&str], range: LineRange) -> Mapped {
+    let ops = capture_diff_slices(Algorithm::Myers, old, new);
+    let first = range.start.saturating_sub(1) as usize;
+    let last = range.end.saturating_sub(1) as usize;
+
+    let (new_first, start_kept) = position(&ops, first, new.len());
+    let (new_last, end_kept) = position(&ops, last, new.len());
+    let current = range.start >= 1
+        && range.start <= range.end
+        && start_kept
+        && end_kept
+        && new_last - new_first == last - first
+        && (first..=last).all(|i| position(&ops, i, new.len()).1);
+
+    let max = new.len().max(1);
+    let clamp = |i: usize| u32::try_from((i + 1).clamp(1, max)).unwrap_or(u32::MAX);
+    let start = clamp(new_first);
+    let end = clamp(new_last).max(start);
+    Mapped {
+        range: LineRange { start, end },
+        state: if current {
+            State::Current
+        } else {
+            State::Outdated
+        },
+    }
+}
+
+/// Where 0-based line `i` of the old text goes in the new text, and whether
+/// it is unchanged there. An edited or deleted line goes to the start of its
+/// change in the new text; a line past the end goes past the end.
+fn position(ops: &[DiffOp], i: usize, new_len: usize) -> (usize, bool) {
+    for op in ops {
+        if !op.old_range().contains(&i) {
+            continue;
+        }
+        return match *op {
+            DiffOp::Equal {
+                old_index,
+                new_index,
+                ..
+            } => (new_index + (i - old_index), true),
+            _ => (op.new_range().start, false),
+        };
+    }
+    (new_len, false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn range(start: u32, end: u32) -> LineRange {
+        LineRange { start, end }
+    }
+
+    fn map(old: &[&str], new: &[&str], start: u32, end: u32) -> (LineRange, State) {
+        let mapped = map_range(old, new, range(start, end));
+        (mapped.range, mapped.state)
+    }
+
+    const OLD: [&str; 4] = ["one", "two", "three", "four"];
+
+    #[test]
+    fn identical_texts_keep_the_range_current() {
+        assert_eq!(map(&OLD, &OLD, 2, 3), (range(2, 3), State::Current));
+    }
+
+    #[test]
+    fn lines_inserted_above_shift_the_range_and_keep_it_current() {
+        let new = ["zero", "half", "one", "two", "three", "four"];
+
+        assert_eq!(map(&OLD, &new, 2, 3), (range(4, 5), State::Current));
+    }
+
+    #[test]
+    fn lines_deleted_above_shift_the_range_and_keep_it_current() {
+        let new = ["two", "three", "four"];
+
+        assert_eq!(map(&OLD, &new, 2, 3), (range(1, 2), State::Current));
+    }
+
+    #[test]
+    fn lines_appended_below_leave_the_range_unchanged() {
+        let new = ["one", "two", "three", "four", "five"];
+
+        assert_eq!(map(&OLD, &new, 2, 3), (range(2, 3), State::Current));
+    }
+
+    #[test]
+    fn an_edited_anchored_line_is_outdated_at_the_edit() {
+        let new = ["zero", "one", "TWO", "three", "four"];
+
+        assert_eq!(map(&OLD, &new, 2, 3), (range(3, 4), State::Outdated));
+    }
+
+    #[test]
+    fn a_deleted_anchored_range_is_outdated_and_in_bounds() {
+        let new = ["one", "four"];
+        assert_eq!(map(&OLD, &new, 2, 3), (range(2, 2), State::Outdated));
+
+        let truncated = ["one", "two"];
+        assert_eq!(map(&OLD, &truncated, 3, 4), (range(2, 2), State::Outdated));
+    }
+
+    #[test]
+    fn a_line_inserted_inside_the_range_is_outdated() {
+        let new = ["one", "two", "inserted", "three", "four"];
+
+        assert_eq!(map(&OLD, &new, 2, 3), (range(2, 4), State::Outdated));
+    }
+
+    #[test]
+    fn an_empty_new_file_is_outdated_at_line_one() {
+        assert_eq!(map(&OLD, &[], 2, 3), (range(1, 1), State::Outdated));
+    }
+
+    #[test]
+    fn a_range_on_the_last_line_maps_correctly() {
+        let new = ["zero", "one", "two", "three", "four"];
+
+        assert_eq!(map(&OLD, &new, 4, 4), (range(5, 5), State::Current));
+        assert_eq!(map(&OLD, &OLD, 1, 4), (range(1, 4), State::Current));
+    }
+
+    #[test]
+    fn a_range_outside_the_old_text_is_outdated_not_a_panic() {
+        assert_eq!(map(&OLD, &OLD, 4, 9), (range(4, 4), State::Outdated));
+        assert_eq!(map(&OLD, &OLD, 0, 1), (range(1, 1), State::Outdated));
+        assert_eq!(map(&OLD, &OLD, 3, 2).1, State::Outdated);
+    }
+
+    // --- properties, exhaustive over a small corpus ---
+
+    /// Every text of 0-4 lines over the alphabet {a, b, c}.
+    fn corpus() -> Vec<Vec<&'static str>> {
+        let mut texts = vec![vec![]];
+        let mut frontier = vec![vec![]];
+        for _ in 0..4 {
+            let mut next = Vec::new();
+            for text in &frontier {
+                for line in ["a", "b", "c"] {
+                    let mut longer: Vec<&str> = text.clone();
+                    longer.push(line);
+                    next.push(longer);
+                }
+            }
+            texts.extend(next.iter().cloned());
+            frontier = next;
+        }
+        texts
+    }
+
+    /// Every valid range of a text of `len` lines.
+    fn ranges(len: usize) -> impl Iterator<Item = LineRange> {
+        let len = len as u32;
+        (1..=len).flat_map(move |s| (s..=len).map(move |e| range(s, e)))
+    }
+
+    #[test]
+    fn corpus_covers_every_short_text() {
+        assert_eq!(corpus().len(), 1 + 3 + 9 + 27 + 81);
+    }
+
+    #[test]
+    fn property_identity_maps_every_range_unchanged() {
+        for text in corpus() {
+            for r in ranges(text.len()) {
+                let mapped = map_range(&text, &text, r);
+                assert_eq!(
+                    mapped,
+                    Mapped {
+                        range: r,
+                        state: State::Current
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn property_mapped_ranges_are_in_bounds_and_current_is_byte_identical() {
+        let corpus = corpus();
+        for old in &corpus {
+            for new in &corpus {
+                for r in ranges(old.len()) {
+                    let Mapped { range: m, state } = map_range(old, new, r);
+                    let max = new.len().max(1) as u32;
+                    assert!(
+                        1 <= m.start && m.start <= m.end && m.end <= max,
+                        "{old:?} -> {new:?} {r:?}: {m:?}"
+                    );
+                    if state == State::Current {
+                        let was = &old[r.start as usize - 1..r.end as usize];
+                        let now = &new[m.start as usize - 1..m.end as usize];
+                        assert_eq!(was, now, "{old:?} -> {new:?} {r:?}: {m:?}");
+                    }
+                }
+            }
+        }
+    }
+}
