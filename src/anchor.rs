@@ -488,6 +488,7 @@ mod tests {
             }
         }
     }
+
     #[test]
     fn property_changes_are_sorted_disjoint_and_in_bounds() {
         let corpus = corpus();
@@ -506,8 +507,24 @@ mod tests {
                     }
                     after = r.end;
                 }
-                if old == new {
-                    assert!(found.is_empty(), "{old:?}: {found:?}");
+                // Identical texts, and only they, have no changes, unless
+                // nothing is left to mark.
+                assert_eq!(
+                    found.is_empty(),
+                    old == new || new.is_empty(),
+                    "{old:?} -> {new:?}: {found:?}"
+                );
+                // The lines not marked changed were kept: in order, they
+                // are a subsequence of the old text.
+                let kept = new.iter().enumerate().filter(|(i, _)| {
+                    !found.iter().any(|c| {
+                        c.kind == ChangeKind::Changed
+                            && (c.range.start as usize..=c.range.end as usize).contains(&(i + 1))
+                    })
+                });
+                let mut rest = old.iter();
+                for (_, line) in kept {
+                    assert!(rest.any(|o| o == line), "{old:?} -> {new:?}: {found:?}");
                 }
             }
         }

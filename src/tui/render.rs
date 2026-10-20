@@ -1002,6 +1002,26 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
     }
 
     #[test]
+    fn change_glyphs_on_a_terminal_too_narrow_for_them_do_not_panic() {
+        for width in [1, 2] {
+            let app = App::open(
+                lines(3),
+                &[open_thread("c1", (1, 1), State::Current)],
+                "scott",
+                (width, 6),
+            )
+            .with_changes(vec![change(1, 1, ChangeKind::Changed)]);
+
+            let screen = screen(&draw(&app, width, 6));
+
+            assert_eq!(
+                screen.lines().nth(1),
+                Some(if width == 1 { "●" } else { "●┃" })
+            );
+        }
+    }
+
+    #[test]
     fn without_changes_the_footer_has_no_change_count() {
         let app = app_with(lines(3), &[], 8);
 
