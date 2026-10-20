@@ -6,17 +6,21 @@
 file, usually a throwaway plan or design doc (`.md`) that you and a coding
 agent are iterating on together and that will never be committed.
 
-You read the file, leave threaded comments on lines, and quit. The agent reads
-your comments through a small JSON CLI, edits the file, replies, and resolves
-threads. You re-open ptal and see what changed. Comments, replies, and resolved
-state persist across rounds and revisions.
+You read the file, leave threaded comments on lines, and hand off. The agent
+reads your comments through a small JSON CLI, edits the file, replies,
+resolves threads, and hands back. You re-open ptal and see what changed, and
+when the plan is done you close the review as `approved` or `dropped`.
+Comments, replies, resolved state and whose turn it is persist across rounds
+and revisions.
 
 > **Status:** core library, the agent CLI (`comments`, `add`, `resolve`, `reply`,
 > `reopen`, `handoff`), and a TUI implemented: scroll a file (long lines wrap, markdown
 > tables align, markdown structure is highlighted), comment on a line or a
 > selected range, read threads and the agent's replies, jump between threads,
-> search, write multi-line comments, reply, resolve, reopen, `?` lists the
-> keys. Live refresh is planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
+> search, write multi-line comments, reply, resolve, reopen, hand the turn to
+> the agent and close a review with a verdict, `?` lists the keys. Live
+> refresh and waiting for a turn are planned. See
+> [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why not a PR?
 
@@ -185,7 +189,7 @@ Failures print nothing on stdout and one JSON error line on stderr; exit `2`
 means the invocation can be fixed, `1` is a runtime failure (see
 [docs/interfaces.md](docs/interfaces.md#exit-codes)). A skill or prompt for
 your agent of choice is just: *"run `ptal comments <file>`, edit the file to
-address each thread, then `ptal resolve` it."*
+address each thread, `ptal resolve` it, then `ptal handoff`."*
 
 **Planned, not built:** `ptal schema` (JSON Schema for all output).
 
@@ -193,6 +197,13 @@ The full command and key map, agent and human side by side, is in
 [docs/interfaces.md](docs/interfaces.md).
 How a review runs between you and the agent (threads, revisions, turns,
 closing with a verdict) is in [docs/protocol.md](docs/protocol.md).
+
+**Turns.** A review is on your turn or the agent's, or closed. You hand off
+with `H` in the TUI; the agent sees `"turn": "agent"` and your note in
+`ptal comments`, and hands back with `ptal handoff`. You close with `C` and a
+verdict (`approved`: go ahead; `dropped`: don't), and either side can reopen
+a closed review. The turn is a signal, not a lock: both sides can comment at
+any time.
 
 ## Troubleshooting
 

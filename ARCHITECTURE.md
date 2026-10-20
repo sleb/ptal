@@ -41,8 +41,10 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `anchor` | Built: `map_range`, `Diff`, `clamp` (Myers line diff via `similar`) |
 | `diffview` | Deferred |
 
-Deferred within built components: nested replies, edit, delete, and
-`ptal schema` in the CLI. Sections below describe deferred design where they
+Deferred within built components: nested replies, edit, delete,
+`ptal schema` in the CLI, and printing the review log's history (only the
+latest entry is shown; the whole log is kept on disk for rounds and "changes
+since your last look", #46). Sections below describe deferred design where they
 say so.
 
 ## Key idea: revisions and anchoring
