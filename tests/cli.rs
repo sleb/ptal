@@ -250,3 +250,22 @@ fn a_bare_file_with_piped_stdio_is_a_json_error_and_touches_nothing() {
     assert_eq!(fs::read(&sb.file).unwrap(), before);
     assert!(!sb.data.exists());
 }
+
+#[test]
+fn a_thread_follows_lines_inserted_above_it_across_processes() {
+    let sb = sandbox("one\ntwo\nthree\n");
+    sb.run_json(&["add", "FILE", "--lines", "2-3", "Why?", "--as", "scott"]);
+
+    fs::write(&sb.file, "intro\n\none\ntwo\nthree\n").unwrap();
+
+    let listed = sb.run_json(&["comments", "FILE"]);
+    let thread = &listed["threads"][0];
+    assert_eq!(thread["anchor"]["start_line"], 4);
+    assert_eq!(thread["anchor"]["end_line"], 5);
+    assert_eq!(thread["state"], "current");
+
+    let replied = sb.run_json(&["reply", "FILE", "c1", "Because.", "--as", "claude"]);
+    assert_eq!(replied["thread"]["anchor"]["start_line"], 4);
+    assert_eq!(replied["thread"]["anchor"]["end_line"], 5);
+    assert_eq!(sb.run_json(&["comments", "FILE"])["revision"], "r2");
+}
