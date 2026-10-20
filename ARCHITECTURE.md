@@ -32,7 +32,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 
 | Component | State |
 |---|---|
-| `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State`, the review log (`Entry`, `Event`, `Side`, `Verdict`) and its derived `ReviewState` |
+| `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State`, the review log (`Entry`, `Event`, `Side`, `Verdict`), its derived `ReviewState`, and the human's last look (`Review::last_look`) |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
 | `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review` |
 | `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff` |
@@ -108,6 +108,10 @@ threads are never silently dropped or silently re-pointed at the wrong text.
   the other, a close sets the verdict, a reopen gives the turn to the human.
   Each entry sets the state outright, so it is the latest entry's. Never
   persisted.
+- `Review::last_look()` — the latest log entry written by the human side
+  that is a hand-off or a close; its revision is what the human last saw.
+  Matched by side, not author. A reopen is not a look, and neither is opening
+  the TUI (reads never write). `None` before the first one.
 
 **Invariants**
 - Comment ids are short, human-typeable, and unique within a review (`c1`,
