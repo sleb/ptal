@@ -65,6 +65,28 @@ impl Draft {
         self.snap();
     }
 
+    /// Insert pasted `text` at the cursor in one step and move past it.
+    /// Every line break (`\r\n`, `\r` or `\n`) becomes `\n` and tabs are
+    /// kept; other control characters are dropped. If the pasted text joins
+    /// a cluster either side of it, the cursor is left on a boundary, as for
+    /// [`Draft::insert`]. A paste with nothing left to insert changes
+    /// nothing.
+    pub fn paste(&mut self, text: &str) {
+        let text: String = text
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .chars()
+            .filter(|&c| matches!(c, '\n' | '\t') || !c.is_control())
+            .collect();
+        if text.is_empty() {
+            return;
+        }
+        self.goal = None;
+        self.text.insert_str(self.cursor, &text);
+        self.cursor += text.len();
+        self.snap();
+    }
+
     /// Start a new line at the cursor.
     pub fn newline(&mut self) {
         self.goal = None;
@@ -514,6 +536,69 @@ mod tests {
                 draft.cursor()
             );
         }
+    }
+
+    #[test]
+    fn a_paste_makes_every_line_break_a_newline_and_keeps_tabs() {
+        let mut draft = Draft::default();
+        draft.paste("a\r\nb\rc\nd\te");
+
+        assert_eq!(draft.text(), "a\nb\nc\nd\te");
+        assert_eq!(draft.cursor(), draft.text().len());
+    }
+
+    #[test]
+    fn a_paste_drops_other_control_characters() {
+        let mut draft = Draft::default();
+        draft.paste("a\u{7}b\u{1b}c\u{7f}d\u{85}e\u{2028}");
+
+        assert_eq!(draft.text(), "abcde\u{2028}");
+    }
+
+    #[test]
+    fn a_paste_goes_in_at_the_cursor_and_the_cursor_ends_after_it() {
+        let mut draft = typed("ad");
+        draft.left();
+        draft.paste("b\nc");
+
+        assert_eq!(draft.text(), "ab\ncd");
+        assert_eq!(draft.cursor(), 4);
+    }
+
+    #[test]
+    fn a_paste_clears_the_sticky_column() {
+        let mut draft = lines("aaaaaaaa\nb\naaaaaaaa");
+        draft.up(20);
+        draft.paste("x");
+        draft.up(20);
+
+        assert_eq!(draft.cursor_at(20), (0, 2), "column of `bx`, not 8");
+    }
+
+    #[test]
+    fn an_empty_paste_changes_nothing() {
+        let mut draft = typed("ab");
+        draft.left();
+        let before = draft.clone();
+        draft.paste("");
+        draft.paste("\u{7}\u{1b}");
+
+        assert_eq!(draft.text(), before.text());
+        assert_eq!(draft.cursor(), before.cursor());
+    }
+
+    #[test]
+    fn a_paste_joining_the_clusters_around_it_leaves_the_cursor_on_a_boundary() {
+        let mut lead = typed("eb");
+        lead.left();
+        lead.paste("\u{301}x");
+        assert_eq!((lead.text(), lead.cursor()), ("e\u{301}xb", 4));
+
+        let (us, a) = ("\u{1f1fa}", "\u{1f1f8}");
+        let mut trail = typed(a);
+        trail.home();
+        trail.paste(us);
+        assert_eq!(trail.cursor(), trail.text().len(), "after the joined flag");
     }
 
     #[test]
