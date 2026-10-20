@@ -412,19 +412,17 @@ A  resolve c1 note "Removed the Open questions section."
 ### C6. The human ends the review
 
 The human is done reviewing; nothing more is expected on this review.
-Three common outcomes:
+Two outcomes:
 
 ```
-(a) accepted
+(a) accepted: the agent takes the next step (publish the plan to an issue, implement)
 H  close approved "Good to go."
-(b) not going ahead
-H  close dropped "We're buying a gateway product instead."
-(c) covered by another review
-H  close duplicate "Merged into api-quotas.md."
+(b) not going ahead, for any reason (abandoned, covered elsewhere, not now)
+H  close dropped "Merged into api-quotas.md."
 ```
 
-Variant: the human stops with threads still open, and must still say which
-of the three it is (usually `approved`, leaving minor threads as they are).
+Variant: the human stops with threads still open, and must still pick one
+(usually `approved`, leaving minor threads as they are).
 
 Later, either side brings it back:
 
@@ -590,9 +588,9 @@ Collected from the scenarios above, unanswered here on purpose:
 - **Round:** first-class (numbered) or implied by hand-offs? (D2)
 - **Comment intent:** question, change request, nit; explicit or prose? (A4, C2)
 - **Verdict:** does approval with open threads block, and does a later edit
-  undo it? Which outcomes are there? (C2, C6) *Partly proposed: the
-  verdict is carried by closing, and open threads don't block `approved`;
-  see [Turn](#turn) rule 12.*
+  undo it? Which outcomes are there? (C2, C6) *Partly proposed: closing
+  carries the verdict, `approved` or `dropped`, and open threads don't
+  block `approved`; see [Turn](#turn) rule 12.*
 
 ---
 
@@ -658,12 +656,13 @@ next. Rules 1–9 describe an active review; rules
     turn; closing isn't passing the turn, so rule 4 doesn't apply. The
     agent that thinks the work is done says so in a hand-off note and lets
     the human close.
-12. **Closing is the verdict.** A close carries exactly one of a fixed
-    set, and each tells the agent what to do next:
-    - `approved`: the plan is accepted; act on it (implement, hand it on).
-    - `dropped`: the plan won't go ahead; stop.
-    - `duplicate`: another review or plan covers it; stop, and follow the
-      note to where the work went.
+12. **Closing is the verdict.** A close carries one of two verdicts. Both
+    end the review: no more action is expected in it. They differ in what
+    the agent does next, outside the review:
+    - `approved`: take the next step with the plan as it stands (publish
+      it to an issue, commit, implement).
+    - `dropped`: don't take the next step. Why (abandoned, covered by
+      another plan, not now) goes in the note.
 
     There is no close without a verdict (`missing_verdict`, exit `2`,
     nothing written), and a verdict is set only by closing.
@@ -673,8 +672,8 @@ next. Rules 1–9 describe an active review; rules
     may ask for confirmation when threads are open (`approve with 2 open
     threads?`).
 13. **A closed review still takes writes, and they don't reopen it.** A
-    nit fix asked for in an `approved` close's note (C2), a reply to a last question, or a note about what shipped
-    is valid (rule 5 again). Threads left open at close stay open; the
+    reply to a last question or a note about what shipped is valid (rule 5
+    again), though none is expected. Threads left open at close stay open; the
     close output lists them, as a hand-off does (rule 7).
 14. **Reopening is explicit, by either side, and gives the turn to the
     human.** Either side may reopen a closed review (the agent, when it has
@@ -690,7 +689,7 @@ next. Rules 1–9 describe an active review; rules
 | A1–A6, D1–D4 | One hand-off each way per round. Each `── H → A ──` / `── A → H ──` line is a hand-off record. |
 | A5 | The agent's turn ends with only a question and no edit. That is a valid hand-off: nothing requires a revision. The agent can't park just `c1`, but it doesn't need to; it finishes the other threads, then hands off. |
 | B1 | The agent hands back with `c2` waiting on the human and nothing waiting on itself: a clean hand-off. "Answered", not "closed", is what a turn needs. |
-| C2 | A close with `approved` and a note asking for the nit. The nit fix is a write on a closed review (rule 13); no hand-back, and the agent goes on to implement, as `approved` says (rule 12). |
+| C2 | Approval ends the review, so nothing in it is expected afterwards (rule 12). If the nit matters, the human hands off for it and approves on the next turn; otherwise they approve, and the open nit is accepted as it stands. The agent's next step uses the plan as approved. |
 | C6 | Each ending is a close (rule 10) by the human (rule 11) with its verdict (rule 12). In the variant, the open threads are listed and stay open (rule 13), but the agent still learns whether to proceed. The agent's reopen is a log entry and makes it the human's turn (rule 14). |
 | D2 | Round 3 ends with a close carrying `approved`, not a hand-off. |
 | C3 | The review starts as the human's turn. The agent seeds `c1`, `c2` during it (allowed by rule 5), then asks the human to open ptal. No hand-off is needed, or possible, until the human finishes. |
@@ -738,7 +737,12 @@ next. Rules 1–9 describe an active review; rules
 - **Verdicts on hand-offs** (#35's `changes_requested`, or an `approved`
   hand-off for C2). Every human hand-off requests something, so
   `changes_requested` says nothing the hand-off doesn't. An approval that
-  still expects a nit fix is an `approved` close with a note (rule 13).
+  still expects a fix is a hand-off; approve once it's done.
+- **More verdicts** (`duplicate`, on hold, "accepted but not yours to carry
+  out"). Each tells the agent to stop, as `dropped` does; the
+  differences are for whoever reads the review later, and the note
+  carries them. The verdict answers one question: take the next step, or
+  not.
 - **Free-text outcome** (the close note alone says what happened). The
   agent would have to parse prose to decide whether to proceed. The note
   stays for detail; the verdict is an enum.
@@ -750,9 +754,9 @@ next. Rules 1–9 describe an active review; rules
 - **Close only by the holder** (rule 4 applied to closing). The human
   couldn't stop a review while the agent holds it, which is when stopping
   matters most (the agent is off track, or the plan is dropped).
-- **A closed review refuses writes.** Breaks C2's late nit fix and the
-  last reply to a question; pushes them back into chat.
-- **Any write reopens a closed review.** A late nit fix or a "shipped"
+- **A closed review refuses writes.** Breaks the last reply to a
+  question and the "shipped" note; pushes them back into chat.
+- **Any write reopens a closed review.** A late reply or a "shipped"
   note would wake the human for nothing, and a close would never stick.
   Reopen is explicit.
 - **Closing resolves the open threads.** Silently rewrites their outcome:
@@ -773,7 +777,7 @@ next. Rules 1–9 describe an active review; rules
   waiting on the sender. Whose turn it is shows in the TUI and in
   `ptal comments` (or a `status` command). #35's statuses (open,
   `approved`, `changes_requested`) become: active (with a turn) or closed
-  with a verdict (`approved`, `dropped`, `duplicate`). `changes_requested`
+  with a verdict (`approved`, `dropped`). `changes_requested`
   is just the human's hand-off. The TUI needs a close action alongside finish, and the
   existing "reopen a finished review" becomes the reopen of rule 14,
   available to the agent's CLI too.
@@ -785,5 +789,5 @@ next. Rules 1–9 describe an active review; rules
 - **#46:** "last look" could be the human's last hand-off rather than a
   separate marker. Left to that story.
 - **#45:** a hand-off records the revision once revisions exist.
-- **Not decided here:** whether the agent needs more verdicts than three
+- **Not decided here:** whether a later edit undoes an approval
   (Verdict); whether rounds are numbered from the log (Round).
