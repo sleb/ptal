@@ -583,6 +583,7 @@ Collected from the scenarios above, unanswered here on purpose:
   *Proposed: see [Resolution](#resolution).*
 - **Acknowledgement:** does the human's acceptance of an agent's resolve
   need recording? (A1, C2)
+  *Answered: see [Acknowledgement](#acknowledgement).*
 - **Revision:** which revision is a thread, a comment, a resolve anchored
   to? Who authored a revision? Is a rewrite still the same review? (B2, B3,
   C1, C4, D3) *Proposed: see [Revision](#revision).*
@@ -1017,3 +1018,25 @@ the resolve note.
   common; which one a review follows is the agent's convention.
 - **An `approved` close resolves its open threads.** Rewrites what
   happened: the threads were accepted, not answered.
+
+### Acknowledgement
+
+**Definition.** Acknowledgement is implicit. A resolve stands unless
+someone reopens it; nothing records that the other side has seen or
+accepted it.
+
+**Rules.**
+
+1. **Disagreement is a reopen with a comment.** If the human has a concern
+   with a resolution, they reopen the thread with a note saying why (A2);
+   the same goes for the agent with a resolve by the human.
+2. **Silence accepts.** A resolve that is never reopened is accepted. An
+   `approved` close accepts whatever is left, resolved or open
+   ([Turn](#turn) rule 12).
+
+**Considered and dropped.**
+
+- **An explicit acknowledgement** (a per-thread "seen" or "confirmed"
+  mark, the deferred `acknowledge` operation in ARCHITECTURE.md). It adds
+  a step to every thread for the rare case of a disputed fix, which a
+  reopen already covers.
