@@ -188,29 +188,33 @@ pub enum Event {
     Key(KeyEvent),
     /// The terminal is now `width` x `height` cells.
     Resize(u16, u16),
-    /// The driver wrote `done` to thread `id`; `threads` is the re-read view
-    /// of the file's threads.
+    /// The driver wrote `done` to thread `id`, then re-read the file.
     Saved {
         /// The thread written to: the new thread for an add.
         id: String,
         done: Done,
-        threads: Vec<ThreadView>,
-        /// The review's state, re-read with the threads.
-        review: ReviewStatus,
+        reread: Reread,
     },
-    /// The driver wrote a hand-off, close or reopen; `message` is the
-    /// footer's, and `threads` and `review` are the re-read view.
-    ReviewSaved {
-        message: String,
-        threads: Vec<ThreadView>,
-        review: ReviewStatus,
-    },
+    /// The driver wrote a hand-off, close or reopen, then re-read the file;
+    /// `message` is the footer's.
+    ReviewSaved { message: String, reread: Reread },
     /// The driver could not perform the write. A pending draft is kept.
     SaveFailed(String),
     /// Text was pasted (the terminal's bracketed paste). In
     /// [`Mode::Input`] it goes into the draft in one step
     /// ([`Draft::paste`]); everywhere else it is ignored.
     Paste(String),
+}
+
+/// What the driver re-reads from disk after a write, for the screen.
+///
+/// The displayed lines are not re-read: they are read once, at open.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reread {
+    /// Every thread of the file, resolved ones included.
+    pub threads: Vec<ThreadView>,
+    /// The review's state.
+    pub review: ReviewStatus,
 }
 
 /// Which write an [`Event::Saved`] reports; it picks the footer message.
@@ -399,6 +403,12 @@ impl App {
     fn set_review(&mut self, review: ReviewStatus) {
         self.review_rows = review_rows(&review, self.cols);
         self.review = review;
+    }
+
+    /// Replace what was re-read from disk after a write.
+    fn reread(&mut self, Reread { threads, review }: Reread) {
+        self.threads = threads;
+        self.set_review(review);
     }
 
     /// How many threads are open.
@@ -1089,14 +1099,8 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.relayout();
             None
         }
-        Event::Saved {
-            id,
-            done,
-            threads,
-            review,
-        } => {
-            app.threads = threads;
-            app.set_review(review);
+        Event::Saved { id, done, reread } => {
+            app.reread(reread);
             let from_panel = matches!(
                 app.mode,
                 Mode::Panel { .. }
@@ -1112,13 +1116,8 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.status = Some(format!("{} {id}", done.verb()));
             None
         }
-        Event::ReviewSaved {
-            message,
-            threads,
-            review,
-        } => {
-            app.threads = threads;
-            app.set_review(review);
+        Event::ReviewSaved { message, reread } => {
+            app.reread(reread);
             app.mode = Mode::Normal;
             app.status = Some(message);
             None
@@ -2320,8 +2319,7 @@ mod tests {
             Event::Saved {
                 id: "c3".into(),
                 done: Done::Added,
-                threads: vec![],
-                review: ReviewStatus::default(),
+                reread: Reread::default(),
             },
         );
 
@@ -2867,8 +2865,10 @@ mod tests {
             Event::Saved {
                 id: "c1".into(),
                 done: Done::Added,
-                threads,
-                review: ReviewStatus::default(),
+                reread: Reread {
+                    threads,
+                    ..Reread::default()
+                },
             },
         );
 
@@ -3166,8 +3166,7 @@ mod tests {
             [Event::Saved {
                 id: "c9".into(),
                 done: Done::Added,
-                threads: vec![],
-                review: ReviewStatus::default(),
+                reread: Reread::default(),
             }],
         );
 
@@ -3228,8 +3227,10 @@ mod tests {
             Event::Saved {
                 id: "c9".into(),
                 done: Done::Added,
-                threads,
-                review: ReviewStatus::default(),
+                reread: Reread {
+                    threads,
+                    ..Reread::default()
+                },
             },
         );
 
@@ -3500,8 +3501,10 @@ mod tests {
             Event::Saved {
                 id: "c2".into(),
                 done: Done::Replied,
-                threads,
-                review: ReviewStatus::default(),
+                reread: Reread {
+                    threads,
+                    ..Reread::default()
+                },
             },
         );
 
@@ -3610,8 +3613,10 @@ mod tests {
                 Event::Saved {
                     id: "c2".into(),
                     done,
-                    threads,
-                    review: ReviewStatus::default(),
+                    reread: Reread {
+                        threads,
+                        ..Reread::default()
+                    },
                 },
             );
 
@@ -3821,8 +3826,10 @@ mod tests {
             Event::Saved {
                 id: "c4".into(),
                 done: Done::Added,
-                threads,
-                review: ReviewStatus::default(),
+                reread: Reread {
+                    threads,
+                    ..Reread::default()
+                },
             },
         );
 
@@ -4693,8 +4700,10 @@ mod tests {
             &mut a,
             Event::ReviewSaved {
                 message: "handed off".into(),
-                threads: vec![],
-                review: handed_off("ok"),
+                reread: Reread {
+                    review: handed_off("ok"),
+                    ..Reread::default()
+                },
             },
         );
 
