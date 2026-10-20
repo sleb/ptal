@@ -59,6 +59,18 @@ impl Review {
         }
     }
 
+    /// The human's last look at the file: the latest [`log`](Review::log)
+    /// entry written by [`Side::Human`] that is a hand-off or a close, or
+    /// `None` before the first one.
+    ///
+    /// Its revision is what the human last saw. A reopen is not a look, and
+    /// neither is opening the file: reads never write.
+    pub fn last_look(&self) -> Option<&Entry> {
+        self.log.iter().rev().find(|entry| {
+            entry.side == Side::Human && matches!(entry.event, Event::HandOff | Event::Close { .. })
+        })
+    }
+
     /// The id of the revision whose content hashes to `sha256`, assigning
     /// the next ordinal (`r1`, `r2`, ...) if it is new.
     ///
@@ -601,6 +613,53 @@ mod tests {
                 ..Review::new("/x")
             };
             assert_eq!(review.state(), expected, "{log:?}");
+        }
+    }
+
+    #[test]
+    fn last_look_is_the_latest_human_hand_off_or_close() {
+        let hand_off = |side| entry(Event::HandOff, side);
+        let close = || {
+            entry(
+                Event::Close {
+                    verdict: Verdict::Approved,
+                },
+                Side::Human,
+            )
+        };
+        let reopen = |side| entry(Event::Reopen, side);
+        // Each case is a log and the index of the entry that is the last look.
+        let cases: Vec<(Vec<Entry>, Option<usize>)> = vec![
+            (vec![], None),
+            (vec![hand_off(Side::Agent)], None),
+            (vec![hand_off(Side::Human)], Some(0)),
+            (vec![hand_off(Side::Human), hand_off(Side::Agent)], Some(0)),
+            (vec![close()], Some(0)),
+            (vec![close(), reopen(Side::Human)], Some(0)),
+            (
+                vec![
+                    hand_off(Side::Human),
+                    hand_off(Side::Agent),
+                    hand_off(Side::Human),
+                ],
+                Some(2),
+            ),
+        ];
+
+        for (log, expected) in cases {
+            let log: Vec<Entry> = log
+                .into_iter()
+                .enumerate()
+                .map(|(i, e)| Entry {
+                    revision: format!("r{}", i + 1),
+                    ..e
+                })
+                .collect();
+            let review = Review {
+                log: log.clone(),
+                ..Review::new("/x")
+            };
+            assert_eq!(review.last_look(), expected.map(|i| &log[i]), "{log:?}");
         }
     }
 

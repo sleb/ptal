@@ -7,6 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+use crate::anchor::{Change, ChangeKind, LineRange};
 use crate::model::{Entry, Event as LogEvent, ReviewState, Side, State, Status, Verdict};
 use crate::review::{ReviewStatus, ThreadView};
 
@@ -188,29 +189,35 @@ pub enum Event {
     Key(KeyEvent),
     /// The terminal is now `width` x `height` cells.
     Resize(u16, u16),
-    /// The driver wrote `done` to thread `id`; `threads` is the re-read view
-    /// of the file's threads.
+    /// The driver wrote `done` to thread `id`, then re-read the file.
     Saved {
         /// The thread written to: the new thread for an add.
         id: String,
         done: Done,
-        threads: Vec<ThreadView>,
-        /// The review's state, re-read with the threads.
-        review: ReviewStatus,
+        reread: Reread,
     },
-    /// The driver wrote a hand-off, close or reopen; `message` is the
-    /// footer's, and `threads` and `review` are the re-read view.
-    ReviewSaved {
-        message: String,
-        threads: Vec<ThreadView>,
-        review: ReviewStatus,
-    },
+    /// The driver wrote a hand-off, close or reopen, then re-read the file;
+    /// `message` is the footer's.
+    ReviewSaved { message: String, reread: Reread },
     /// The driver could not perform the write. A pending draft is kept.
     SaveFailed(String),
     /// Text was pasted (the terminal's bracketed paste). In
     /// [`Mode::Input`] it goes into the draft in one step
     /// ([`Draft::paste`]); everywhere else it is ignored.
     Paste(String),
+}
+
+/// What the driver re-reads from disk after a write, for the screen.
+///
+/// The displayed lines are not re-read: they are read once, at open.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reread {
+    /// Every thread of the file, resolved ones included.
+    pub threads: Vec<ThreadView>,
+    /// The review's state.
+    pub review: ReviewStatus,
+    /// What changed since the human's last look ([`crate::review::View::changes`]).
+    pub changes: Vec<Change>,
 }
 
 /// Which write an [`Event::Saved`] reports; it picks the footer message.
@@ -301,6 +308,9 @@ pub struct App {
     /// Every thread of the file, resolved and outdated included, in store
     /// order. Re-read from disk after each write; never patched locally.
     threads: Vec<ThreadView>,
+    /// What changed since the human's last look, one hunk each, sorted.
+    /// Re-read from disk after each write, like the threads.
+    changes: Vec<Change>,
 }
 
 /// What a gutter cell says about the threads covering a line.
@@ -376,6 +386,7 @@ impl App {
             file: String::new(),
             author: author.to_string(),
             threads: threads.to_vec(),
+            changes: Vec::new(),
         };
         app.relayout();
         app.clamp_view();
@@ -396,9 +407,30 @@ impl App {
         self
     }
 
+    /// Mark `changes` (since the human's last look) in the gutter.
+    #[must_use]
+    pub fn with_changes(mut self, changes: Vec<Change>) -> Self {
+        self.changes = changes;
+        self
+    }
+
     fn set_review(&mut self, review: ReviewStatus) {
         self.review_rows = review_rows(&review, self.cols);
         self.review = review;
+    }
+
+    /// Replace what was re-read from disk after a write.
+    fn reread(
+        &mut self,
+        Reread {
+            threads,
+            review,
+            changes,
+        }: Reread,
+    ) {
+        self.threads = threads;
+        self.set_review(review);
+        self.changes = changes;
     }
 
     /// How many threads are open.
@@ -520,6 +552,23 @@ impl App {
             .iter()
             .filter(|view| self.covers(view, line))
             .collect()
+    }
+
+    /// What changed at 0-based `line` since the human's last look, if
+    /// anything.
+    pub fn change(&self, line: usize) -> Option<ChangeKind> {
+        self.changes
+            .iter()
+            .find(|change| {
+                let LineRange { start, end } = change.range;
+                (start as usize..=end as usize).contains(&(line + 1))
+            })
+            .map(|change| change.kind)
+    }
+
+    /// How many changes (hunks) there are since the human's last look.
+    pub fn changes(&self) -> usize {
+        self.changes.len()
     }
 
     /// How many open threads are outdated.
@@ -982,6 +1031,23 @@ impl App {
         }
     }
 
+    /// Move to the start of the nearest change strictly after (or before)
+    /// the cursor; stay put when there is none.
+    fn jump_to_change(&mut self, forward: bool) {
+        let starts = self
+            .changes
+            .iter()
+            .map(|change| (change.range.start as usize).saturating_sub(1));
+        let target = if forward {
+            starts.into_iter().find(|&line| line > self.cursor)
+        } else {
+            starts.rev().find(|&line| line < self.cursor)
+        };
+        if let Some(line) = target {
+            self.move_to(line);
+        }
+    }
+
     /// Move `top` and the cursor by the whole lines, from `top` down (or
     /// above `top` up), that fit in half the view's rows; at least one line.
     /// Past either end of the file a line counts as one row, so the cursor
@@ -1089,14 +1155,8 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.relayout();
             None
         }
-        Event::Saved {
-            id,
-            done,
-            threads,
-            review,
-        } => {
-            app.threads = threads;
-            app.set_review(review);
+        Event::Saved { id, done, reread } => {
+            app.reread(reread);
             let from_panel = matches!(
                 app.mode,
                 Mode::Panel { .. }
@@ -1112,13 +1172,8 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.status = Some(format!("{} {id}", done.verb()));
             None
         }
-        Event::ReviewSaved {
-            message,
-            threads,
-            review,
-        } => {
-            app.threads = threads;
-            app.set_review(review);
+        Event::ReviewSaved { message, reread } => {
+            app.reread(reread);
             app.mode = Mode::Normal;
             app.status = Some(message);
             None
@@ -1180,6 +1235,8 @@ fn movement(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::End => app.move_to(app.last_line()),
         KeyCode::Char(']') if !ctrl_only => app.jump_to_covered(true),
         KeyCode::Char('[') if !ctrl_only => app.jump_to_covered(false),
+        KeyCode::Char('}') if !ctrl_only => app.jump_to_change(true),
+        KeyCode::Char('{') if !ctrl_only => app.jump_to_change(false),
         KeyCode::Char('n') if !chord => app.repeat_search(true),
         KeyCode::Char('N') if !chord => app.repeat_search(false),
         KeyCode::PageDown => app.scroll_half_page(true),
@@ -2320,8 +2377,7 @@ mod tests {
             Event::Saved {
                 id: "c3".into(),
                 done: Done::Added,
-                threads: vec![],
-                review: ReviewStatus::default(),
+                reread: Reread::default(),
             },
         );
 
@@ -2867,8 +2923,10 @@ mod tests {
             Event::Saved {
                 id: "c1".into(),
                 done: Done::Added,
-                threads,
-                review: ReviewStatus::default(),
+                reread: Reread {
+                    threads,
+                    ..Reread::default()
+                },
             },
         );
 
@@ -3166,8 +3224,7 @@ mod tests {
             [Event::Saved {
                 id: "c9".into(),
                 done: Done::Added,
-                threads: vec![],
-                review: ReviewStatus::default(),
+                reread: Reread::default(),
             }],
         );
 
@@ -3228,8 +3285,10 @@ mod tests {
             Event::Saved {
                 id: "c9".into(),
                 done: Done::Added,
-                threads,
-                review: ReviewStatus::default(),
+                reread: Reread {
+                    threads,
+                    ..Reread::default()
+                },
             },
         );
 
@@ -3500,8 +3559,10 @@ mod tests {
             Event::Saved {
                 id: "c2".into(),
                 done: Done::Replied,
-                threads,
-                review: ReviewStatus::default(),
+                reread: Reread {
+                    threads,
+                    ..Reread::default()
+                },
             },
         );
 
@@ -3610,8 +3671,10 @@ mod tests {
                 Event::Saved {
                     id: "c2".into(),
                     done,
-                    threads,
-                    review: ReviewStatus::default(),
+                    reread: Reread {
+                        threads,
+                        ..Reread::default()
+                    },
                 },
             );
 
@@ -3821,8 +3884,10 @@ mod tests {
             Event::Saved {
                 id: "c4".into(),
                 done: Done::Added,
-                threads,
-                review: ReviewStatus::default(),
+                reread: Reread {
+                    threads,
+                    ..Reread::default()
+                },
             },
         );
 
@@ -4337,7 +4402,10 @@ mod tests {
             ),
         ];
         let lines = (1..=40).map(|i| format!("line {i}")).collect();
-        let mut a = App::open(lines, &threads, "scott", (80, 10));
+        let mut a = App::open(lines, &threads, "scott", (80, 10)).with_changes(vec![
+            change(2, 2, ChangeKind::Changed),
+            change(30, 31, ChangeKind::Changed),
+        ]);
         send(
             &mut a,
             [ch('/'), ch('2'), ch('9'), press(KeyCode::Enter), ch('g')],
@@ -4693,8 +4761,10 @@ mod tests {
             &mut a,
             Event::ReviewSaved {
                 message: "handed off".into(),
-                threads: vec![],
-                review: handed_off("ok"),
+                reread: Reread {
+                    review: handed_off("ok"),
+                    ..Reread::default()
+                },
             },
         );
 
@@ -4721,5 +4791,144 @@ mod tests {
             }
         ));
         assert_eq!(update(&mut a, ctrl('s')), None, "asked again");
+    }
+
+    // --- changes since the last look ---
+
+    fn change(start: u32, end: u32, kind: ChangeKind) -> Change {
+        Change {
+            range: LineRange { start, end },
+            kind,
+        }
+    }
+
+    fn change_marks(a: &App) -> Vec<Option<ChangeKind>> {
+        (0..a.lines.len()).map(|i| a.change(i)).collect()
+    }
+
+    #[test]
+    fn changes_mark_their_lines_and_count_as_hunks() {
+        let a = app(5, 10).with_changes(vec![
+            change(2, 3, ChangeKind::Changed),
+            change(5, 5, ChangeKind::Removed),
+        ]);
+
+        let (c, r) = (Some(ChangeKind::Changed), Some(ChangeKind::Removed));
+        assert_eq!(change_marks(&a), [None, c, c, None, r], "0-based");
+        assert_eq!(a.changes(), 2);
+    }
+
+    #[test]
+    fn without_changes_nothing_is_marked() {
+        let a = app(3, 10);
+
+        assert_eq!(change_marks(&a), [None, None, None]);
+        assert_eq!(a.changes(), 0);
+    }
+
+    #[test]
+    fn a_review_write_replaces_the_changes_with_the_re_read_ones() {
+        let mut a = app(3, 10).with_changes(vec![change(1, 1, ChangeKind::Changed)]);
+
+        update(
+            &mut a,
+            Event::ReviewSaved {
+                message: "handed off".into(),
+                reread: Reread::default(),
+            },
+        );
+
+        assert_eq!(change_marks(&a), [None, None, None]);
+    }
+
+    #[test]
+    fn a_thread_write_replaces_the_changes_with_the_re_read_ones() {
+        let mut a = app(3, 10).with_changes(vec![change(1, 1, ChangeKind::Changed)]);
+
+        update(
+            &mut a,
+            Event::Saved {
+                id: "c1".into(),
+                done: Done::Added,
+                reread: Reread {
+                    changes: vec![change(3, 3, ChangeKind::Removed)],
+                    ..Reread::default()
+                },
+            },
+        );
+
+        assert_eq!(change_marks(&a), [None, None, Some(ChangeKind::Removed)]);
+    }
+
+    fn change_app() -> App {
+        let lines = (1..=12).map(|i| i.to_string()).collect();
+        App::open(lines, &[], "scott", (80, 6)).with_changes(vec![
+            change(3, 4, ChangeKind::Changed),
+            change(7, 7, ChangeKind::Removed),
+            change(10, 11, ChangeKind::Changed),
+        ])
+    }
+
+    #[test]
+    fn braces_jump_between_change_starts_and_stop_at_the_ends() {
+        let mut a = change_app();
+        let mut visited = vec![];
+        for _ in 0..4 {
+            send(&mut a, [ch('}')]);
+            visited.push(a.cursor);
+        }
+        assert_eq!(visited, [2, 6, 9, 9], "no wrap past the last");
+
+        let mut back = vec![];
+        for _ in 0..4 {
+            send(&mut a, [ch('{')]);
+            back.push(a.cursor);
+        }
+        assert_eq!(back, [6, 2, 2, 2], "no wrap before the first");
+    }
+
+    #[test]
+    fn open_brace_inside_a_change_goes_to_the_previous_change() {
+        let mut a = change_app();
+        send(&mut a, std::iter::repeat_with(|| ch('j')).take(10));
+        assert_eq!(a.cursor, 10, "inside the last change");
+
+        send(&mut a, [ch('{')]);
+
+        assert_eq!(a.cursor, 9, "its start is strictly before the cursor");
+    }
+
+    #[test]
+    fn braces_do_nothing_without_changes() {
+        let mut a = app(5, 10);
+        send(&mut a, [ch('j'), ch('}'), ch('{')]);
+        assert_eq!(a.cursor, 1);
+    }
+
+    #[test]
+    fn jumping_to_a_change_past_wrapped_lines_keeps_the_cursor_on_screen() {
+        let long = "word ".repeat(30);
+        let lines = (1..=12)
+            .map(|i| if i < 10 { long.clone() } else { i.to_string() })
+            .collect();
+        let mut a = App::open(lines, &[], "scott", (20, 8)).with_changes(vec![change(
+            11,
+            11,
+            ChangeKind::Changed,
+        )]);
+
+        send(&mut a, [ch('}')]);
+
+        assert_eq!(a.cursor, 10);
+        assert!(a.top <= a.cursor && a.cursor < a.top + a.height());
+    }
+
+    #[test]
+    fn a_brace_in_visual_extends_the_selection() {
+        let mut a = change_app();
+
+        send(&mut a, [ch('v'), ch('}')]);
+
+        assert_eq!(a.selection(), (0, 2));
     }
 }

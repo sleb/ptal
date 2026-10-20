@@ -10,7 +10,7 @@ use std::path::Path;
 use jiff::Timestamp;
 use serde::Serialize;
 
-use crate::anchor::{Diff, LineRange, Mapped, clamp};
+use crate::anchor::{Change, Diff, LineRange, Mapped, clamp};
 use crate::error::{Error, Result};
 use crate::model::{
     Anchor, Comment, Entry, Event, Review, ReviewState, Side, State, Status, Thread, Verdict,
@@ -67,6 +67,10 @@ pub struct View {
     pub threads: Vec<ThreadView>,
     /// Whose turn it is, or the verdict, and the latest log entry.
     pub review: ReviewStatus,
+    /// What changed in [`lines`](View::lines) since the human's last look
+    /// ([`Review::last_look`]), one [`Change`] per hunk. Empty with no last
+    /// look yet or when its snapshot is missing or unreadable.
+    pub changes: Vec<Change>,
 }
 
 /// A review's overall state as shown to front ends: whose turn it is, or
@@ -238,7 +242,11 @@ impl<C: Clock> Reviews<C> {
     /// at a best-guess range within the file. A thread from before revisions
     /// existed is checked in place, and one whose snapshot is missing is
     /// `outdated` at its stored range, clamped to the file. Resolved threads
-    /// are omitted unless `include_resolved`. Never writes.
+    /// are omitted unless `include_resolved`.
+    ///
+    /// [`View::changes`] diffs the same read against the revision of the
+    /// human's last look ([`Review::last_look`]). Never writes, so opening a
+    /// view is not itself a look.
     ///
     /// # Errors
     /// [`Error::FileUnreadable`] plus any store error.
@@ -272,11 +280,18 @@ impl<C: Clock> Reviews<C> {
                 ThreadView { thread, state }
             })
             .collect();
+        let changes = review
+            .last_look()
+            .and_then(|look| review.revision_sha(&look.revision))
+            .and_then(|sha| mapper.diff(sha))
+            .map(Diff::changes)
+            .unwrap_or_default();
         Ok(View {
             revision: review.revision_id(&content.sha256).map(String::from),
             lines: content.text.lines().map(String::from).collect(),
             threads,
             review: ReviewStatus::of(&review),
+            changes,
         })
     }
 
@@ -840,6 +855,7 @@ fn invalid_range(lines: &[&str], start: u32, end: u32) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::anchor::Change;
     use crate::error::Error;
     use crate::model::{Anchor, Comment, Entry, Event, ReviewState, Side, State, Status, Verdict};
     use crate::store::content_hash;
@@ -2144,5 +2160,116 @@ mod tests {
             handed.review
         );
         assert_eq!(fx.review_json(), bytes);
+    }
+
+    // --- changes since the last look ---
+
+    const EDITED: &str = "one\nTWO\nthree\nfour\nfive\n";
+
+    fn changes_now(fx: &Fixture) -> Vec<Change> {
+        fx.reviews.view(&fx.file, false).unwrap().changes
+    }
+
+    fn expected_changes(old: &str, new: &str) -> Vec<Change> {
+        let old: Vec<&str> = old.lines().collect();
+        let new: Vec<&str> = new.lines().collect();
+        Diff::new(&old, &new).changes()
+    }
+
+    #[test]
+    fn a_fresh_review_has_no_changes() {
+        let fx = fixture();
+        fs::write(&fx.file, EDITED).unwrap();
+
+        assert_eq!(changes_now(&fx), vec![]);
+    }
+
+    #[test]
+    fn changes_are_since_the_humans_last_hand_off() {
+        let fx = fixture();
+        fx.reviews
+            .hand_off(&fx.file, Side::Human, "scott", None)
+            .unwrap();
+        fs::write(&fx.file, EDITED).unwrap();
+
+        let changes = changes_now(&fx);
+
+        assert!(!changes.is_empty());
+        assert_eq!(changes, expected_changes("one\ntwo\nthree\nfour\n", EDITED));
+    }
+
+    #[test]
+    fn an_agent_hand_off_is_not_a_last_look() {
+        let fx = fixture();
+        fx.reviews
+            .hand_off(&fx.file, Side::Human, "scott", None)
+            .unwrap();
+        fs::write(&fx.file, EDITED).unwrap();
+        fx.reviews
+            .hand_off(&fx.file, Side::Agent, "claude", None)
+            .unwrap();
+
+        assert_eq!(
+            changes_now(&fx),
+            expected_changes("one\ntwo\nthree\nfour\n", EDITED)
+        );
+    }
+
+    #[test]
+    fn a_close_is_a_last_look() {
+        let fx = fixture();
+        fx.reviews
+            .close(&fx.file, "scott", Some(Verdict::Approved), None)
+            .unwrap();
+        fs::write(&fx.file, EDITED).unwrap();
+
+        assert_eq!(
+            changes_now(&fx),
+            expected_changes("one\ntwo\nthree\nfour\n", EDITED)
+        );
+    }
+
+    #[test]
+    fn a_hand_off_on_the_current_content_has_no_changes() {
+        let fx = fixture();
+        fx.reviews
+            .hand_off(&fx.file, Side::Human, "scott", None)
+            .unwrap();
+        fs::write(&fx.file, EDITED).unwrap();
+        fx.reviews
+            .hand_off(&fx.file, Side::Agent, "claude", None)
+            .unwrap();
+        fx.reviews
+            .hand_off(&fx.file, Side::Human, "scott", None)
+            .unwrap();
+
+        assert_eq!(changes_now(&fx), vec![]);
+    }
+
+    #[test]
+    fn a_missing_last_look_snapshot_has_no_changes_and_no_error() {
+        let fx = fixture();
+        fx.reviews
+            .hand_off(&fx.file, Side::Human, "scott", None)
+            .unwrap();
+        let dir = fx.store.review_dir(&fx.file).unwrap();
+        fs::remove_dir_all(dir.join("revisions")).unwrap();
+        fs::write(&fx.file, EDITED).unwrap();
+
+        assert_eq!(changes_now(&fx), vec![]);
+    }
+
+    #[test]
+    fn viewing_changes_writes_nothing() {
+        let fx = fixture();
+        fx.reviews
+            .hand_off(&fx.file, Side::Human, "scott", None)
+            .unwrap();
+        fs::write(&fx.file, EDITED).unwrap();
+        let bytes = fx.review_json();
+
+        assert!(!changes_now(&fx).is_empty());
+        assert_eq!(fx.review_json(), bytes);
+        assert_eq!(snapshot_of(&fx, EDITED), None);
     }
 }

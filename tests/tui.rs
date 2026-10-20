@@ -1190,3 +1190,47 @@ fn review_json(sb: &Sandbox) -> PathBuf {
         .unwrap()
         .join("review.json")
 }
+
+/// The change glyph in the gutter of each file line (column 1, below the
+/// banner).
+fn change_glyphs(app: &App) -> Vec<String> {
+    let buffer = drawn(app);
+    (0..app.lines().len())
+        .map(|line| {
+            let y = u16::try_from(line).unwrap() + 1;
+            buffer[(1, y)].symbol().to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn reopening_after_the_agent_edits_marks_what_changed_since_the_hand_off() {
+    let sb = sandbox(PLAN);
+    let mut app = sb.open();
+    let _ = sb.press(&mut app, &["H", "ctrl+s"]);
+    // One line inserted, one edited, the last one deleted.
+    fs::write(&sb.file, "one\nnew\ntwo\nTHREE\nfour\n").unwrap();
+    sb.reviews
+        .hand_off(&sb.file, Side::Agent, "claude", Some("Revised"))
+        .unwrap();
+
+    let mut app = sb.open();
+
+    assert_eq!(change_glyphs(&app), [" ", "┃", " ", "┃", "-"]);
+    assert!(screen(&app).contains("3 changes"), "{}", screen(&app));
+
+    let _ = sb.press(&mut app, &["H", "ctrl+s"]);
+    assert_eq!(change_glyphs(&app), [" "; 5], "a hand-off is a new look");
+    assert!(!screen(&app).contains("change"));
+    assert_eq!(change_glyphs(&sb.open()), [" "; 5]);
+}
+
+#[test]
+fn the_first_open_of_a_review_marks_nothing() {
+    let sb = sandbox(PLAN);
+
+    let app = sb.open();
+
+    assert_eq!(change_glyphs(&app), [" "; 5]);
+    assert!(!screen(&app).contains("change"));
+}

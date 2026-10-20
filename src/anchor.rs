@@ -9,8 +9,9 @@
 //! - otherwise → [`State::Outdated`] at a best-guess range, always within the
 //!   new file.
 //!
-//! [`Diff`] computes the diff once to map many ranges; [`clamp`] keeps a
-//! range inside a text without diffing.
+//! [`Diff`] computes the diff once to map many ranges, and lists what changed
+//! with [`Diff::changes`]; [`clamp`] keeps a range inside a text without
+//! diffing.
 //!
 //! No I/O, no clock, deterministic. Callers split the text into lines; the
 //! core uses [`str::lines`] everywhere (see [`crate::review::View::lines`]).
@@ -61,6 +62,23 @@ pub struct Mapped {
 /// ```
 pub fn map_range(old: &[&str], new: &[&str], range: LineRange) -> Mapped {
     Diff::new(old, new).map(range)
+}
+
+/// One hunk of the new text that differs from the old: see [`Diff::changes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Change {
+    /// In bounds of the new text; one line for [`ChangeKind::Removed`].
+    pub range: LineRange,
+    pub kind: ChangeKind,
+}
+
+/// What a [`Change`] marks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeKind {
+    /// The lines were added or edited.
+    Changed,
+    /// Text was removed just before this line, or after it if it is the last.
+    Removed,
 }
 
 /// `range` moved inside a text of `len` lines: `1 <= start <= end <=
@@ -116,6 +134,67 @@ impl Diff {
         }
     }
 
+    /// What changed in the new text, one [`Change`] per hunk (a maximal run
+    /// of adjacent changed lines), in order.
+    ///
+    /// A hunk with new lines is [`ChangeKind::Changed`] over them. A pure
+    /// deletion is [`ChangeKind::Removed`] at the line that now follows the
+    /// removed text, or at the last line if it was removed at the end; with
+    /// no lines left there is nothing to mark, and removals before and after
+    /// a sole remaining line are one mark on it. The changes are sorted,
+    /// disjoint and in bounds of the new text, and identical texts have none.
+    ///
+    /// # Examples
+    /// ```
+    /// # use ptal::anchor::{Change, ChangeKind, Diff, LineRange};
+    /// let old = ["a", "b", "c", "d"];
+    /// let new = ["a", "B", "d"];
+    ///
+    /// assert_eq!(
+    ///     Diff::new(&old, &new).changes(),
+    ///     [Change { range: LineRange { start: 2, end: 2 }, kind: ChangeKind::Changed }],
+    /// );
+    /// ```
+    pub fn changes(&self) -> Vec<Change> {
+        let mut changes = Vec::new();
+        let mut ops = self.ops.iter().peekable();
+        while let Some(op) = ops.next() {
+            if matches!(op, DiffOp::Equal { .. }) {
+                continue;
+            }
+            let mut new = op.new_range();
+            while let Some(next) = ops.next_if(|op| !matches!(op, DiffOp::Equal { .. })) {
+                new.end = next.new_range().end;
+            }
+            let change = if new.is_empty() {
+                if self.new_len == 0 {
+                    continue;
+                }
+                let line = line_number(new.start.min(self.new_len - 1));
+                Change {
+                    range: LineRange {
+                        start: line,
+                        end: line,
+                    },
+                    kind: ChangeKind::Removed,
+                }
+            } else {
+                Change {
+                    range: LineRange {
+                        start: line_number(new.start),
+                        end: line_number(new.end - 1),
+                    },
+                    kind: ChangeKind::Changed,
+                }
+            };
+            // Removals before and after the only line left both mark it.
+            if changes.last() != Some(&change) {
+                changes.push(change);
+            }
+        }
+        changes
+    }
+
     /// Whether every op touching 0-based old lines `first..=last` is equal.
     fn unchanged(&self, first: usize, last: usize) -> bool {
         self.ops
@@ -147,6 +226,11 @@ impl Diff {
         }
         (self.new_len, false)
     }
+}
+
+/// The 1-based line number of 0-based index `i`.
+fn line_number(i: usize) -> u32 {
+    u32::try_from(i + 1).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]
@@ -253,6 +337,88 @@ mod tests {
         assert_eq!(clamp(range(2, 3), 0), range(1, 1));
     }
 
+    fn changes(old: &[&str], new: &[&str]) -> Vec<Change> {
+        Diff::new(old, new).changes()
+    }
+
+    fn changed(start: u32, end: u32) -> Change {
+        Change {
+            range: range(start, end),
+            kind: ChangeKind::Changed,
+        }
+    }
+
+    fn removed(line: u32) -> Change {
+        Change {
+            range: range(line, line),
+            kind: ChangeKind::Removed,
+        }
+    }
+
+    #[test]
+    fn identical_texts_have_no_changes() {
+        assert_eq!(changes(&OLD, &OLD), vec![]);
+    }
+
+    #[test]
+    fn a_line_inserted_in_the_middle_is_changed() {
+        let new = ["one", "two", "new", "three", "four"];
+
+        assert_eq!(changes(&OLD, &new), vec![changed(3, 3)]);
+    }
+
+    #[test]
+    fn an_edited_line_is_changed() {
+        let new = ["one", "TWO", "three", "four"];
+
+        assert_eq!(changes(&OLD, &new), vec![changed(2, 2)]);
+    }
+
+    #[test]
+    fn two_lines_replaced_by_three_are_one_change() {
+        let new = ["one", "x", "y", "z", "four"];
+
+        assert_eq!(changes(&OLD, &new), vec![changed(2, 4)]);
+    }
+
+    #[test]
+    fn a_deleted_middle_line_is_removed_at_the_following_line() {
+        let new = ["one", "three", "four"];
+
+        assert_eq!(changes(&OLD, &new), vec![removed(2)]);
+    }
+
+    #[test]
+    fn a_deleted_last_line_is_removed_at_the_new_last_line() {
+        let new = ["one", "two", "three"];
+
+        assert_eq!(changes(&OLD, &new), vec![removed(3)]);
+    }
+
+    #[test]
+    fn deleting_everything_has_no_line_to_mark() {
+        assert_eq!(changes(&OLD, &[]), vec![]);
+    }
+
+    #[test]
+    fn removals_around_the_only_line_left_are_one_mark() {
+        assert_eq!(changes(&["a", "b", "a"], &["b"]), vec![removed(1)]);
+    }
+
+    #[test]
+    fn separate_edits_are_separate_changes_in_order() {
+        let new = ["ONE", "two", "three", "FOUR"];
+
+        assert_eq!(changes(&OLD, &new), vec![changed(1, 1), changed(4, 4)]);
+    }
+
+    #[test]
+    fn an_edit_next_to_a_deletion_is_one_change() {
+        let new = ["one", "TWO", "four"];
+
+        assert_eq!(changes(&OLD, &new), vec![changed(2, 2)]);
+    }
+
     // --- properties, exhaustive over a small corpus ---
 
     /// Every text of 0-4 lines over the alphabet {a, b, c}.
@@ -318,6 +484,47 @@ mod tests {
                         let now = &new[m.start as usize - 1..m.end as usize];
                         assert_eq!(was, now, "{old:?} -> {new:?} {r:?}: {m:?}");
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn property_changes_are_sorted_disjoint_and_in_bounds() {
+        let corpus = corpus();
+        for old in &corpus {
+            for new in &corpus {
+                let found = changes(old, new);
+                let mut after = 0;
+                for c in &found {
+                    let r = c.range;
+                    assert!(
+                        after < r.start && r.start <= r.end && r.end as usize <= new.len(),
+                        "{old:?} -> {new:?}: {found:?}"
+                    );
+                    if c.kind == ChangeKind::Removed {
+                        assert_eq!(r.start, r.end, "{old:?} -> {new:?}: {found:?}");
+                    }
+                    after = r.end;
+                }
+                // Identical texts, and only they, have no changes, unless
+                // nothing is left to mark.
+                assert_eq!(
+                    found.is_empty(),
+                    old == new || new.is_empty(),
+                    "{old:?} -> {new:?}: {found:?}"
+                );
+                // The lines not marked changed were kept: in order, they
+                // are a subsequence of the old text.
+                let kept = new.iter().enumerate().filter(|(i, _)| {
+                    !found.iter().any(|c| {
+                        c.kind == ChangeKind::Changed
+                            && (c.range.start as usize..=c.range.end as usize).contains(&(i + 1))
+                    })
+                });
+                let mut rest = old.iter();
+                for (_, line) in kept {
+                    assert!(rest.any(|o| o == line), "{old:?} -> {new:?}: {found:?}");
                 }
             }
         }

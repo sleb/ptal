@@ -20,7 +20,7 @@ for, and the invariants and contracts between them.
                ┌─────▼─────┐
                │   model   │   plain data types, serde, JSON Schema
                └───────────┘
-        (tui also uses: diffview, deferred; highlight lives under tui)
+        (highlight lives under tui)
 ```
 
 Dependencies point downward only. `model` depends on nothing in the crate.
@@ -32,19 +32,18 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 
 | Component | State |
 |---|---|
-| `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State`, the review log (`Entry`, `Event`, `Side`, `Verdict`) and its derived `ReviewState` |
+| `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State`, the review log (`Entry`, `Event`, `Side`, `Verdict`), its derived `ReviewState`, and the human's last look (`Review::last_look`) |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
-| `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review` |
+| `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state, changes since the human's last look), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review` |
 | `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff` |
 | `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, hand off (`H`), close with a verdict (`C`), reopen the review (`O`), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
-| `anchor` | Built: `map_range`, `Diff`, `clamp` (Myers line diff via `similar`) |
-| `diffview` | Deferred |
+| `anchor` | Built: `map_range`, `Diff` (with `Diff::changes`), `clamp` (Myers line diff via `similar`) |
 
 Deferred within built components: nested replies, edit, delete,
 `ptal schema` in the CLI, and printing the review log's history (only the
-latest entry is shown; the whole log is kept on disk for rounds and "changes
-since your last look", #46). Sections below describe deferred design where they
+latest entry is shown; the whole log is kept on disk, and feeds the human's
+last look). Sections below describe deferred design where they
 say so.
 
 ## Key idea: revisions and anchoring
@@ -108,6 +107,10 @@ threads are never silently dropped or silently re-pointed at the wrong text.
   the other, a close sets the verdict, a reopen gives the turn to the human.
   Each entry sets the state outright, so it is the latest entry's. Never
   persisted.
+- `Review::last_look()` — the latest log entry written by the human side
+  that is a hand-off or a close; its revision is what the human last saw.
+  Matched by side, not author. A reopen is not a look, and neither is opening
+  the TUI (reads never write). `None` before the first one.
 
 **Invariants**
 - Comment ids are short, human-typeable, and unique within a review (`c1`,
@@ -132,6 +135,7 @@ golden-JSON test in `model` pins it. Every persisted file carries
 ```
 map_range(old: &[&str], new: &[&str], range: LineRange) -> Mapped { range, state }
 Diff::new(old, new).map(range) -> Mapped     // one diff, many ranges
+Diff::new(old, new).changes() -> Vec<Change { range, kind }>
 clamp(range, len) -> LineRange               // into 1..=max(len, 1), no diff
 ```
 
@@ -148,15 +152,21 @@ the diff ops, not one per line.
   deleted line goes to where that change starts in the new text. The result
   is clamped to `1..=max(new_len, 1)` with `end >= start`, so an empty file
   gives `1-1`.
+- `changes()` lists what differs in the new text, one `Change` per hunk (a
+  maximal run of adjacent non-equal diff ops). A hunk with new lines is
+  `ChangeKind::Changed` over them; a pure deletion is `Removed` at the line
+  that now follows the removed text, or at the last line if it was removed at
+  the end. Deleting everything marks nothing, and removals before and after a
+  sole remaining line are one mark.
 
 **Invariants**
 - Pure: no I/O, no clock, deterministic for the same inputs.
+- `changes()` are sorted, disjoint and within `1..=new_len`; identical texts
+  have none.
 - `Current` implies the mapped lines are byte-identical to the originals.
 - `Outdated` always carries a best-guess range clamped to the new file, never
   out of bounds. A range outside the old text is `Outdated`, never a panic.
 - Identity: mapping a range between identical texts returns it unchanged.
-
-*Deferred:* `changed_lines(old, new)` for gutter change markers (#46).
 
 ### `store`
 **Role:** persistence. Reads and writes `Review`s.
@@ -210,12 +220,13 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 
 - `add_thread(file, start, end, body, author)` — anchors a new open thread to
   lines `start..=end` of the file as it is now, storing the quote.
-- `view(file, include_resolved) -> View { revision, lines, threads, review }`
-  — threads in id order, open only by default, each with its anchor's lines
-  mapped to the file as it is now and a computed `state`; `revision` is the
-  current content's id, or `None` if nothing has been written against it
-  yet; `review` is the `ReviewStatus`. One read of the file serves all of
-  them.
+- `view(file, include_resolved) -> View { revision, lines, threads, review,
+  changes }` — threads in id order, open only by default, each with its
+  anchor's lines mapped to the file as it is now and a computed `state`;
+  `revision` is the current content's id, or `None` if nothing has been
+  written against it yet; `review` is the `ReviewStatus`; `changes` are the
+  `anchor::Change` hunks since the human's last look (`Review::last_look`).
+  One read of the file serves all of them.
 - `resolve`, `reply` and `reopen` return the thread with its lines mapped to
   the content they read (the stored anchor is unchanged); `add_thread`'s
   range is as given, since it anchors to the current content.
@@ -269,6 +280,11 @@ quotes and where each thread is.
   or unreadable (deleted or damaged by hand) is `outdated` at its stored
   range clamped to the file; it is still listed, and mapping never fails a
   read or a write.
+- `View.changes` diff the last look's snapshot against the same read as
+  `lines`, reusing the mapper's diff for that revision. They are derived from
+  the log, never stored: empty with no last look, or when its snapshot is
+  missing or unreadable (no error). Viewing is not a look, since reads never
+  write. They are for the TUI only; `comments` JSON does not carry them.
 - A mutation that fails (unknown id, bad range, empty author or body) changes
   nothing, snapshots included.
 - Every write reads the file once, outside the lock, and records the revision
@@ -384,7 +400,9 @@ Its parts:
   `tui::highlight`, computed once by `App::highlighted(true)` since the file
   never changes in a session, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
-  outdated ones, the `review`'s `ReviewStatus`, footer `status`, the active
+  outdated ones, the `review`'s `ReviewStatus`, the `changes` since the
+  human's last look (`View.changes`, one `anchor::Change` per hunk; `change(line)`
+  is a line's `ChangeKind`), footer `status`, the active
   `search` query, the `help` and review overlay listings laid out for
   `cols`, the `file` label), `Mode = Normal | Visual { anchor } |
   Search { query, anchor, origin, hit } |
@@ -427,9 +445,10 @@ Its parts:
   text, so layout, the clamp and every key behave the same highlighted or
   not. `render` draws from it, and the view clamp in `update` counts the
   same rows; `lines()` stays the raw file.
-  `Event` is `Key | Resize | Saved { id, done, threads, review } |
-  ReviewSaved { message, threads, review } | SaveFailed | Paste(text)` (the
-  terminal's bracketed paste), where
+  `Event` is `Key | Resize | Saved { id, done, reread } |
+  ReviewSaved { message, reread } | SaveFailed | Paste(text)` (the
+  terminal's bracketed paste), where `reread` is the `Reread { threads,
+  review, changes }` the driver read back after the write, and
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
   always the thread id; `Effect` is `Add { start, end, body } | Reply { id,
   body } | Resolve { id } | Reopen { id } | HandOff { note } | Close {
@@ -446,7 +465,9 @@ Its parts:
   core's `MissingVerdict` is the one rule. `O` sends `ReopenReview` at once.
   The TUI never checks the turn itself: its state can be stale until live
   refresh (#36), so the core decides and a refusal shows like any failed
-  write. `ReviewSaved` stores the re-read threads and state, returns to
+  write. `ReviewSaved` stores the re-read threads, state and changes (a
+  hand-off or close makes the current content the last look, so its changes
+  are empty and the markers clear), returns to
   Normal and shows `message` in the footer.
 - `tui::draft`: `Draft { text, cursor, goal, scroll }`, pure, no widgets:
   the comment being typed. `text` holds printable characters, `\t` and
@@ -573,8 +594,11 @@ Its parts:
   spaces). A well-formed markdown table shows aligned, in place; one too
   wide for the view wraps its cells inside their columns. Each table line is
   still one number, glyph and highlight, over all of its rows. Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim),
-  then the line number, then `│`; the glyph and number show on a line's first
-  row only, continuation rows keep just the `│`. The cursor highlight covers
+  then a change glyph in its own column, `┃` (green) on a line added or
+  edited since the human's last look and `-` (red) where text was removed,
+  then the line number, then `│`; the glyphs and number show on a line's first
+  row only, continuation rows keep just the `│`. Both glyphs are patched over
+  the row's style, so they keep the cursor background. The cursor highlight covers
   every row of every selected line (`App::selection()`: the cursor line, or
   the whole `Visual` range, also while its comment box is open), wrapped and
   table rows included; the moving end gets no separate mark. A highlighted
@@ -593,7 +617,8 @@ Its parts:
   Footer: path (or the last save message, on one row as on the comment
   box's border),
   `L<line>/<total>`, `visual <a>-<b>` in `Visual` (1-based, ascending),
-  `N outdated` (open threads only), key hints, the whole row `wrap::cut` to
+  `N outdated` (open threads only), `N changes` (hunks since the last
+  look, `1 change` for one, nothing when there are none), key hints, the whole row `wrap::cut` to
   the terminal width, so a footer too wide ends in `…`. The input box is titled
   `Comment on line N as <author>`, `Comment on lines A-B as <author>` for a
   range, `Reply to <id> as <author>`, `Hand off to the agent (note
@@ -621,9 +646,9 @@ Its parts:
   prompt, which wins over the hint. Border text (error or hint) that does
   not fit between the corners is `wrap::cut`, so it ends in `…` and a wide
   character that would cross the corner is left out whole.
-- `tui` (module root): the driver. `load` takes the lines, all threads and
-  the review's state from one `Reviews::view`, so they come from the same
-  read of the file; `Loaded::into_app` highlights the file only when it is
+- `tui` (module root): the driver. `load` takes the lines, all threads, the
+  review's state and the changes since the last look from one
+  `Reviews::view`, so they come from the same read of the file; `Loaded::into_app` highlights the file only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
   `color_wanted(NO_COLOR)`, read once at startup); `step(app, event, reviews, file, author)` is the only
   place effects are performed (`Add` → `Reviews::add_thread`, `Reply` →
@@ -645,8 +670,8 @@ Its parts:
   machine is tested without a terminal.
 - The TUI owns no persistent state. Every write goes through `review`; after
   a write it re-reads `view` rather than patching local state. If that re-read
-  fails, the threads are dropped from the screen (a retry would duplicate a
-  comment) but the review state is kept: the one the screen had for a
+  fails, the threads and change markers are dropped from the screen (a retry
+  would duplicate a comment) but the review state is kept: the one the screen had for a
   thread write, the write's own for a hand-off, close or reopen.
 - After every event `top <= cursor` and lines `top..=cursor` fit in `height`
   screen rows (wrapped rows counted), where height is the rows left after the
@@ -721,24 +746,18 @@ tree-sitter, language from the info string), highlighting non-markdown files
 by extension, front-matter detection (a leading `---` block may show as a
 setext heading), a toggle key, and themes (#49).
 
-### `diffview`
-*Deferred.*
+### Change markers
+There is no separate diff-view component. The one presentation, gutter
+markers for the changes since the human's last look, is split across the
+layers already described: `anchor::Diff::changes` finds the hunks,
+`review::view` picks the base revision (`Review::last_look`) and returns
+`View.changes`, `tui::app` stores them and answers `change(line)` and the
+`}`/`{` jumps, and `tui::render` draws the glyphs and the footer count. No
+trait is built for other presentations while there is one.
 
-**Role:** the seam that keeps room for other diff presentations. A trait the
-TUI renders against:
-
-```rust
-trait DiffView {
-    /// Per-line decoration for the gutter given changed lines.
-    fn gutter(&self, line: usize) -> GutterMark;
-    /// Extra rows to inject around a line (e.g. removed lines in an inline view).
-    fn virtual_rows(&self, line: usize) -> Vec<Row>;
-}
-```
-
-v1 ships `GutterMarks` (green marker on changed lines, no virtual rows). Inline
-and side-by-side views implement the same trait later without touching `tui`
-state or `review`.
+*Deferred:* inline and side-by-side views of old against new text, and
+browsing older revisions (#34); a "mark as seen" that is a look without a
+hand-off or close.
 
 ## Cross-cutting rules
 
