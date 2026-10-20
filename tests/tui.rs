@@ -1416,3 +1416,75 @@ fn a_refresh_that_cannot_read_leaves_the_screen_as_it_was() {
     assert!(refresh(&mut app, &sb.reviews, &sb.file, &mut watch));
     assert_eq!(app.lines(), ["back"]);
 }
+
+#[test]
+fn the_tui_and_cli_processes_writing_at_once_lose_nothing() {
+    const ROUNDS: usize = 8;
+    let sb = sandbox(PLAN);
+    sb.reviews
+        .add_thread(&sb.file, 1, 1, "Start", "scott")
+        .unwrap();
+    let mut app = sb.open();
+    let mut watch = Watch::default();
+
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let file = sb.file.to_str().unwrap();
+            for n in 0..ROUNDS {
+                let body = format!("cli {n}");
+                let out = Command::new(env!("CARGO_BIN_EXE_ptal"))
+                    .args(["reply", file, "c1", &body, "--as", "claude"])
+                    .env("PTAL_DATA_DIR", &sb.data)
+                    .output()
+                    .unwrap();
+                assert!(
+                    out.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                fs::write(&sb.file, format!("{PLAN}edit {n}\n")).unwrap();
+            }
+        });
+        for n in 0..ROUNDS {
+            let _ = sb.press_typing(&mut app, &["G", "v", "enter"], &format!("tui {n}"), &[]);
+            loop {
+                let _ = sb.press(&mut app, &["ctrl+s"]);
+                match app.status() {
+                    Some(status) if status.starts_with("added") => break,
+                    Some("the file changed: look again") => continue,
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+            refresh(&mut app, &sb.reviews, &sb.file, &mut watch);
+        }
+    });
+
+    let json = fs::read_to_string(review_json(&sb)).unwrap();
+    let review: ptal::model::Review = serde_json::from_str(&json).unwrap();
+    let bodies: Vec<&str> = review
+        .threads
+        .iter()
+        .flat_map(|t| &t.comments)
+        .map(|c| c.body.as_str())
+        .collect();
+    for n in 0..ROUNDS {
+        for body in [format!("cli {n}"), format!("tui {n}")] {
+            let count = bodies.iter().filter(|b| **b == body).count();
+            assert_eq!(count, 1, "{body}: {bodies:?}");
+        }
+    }
+    let ids: Vec<&str> = review
+        .threads
+        .iter()
+        .flat_map(|t| &t.comments)
+        .map(|c| c.id.as_str())
+        .collect();
+    let unique: std::collections::HashSet<_> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "{ids:?}");
+    assert_eq!(ids.len(), 1 + 2 * ROUNDS);
+    let store = Store::new(&sb.data);
+    for revision in &review.revisions {
+        let snapshot = store.load_revision(&sb.file, &revision.sha256).unwrap();
+        assert!(snapshot.is_some(), "{} has no snapshot", revision.id);
+    }
+}

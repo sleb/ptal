@@ -926,7 +926,12 @@ origin mapped) and checks that screen rows,
   `refresh` with the cursor and a draft kept, a CLI hand-back flipping the
   banner, no refresh and no write when nothing changed, a refresh that can't
   read changing nothing, and a hand-off, comment or close against an unseen
-  edit refused with `file_changed` and then made against what is shown); the
+  edit refused with `file_changed` and then made against what is shown;
+  and both front ends writing at once: the TUI adding comments through
+  `step` while separate `ptal reply` processes answer and the file is
+  rewritten between them, after which every comment is there exactly once,
+  ids are unique, `review.json` parses and every revision has its
+  snapshot); the
   banner and the review overlay are covered in `tui::render` and `tui::app`;
   the terminal guard and panic hook are tested with injected
   `restore` functions (`tests/panic_hook.rs` is its own process because the
