@@ -20,7 +20,7 @@ for, and the invariants and contracts between them.
                ┌─────▼─────┐
                │   model   │   plain data types, serde, JSON Schema
                └───────────┘
-        (tui also uses: diffview, deferred; highlight lives under tui)
+        (highlight lives under tui)
 ```
 
 Dependencies point downward only. `model` depends on nothing in the crate.
@@ -39,12 +39,11 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, hand off (`H`), close with a verdict (`C`), reopen the review (`O`), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor` | Built: `map_range`, `Diff` (with `Diff::changes`), `clamp` (Myers line diff via `similar`) |
-| `diffview` | Deferred |
 
 Deferred within built components: nested replies, edit, delete,
 `ptal schema` in the CLI, and printing the review log's history (only the
-latest entry is shown; the whole log is kept on disk for rounds and "changes
-since your last look", #46). Sections below describe deferred design where they
+latest entry is shown; the whole log is kept on disk, and feeds the human's
+last look). Sections below describe deferred design where they
 say so.
 
 ## Key idea: revisions and anchoring
@@ -747,24 +746,18 @@ tree-sitter, language from the info string), highlighting non-markdown files
 by extension, front-matter detection (a leading `---` block may show as a
 setext heading), a toggle key, and themes (#49).
 
-### `diffview`
-*Deferred.*
+### Change markers
+There is no separate diff-view component. The one presentation, gutter
+markers for the changes since the human's last look, is split across the
+layers already described: `anchor::Diff::changes` finds the hunks,
+`review::view` picks the base revision (`Review::last_look`) and returns
+`View.changes`, `tui::app` stores them and answers `change(line)` and the
+`}`/`{` jumps, and `tui::render` draws the glyphs and the footer count. No
+trait is built for other presentations while there is one.
 
-**Role:** the seam that keeps room for other diff presentations. A trait the
-TUI renders against:
-
-```rust
-trait DiffView {
-    /// Per-line decoration for the gutter given changed lines.
-    fn gutter(&self, line: usize) -> GutterMark;
-    /// Extra rows to inject around a line (e.g. removed lines in an inline view).
-    fn virtual_rows(&self, line: usize) -> Vec<Row>;
-}
-```
-
-v1 ships `GutterMarks` (green marker on changed lines, no virtual rows). Inline
-and side-by-side views implement the same trait later without touching `tui`
-state or `review`.
+*Deferred:* inline and side-by-side views of old against new text, and
+browsing older revisions (#34); a "mark as seen" that is a look without a
+hand-off or close.
 
 ## Cross-cutting rules
 

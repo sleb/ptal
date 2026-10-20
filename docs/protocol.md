@@ -8,8 +8,8 @@ commit `0365930` (removed since).
 
 > **Status.** Threads, comments, replies, resolving and reopening are built,
 > and so are revisions and threads that follow edits (#45), and turns,
-> hand-offs and closing a review (#35). Waiting for a turn (#36) and changes
-> since your last look (#46) are planned for v0.3.0. Each section below says
+> hand-offs and closing a review (#35), and changes since your last look
+> (#46, TUI only). Waiting for a turn (#36) is planned for v0.3.0. Each section below says
 > which it is. Planned behavior has no command names yet; those are settled
 > in its story.
 
@@ -123,7 +123,10 @@ hand off; the agent revises and answers, hands back; until you close it.
   Round 1 starts with the review; each hand-back or reopen starts the next.
   A close ends the current round.
 - Each round reviews one revision and produces the next. "What changed
-  since my last look" is what changed since this round started.
+  since my last look" is what changed since this round started: the diff
+  from the revision on your latest hand-off or close to the file now.
+  Opening the TUI is not a look (reads never write), and a reopen is not
+  one either. *(Built: the TUI marks these changes, #46.)*
 - Every comment belongs to the round and turn it was written in, so a
   late comment, written after its side handed off, shows as late.
 

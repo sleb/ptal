@@ -58,6 +58,7 @@ Normal mode:
 | `ctrl+d` / `ctrl+u` (or `PgDn` / `PgUp`) | Half page down / up |
 | `g` / `G` (or `Home` / `End`) | Top / bottom |
 | `]` / `[` | Next / previous threaded line (no wrap) |
+| `}` / `{` | Next / previous change since your last hand-off or close (no wrap) |
 | `/` | Search the file (see Search below) |
 | `n` / `N` | Next / previous line matching the active search, wrapping (the footer says so); matches are highlighted in reverse video, one stop per line however many matches it has |
 | `esc` | Clear the active search and its highlight |
@@ -74,7 +75,7 @@ Visual select:
 
 | Key | Action |
 |---|---|
-| movement keys, `]` / `[`, `n` / `N` | Extend the selection either way |
+| movement keys, `]` / `[`, `}` / `{`, `n` / `N` | Extend the selection either way |
 | `/` | Search; the live jumps extend the selection, `enter` and `esc` return to it |
 | `enter` | Comment on the selected lines; `esc` in the box returns to the selection (twice with text in the box) |
 | `esc` (or `q`, `ctrl+c`, `v`, `V`) | Leave the selection without commenting (does not quit) |
@@ -152,7 +153,15 @@ quoted text and comments; resolved threads are dimmed. Threads follow the
 file as it changes: lines inserted or deleted above a thread move it, and it
 becomes `outdated` once one of its own lines is edited or removed, shown at a
 best guess with its original quote. The footer counts open outdated threads
-(`N outdated`). The TUI needs an interactive terminal: run without one it
+(`N outdated`).
+
+The gutter also shows what changed since your last look, which is your
+latest hand-off or close: `┃` (green) on lines added or edited since then,
+`-` (red) where text was removed. The footer counts them (`N changes`) and
+`}` / `{` jump between them. Opening ptal is not a look, so the markers stay
+until you hand off or close again; nothing is marked before your first one.
+
+The TUI needs an interactive terminal: run without one it
 exits `1` with a `not_a_terminal` JSON error.
 
 **Planned**
@@ -162,7 +171,6 @@ exits `1` with a `not_a_terminal` JSON error.
 | `e` | Edit your own comment |
 | `s` | Toggle the comment sidebar |
 | `R` | Show / hide resolved threads |
-| (unassigned) | Next / previous line changed since you last reviewed |
 
 ### For agents
 
