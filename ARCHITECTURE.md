@@ -548,9 +548,12 @@ Its parts:
 - A failed write keeps the draft and mode and shows the error (in `Input`,
   on the comment box's bottom border in place of the key hint; elsewhere in
   the footer); nothing is lost silently.
-- The terminal is restored on every exit path: `TerminalSession` restores on
-  drop (normal return, `?`, unwinding), and a chained panic hook restores
-  before the panic message prints. `SIGTERM`/`SIGHUP` skip both and are not
+- The terminal is restored on every exit path: raw mode, the alternate
+  screen and bracketed paste are all undone (paste off before leaving the
+  alternate screen, the reverse of setup, each step tried even if one
+  fails). `TerminalSession` restores on drop (normal return, `?`,
+  unwinding), and a chained panic hook restores before the panic message
+  prints. `SIGTERM`/`SIGHUP` skip both and are not
   handled.
 - Display only; never mutates the reviewed file (it is read once on open).
 
