@@ -41,7 +41,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `anchor`, `diffview` | Deferred |
 
 Deferred within built components: revisions and snapshots, anchor mapping
-between file versions, nested replies, edit, delete, `acknowledge`, and
+between file versions, nested replies, edit, delete, and
 `ptal schema` in the CLI. For now, `state` compares the
 quote against the file at the stored lines, with no mapping. Sections below describe deferred design where
 they say so.
@@ -200,7 +200,7 @@ below, so a front end that displays the file shows exactly what
 `UnsupportedSchema`, `EmptyAuthor`, `EmptyBody`, `Io`, `Corrupt`). No printing, no terminal awareness. This is the
 API both front ends share. Mapping errors to exit codes belongs to `cli`.
 
-*Deferred:* `sync` and revisions, `edit`, `delete`, `acknowledge`, `as_of`
+*Deferred:* `sync` and revisions, `edit`, `delete`, `as_of`
 views.
 
 ### `cli`

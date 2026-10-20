@@ -590,6 +590,7 @@ Collected from the scenarios above, unanswered here on purpose:
 - **Round:** first-class (numbered) or implied by hand-offs? (D2)
   *Proposed: see [Round](#round).*
 - **Comment intent:** question, change request, nit; explicit or prose? (A4, C2)
+  *Answered: see [Comment intent](#comment-intent).*
 - **Verdict:** does approval with open threads block, and does a later edit
   undo it? Which outcomes are there? (C2, C6) *Answered in [Turn](#turn):
   closing carries the verdict, `approved` or `dropped` (rule 12); open
@@ -1037,6 +1038,20 @@ accepted it.
 **Considered and dropped.**
 
 - **An explicit acknowledgement** (a per-thread "seen" or "confirmed"
-  mark, the deferred `acknowledge` operation in ARCHITECTURE.md). It adds
+  mark; ARCHITECTURE.md listed it as a deferred `acknowledge` operation
+  until this decision removed it). It adds
   a step to every thread for the rare case of a disputed fix, which a
   reopen already covers.
+
+### Comment intent
+
+**Definition.** A comment has no declared intent. Whether it asks a
+question, requests a change, points out a nit or just agrees is said in its
+text.
+
+**Considered and dropped.**
+
+- **An intent tag** (`question`, `change`, `nit`, chosen when writing). No
+  one acts differently on the tag: the agent reads the comment either way,
+  and answers with a reply (A4) or an edit (A1) as the text asks. Same
+  reasoning as [Resolution](#resolution) kinds.
