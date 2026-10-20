@@ -42,8 +42,8 @@ use crate::review::{Clock, ReviewStatus, Reviews};
 use app::{App, Done, Effect, Event, Reread, update};
 use render::render;
 
-/// A file, its threads and the review's state, read but not yet sized for a
-/// terminal.
+/// A file, its threads, the review's state and its changes since the last
+/// look, read but not yet sized for a terminal.
 ///
 /// Loading is split from [`Loaded::into_app`] so that a missing file is
 /// reported before the terminal is queried or touched.
@@ -52,8 +52,8 @@ pub struct Loaded {
     view: Reread,
 }
 
-/// Read `file`, all its threads (resolved ones included) and the review's
-/// state.
+/// Read `file`, all its threads (resolved ones included), the review's
+/// state and what changed since the human's last look.
 ///
 /// # Errors
 /// [`crate::Error::FileUnreadable`] plus any store error.
@@ -65,6 +65,7 @@ pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<Loaded> {
         view: Reread {
             threads: view.threads,
             review: view.review,
+            changes: view.changes,
         },
     })
 }
@@ -76,6 +77,7 @@ impl Loaded {
     pub fn into_app(self, file: &Path, author: &str, size: (u16, u16), color: bool) -> App {
         App::open(self.lines, &self.view.threads, author, size)
             .with_review(self.view.review)
+            .with_changes(self.view.changes)
             .labeled(file.display().to_string())
             .highlighted(color && highlight::is_markdown(file))
     }
@@ -251,8 +253,8 @@ pub fn step<C: Clock>(
     }
 }
 
-/// The threads and the review's state of `file` as they are on disk, for
-/// the screen after a write.
+/// The threads, the review's state and the changes since the last look of
+/// `file` as they are on disk, for the screen after a write.
 ///
 /// The write is already stored when the re-read runs; if the re-read fails
 /// the screen loses its markers rather than offering a retry that would
@@ -263,6 +265,7 @@ fn reread<C: Clock>(reviews: &Reviews<C>, file: &Path, current: &ReviewStatus) -
         Ok(view) => Reread {
             threads: view.threads,
             review: view.review,
+            changes: view.changes,
         },
         Err(_) => Reread {
             review: current.clone(),

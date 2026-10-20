@@ -401,7 +401,9 @@ Its parts:
   `tui::highlight`, computed once by `App::highlighted(true)` since the file
   never changes in a session, `cursor`, `top`, terminal `cols` and
   `rows`, `mode`, `author`, every thread of the file including resolved and
-  outdated ones, the `review`'s `ReviewStatus`, footer `status`, the active
+  outdated ones, the `review`'s `ReviewStatus`, the `changes` since the
+  human's last look (`View.changes`, one `anchor::Change` per hunk; `change(line)`
+  is a line's `ChangeKind`), footer `status`, the active
   `search` query, the `help` and review overlay listings laid out for
   `cols`, the `file` label), `Mode = Normal | Visual { anchor } |
   Search { query, anchor, origin, hit } |
@@ -444,9 +446,10 @@ Its parts:
   text, so layout, the clamp and every key behave the same highlighted or
   not. `render` draws from it, and the view clamp in `update` counts the
   same rows; `lines()` stays the raw file.
-  `Event` is `Key | Resize | Saved { id, done, threads, review } |
-  ReviewSaved { message, threads, review } | SaveFailed | Paste(text)` (the
-  terminal's bracketed paste), where
+  `Event` is `Key | Resize | Saved { id, done, reread } |
+  ReviewSaved { message, reread } | SaveFailed | Paste(text)` (the
+  terminal's bracketed paste), where `reread` is the `Reread { threads,
+  review, changes }` the driver read back after the write, and
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
   always the thread id; `Effect` is `Add { start, end, body } | Reply { id,
   body } | Resolve { id } | Reopen { id } | HandOff { note } | Close {
@@ -463,7 +466,9 @@ Its parts:
   core's `MissingVerdict` is the one rule. `O` sends `ReopenReview` at once.
   The TUI never checks the turn itself: its state can be stale until live
   refresh (#36), so the core decides and a refusal shows like any failed
-  write. `ReviewSaved` stores the re-read threads and state, returns to
+  write. `ReviewSaved` stores the re-read threads, state and changes (a
+  hand-off or close makes the current content the last look, so its changes
+  are empty and the markers clear), returns to
   Normal and shows `message` in the footer.
 - `tui::draft`: `Draft { text, cursor, goal, scroll }`, pure, no widgets:
   the comment being typed. `text` holds printable characters, `\t` and
@@ -638,9 +643,9 @@ Its parts:
   prompt, which wins over the hint. Border text (error or hint) that does
   not fit between the corners is `wrap::cut`, so it ends in `…` and a wide
   character that would cross the corner is left out whole.
-- `tui` (module root): the driver. `load` takes the lines, all threads and
-  the review's state from one `Reviews::view`, so they come from the same
-  read of the file; `Loaded::into_app` highlights the file only when it is
+- `tui` (module root): the driver. `load` takes the lines, all threads, the
+  review's state and the changes since the last look from one
+  `Reviews::view`, so they come from the same read of the file; `Loaded::into_app` highlights the file only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
   `color_wanted(NO_COLOR)`, read once at startup); `step(app, event, reviews, file, author)` is the only
   place effects are performed (`Add` → `Reviews::add_thread`, `Reply` →
@@ -662,8 +667,8 @@ Its parts:
   machine is tested without a terminal.
 - The TUI owns no persistent state. Every write goes through `review`; after
   a write it re-reads `view` rather than patching local state. If that re-read
-  fails, the threads are dropped from the screen (a retry would duplicate a
-  comment) but the review state is kept: the one the screen had for a
+  fails, the threads and change markers are dropped from the screen (a retry
+  would duplicate a comment) but the review state is kept: the one the screen had for a
   thread write, the write's own for a hand-off, close or reopen.
 - After every event `top <= cursor` and lines `top..=cursor` fit in `height`
   screen rows (wrapped rows counted), where height is the rows left after the

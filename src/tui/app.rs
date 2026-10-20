@@ -7,6 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+use crate::anchor::{Change, ChangeKind, LineRange};
 use crate::model::{Entry, Event as LogEvent, ReviewState, Side, State, Status, Verdict};
 use crate::review::{ReviewStatus, ThreadView};
 
@@ -215,6 +216,8 @@ pub struct Reread {
     pub threads: Vec<ThreadView>,
     /// The review's state.
     pub review: ReviewStatus,
+    /// What changed since the human's last look ([`crate::review::View::changes`]).
+    pub changes: Vec<Change>,
 }
 
 /// Which write an [`Event::Saved`] reports; it picks the footer message.
@@ -305,6 +308,9 @@ pub struct App {
     /// Every thread of the file, resolved and outdated included, in store
     /// order. Re-read from disk after each write; never patched locally.
     threads: Vec<ThreadView>,
+    /// What changed since the human's last look, one hunk each, sorted.
+    /// Re-read from disk after each write, like the threads.
+    changes: Vec<Change>,
 }
 
 /// What a gutter cell says about the threads covering a line.
@@ -380,6 +386,7 @@ impl App {
             file: String::new(),
             author: author.to_string(),
             threads: threads.to_vec(),
+            changes: Vec::new(),
         };
         app.relayout();
         app.clamp_view();
@@ -400,15 +407,30 @@ impl App {
         self
     }
 
+    /// Mark `changes` (since the human's last look) in the gutter.
+    #[must_use]
+    pub fn with_changes(mut self, changes: Vec<Change>) -> Self {
+        self.changes = changes;
+        self
+    }
+
     fn set_review(&mut self, review: ReviewStatus) {
         self.review_rows = review_rows(&review, self.cols);
         self.review = review;
     }
 
     /// Replace what was re-read from disk after a write.
-    fn reread(&mut self, Reread { threads, review }: Reread) {
+    fn reread(
+        &mut self,
+        Reread {
+            threads,
+            review,
+            changes,
+        }: Reread,
+    ) {
         self.threads = threads;
         self.set_review(review);
+        self.changes = changes;
     }
 
     /// How many threads are open.
@@ -530,6 +552,23 @@ impl App {
             .iter()
             .filter(|view| self.covers(view, line))
             .collect()
+    }
+
+    /// What changed at 0-based `line` since the human's last look, if
+    /// anything.
+    pub fn change(&self, line: usize) -> Option<ChangeKind> {
+        self.changes
+            .iter()
+            .find(|change| {
+                let LineRange { start, end } = change.range;
+                (start as usize..=end as usize).contains(&(line + 1))
+            })
+            .map(|change| change.kind)
+    }
+
+    /// How many changes (hunks) there are since the human's last look.
+    pub fn changes(&self) -> usize {
+        self.changes.len()
     }
 
     /// How many open threads are outdated.
@@ -4730,5 +4769,72 @@ mod tests {
             }
         ));
         assert_eq!(update(&mut a, ctrl('s')), None, "asked again");
+    }
+
+    // --- changes since the last look ---
+
+    fn change(start: u32, end: u32, kind: ChangeKind) -> Change {
+        Change {
+            range: LineRange { start, end },
+            kind,
+        }
+    }
+
+    fn change_marks(a: &App) -> Vec<Option<ChangeKind>> {
+        (0..a.lines.len()).map(|i| a.change(i)).collect()
+    }
+
+    #[test]
+    fn changes_mark_their_lines_and_count_as_hunks() {
+        let a = app(5, 10).with_changes(vec![
+            change(2, 3, ChangeKind::Changed),
+            change(5, 5, ChangeKind::Removed),
+        ]);
+
+        let (c, r) = (Some(ChangeKind::Changed), Some(ChangeKind::Removed));
+        assert_eq!(change_marks(&a), [None, c, c, None, r], "0-based");
+        assert_eq!(a.changes(), 2);
+    }
+
+    #[test]
+    fn without_changes_nothing_is_marked() {
+        let a = app(3, 10);
+
+        assert_eq!(change_marks(&a), [None, None, None]);
+        assert_eq!(a.changes(), 0);
+    }
+
+    #[test]
+    fn a_review_write_replaces_the_changes_with_the_re_read_ones() {
+        let mut a = app(3, 10).with_changes(vec![change(1, 1, ChangeKind::Changed)]);
+
+        update(
+            &mut a,
+            Event::ReviewSaved {
+                message: "handed off".into(),
+                reread: Reread::default(),
+            },
+        );
+
+        assert_eq!(change_marks(&a), [None, None, None]);
+    }
+
+    #[test]
+    fn a_thread_write_replaces_the_changes_with_the_re_read_ones() {
+        let mut a = app(3, 10).with_changes(vec![change(1, 1, ChangeKind::Changed)]);
+
+        update(
+            &mut a,
+            Event::Saved {
+                id: "c1".into(),
+                done: Done::Added,
+                reread: Reread {
+                    changes: vec![change(3, 3, ChangeKind::Removed)],
+                    ..Reread::default()
+                },
+            },
+        );
+
+        assert_eq!(change_marks(&a), [None, None, Some(ChangeKind::Removed)]);
     }
 }
