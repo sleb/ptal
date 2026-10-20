@@ -9,9 +9,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Widget};
 
-use super::app::{App, HELP_CHROME_ROWS, Marker, Mode, ScreenRow};
+use super::app::{App, BANNER_ROWS, Marker, Mode, OVERLAY_CHROME_ROWS, Overlay, ScreenRow, Target};
 use super::draft::Draft;
 use super::wrap;
+use crate::model::Verdict;
 
 /// Draw `app` onto `frame`. Reads state only; never mutates it.
 pub fn render(app: &App, frame: &mut Frame) {
@@ -20,23 +21,33 @@ pub fn render(app: &App, frame: &mut Frame) {
         return;
     }
     let buf = frame.buffer_mut();
-    if let Mode::Help { scroll, .. } = app.mode() {
-        draw_help(app, *scroll, buf, area);
+    if let Mode::Overlay { kind, scroll, .. } = app.mode() {
+        draw_overlay(app, *kind, *scroll, buf, area);
         return;
     }
+    let banner = Rect {
+        height: u16::try_from(BANNER_ROWS).unwrap_or(1).min(area.height),
+        ..area
+    };
+    let below = Rect {
+        y: area.y + banner.height,
+        height: area.height - banner.height,
+        ..area
+    };
     let chrome = u16::try_from(app.chrome_rows())
         .unwrap_or(u16::MAX)
-        .min(area.height);
+        .min(below.height);
     let view = Rect {
-        height: area.height - chrome,
-        ..area
+        height: below.height - chrome,
+        ..below
     };
     let bottom = Rect {
-        y: area.y + view.height,
+        y: below.y + view.height,
         height: chrome,
-        ..area
+        ..below
     };
 
+    draw_banner(app, buf, banner);
     draw_file(app, buf, view);
     match app.mode() {
         Mode::Normal | Mode::Visual { .. } => draw_footer(app, buf, bottom),
@@ -56,15 +67,15 @@ pub fn render(app: &App, frame: &mut Frame) {
             draw_panel(app, *scroll, buf, panel);
             draw_footer(app, buf, footer);
         }
-        Mode::Help { .. } => {}
+        Mode::Overlay { .. } => {}
         Mode::Input {
             draft,
             discard_asked,
-            reply_to,
+            target,
             ..
         } => {
-            let border = box_border(app, *discard_asked, bottom.width);
-            draw_input(app, draft, border, reply_to.as_deref(), buf, bottom);
+            let border = box_border(app, *discard_asked, target, bottom.width);
+            draw_input(app, draft, border, target, buf, bottom);
         }
     }
 }
@@ -128,6 +139,32 @@ fn glyph(marker: Marker) -> (&'static str, Style) {
         Marker::Open => ("●", Style::new()),
         Marker::Resolved => ("○", Style::new().add_modifier(Modifier::DIM)),
     }
+}
+
+/// Room the banner's text keeps beside the key hint before the hint is
+/// dropped.
+const MIN_BANNER_TEXT: usize = 12;
+
+/// The review banner: its text from the left, [`wrap::cut`] to leave room
+/// for the key hint flush right; on a row too narrow for both, the text
+/// alone.
+fn draw_banner(app: &App, buf: &mut Buffer, area: Rect) {
+    if area.is_empty() {
+        return;
+    }
+    let width = usize::from(area.width);
+    let (text, hint) = app.banner();
+    let text = one_line(&text);
+    let hint_width = wrap::width(hint);
+    let room = width.saturating_sub(hint_width + 1);
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    if room < MIN_BANNER_TEXT {
+        buf.set_stringn(area.x, area.y, wrap::cut(&text, width), width, bold);
+        return;
+    }
+    buf.set_stringn(area.x, area.y, wrap::cut(&text, room), room, bold);
+    let x = area.right() - u16::try_from(hint_width).unwrap_or(area.width);
+    buf.set_stringn(x, area.y, hint, hint_width, Style::new());
 }
 
 /// The search prompt on the footer row: `/query` and a note, cut to show
@@ -194,17 +231,17 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
     );
 }
 
-/// The key listing over the whole screen: a title row, the listing from
+/// Overlay `kind` over the whole screen: a title row, its listing from
 /// `scroll`, and a footer row saying how to scroll and close.
-fn draw_help(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
+fn draw_overlay(app: &App, kind: Overlay, scroll: usize, buf: &mut Buffer, area: Rect) {
     let width = usize::from(area.width);
     let mut rows = area.rows();
     if let Some(row) = rows.next() {
         let title = Style::new().add_modifier(Modifier::BOLD);
-        buf.set_stringn(row.x, row.y, "Help", width, title);
+        buf.set_stringn(row.x, row.y, kind.title(), width, title);
     }
-    let listing = app.help_rows();
-    let body = usize::from(area.height).saturating_sub(HELP_CHROME_ROWS);
+    let listing = app.overlay_rows(kind);
+    let body = usize::from(area.height).saturating_sub(OVERLAY_CHROME_ROWS);
     for (row, line) in rows.by_ref().take(body).zip(listing.iter().skip(scroll)) {
         let style = if line.heading {
             Style::new().add_modifier(Modifier::BOLD)
@@ -215,7 +252,11 @@ fn draw_help(app: &App, scroll: usize, buf: &mut Buffer, area: Rect) {
     }
     if area.height >= 2 {
         let y = area.y + area.height - 1;
-        let hint = wrap::cut("j/k g/G:scroll  ?/esc:close", width);
+        let hint = match kind {
+            Overlay::Help => "j/k g/G:scroll  ?/esc:close",
+            Overlay::Review => "j/k g/G:scroll  i/esc:close",
+        };
+        let hint = wrap::cut(hint, width);
         buf.set_stringn(area.x, y, hint, width, Style::new());
     }
 }
@@ -258,6 +299,16 @@ fn border_room(width: u16) -> usize {
 const INPUT_HINT: &str = "ctrl+s:save enter:newline esc:cancel";
 /// [`INPUT_HINT`] for a box too narrow for it: how to save and cancel.
 const INPUT_HINT_SHORT: &str = "ctrl+s:save esc:cancel";
+/// [`INPUT_HINT`] in a hand-off box, and its short form.
+const HAND_OFF_HINTS: [&str; 2] = [
+    "ctrl+s:hand off enter:newline esc:cancel",
+    "ctrl+s:hand off esc:cancel",
+];
+/// [`INPUT_HINT`] in a close box, and its short form.
+const CLOSE_HINTS: [&str; 2] = [
+    "tab:verdict ctrl+s:close esc:cancel",
+    "tab:verdict ctrl+s:close",
+];
 /// The bottom border while an `esc` waits to discard a draft.
 const DISCARD_HINT: &str = "esc:discard the draft  any other key:keep it";
 /// [`DISCARD_HINT`] for a box too narrow for it.
@@ -266,13 +317,20 @@ const DISCARD_HINT_SHORT: &str = "esc:discard other:keep";
 const DISCARD_HINT_TINY: &str = "esc:discard?";
 
 /// The text on the comment box's bottom border and its style, for a box
-/// `width` cells wide. A pending [`App::status`] (a failed save's error) wins,
-/// red and bold, unless [`one_line`] leaves it empty; then the discard prompt
-/// while `discard_asked`; else the key hint. Hints pick the longest form that
+/// writing `target` `width` cells wide. A pending [`App::status`] (a failed
+/// save's error) wins, red and bold, unless [`one_line`] leaves it empty;
+/// then the discard prompt while `discard_asked`; then, for a close asking
+/// to confirm, how many open threads stay open; else the key hint for
+/// `target`. Hints pick the longest form that
 /// fits inside the corners, falling back to the shortest. The error is put on
 /// one row by [`one_line`]. Whatever is chosen is [`wrap::cut`] to fit
 /// between the corners, so text that does not fit ends in `…`.
-fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'static, str>, Style) {
+fn box_border(
+    app: &App,
+    discard_asked: bool,
+    target: &Target,
+    width: u16,
+) -> (Cow<'static, str>, Style) {
     let room = border_room(width);
     let error = app.status().map(one_line).filter(|error| !error.is_empty());
     if let Some(error) = error {
@@ -287,10 +345,24 @@ fn box_border(app: &App, discard_asked: bool, width: u16) -> (Cow<'static, str>,
             Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
         );
     }
-    let hints: &[&str] = if discard_asked {
-        &[DISCARD_HINT, DISCARD_HINT_SHORT, DISCARD_HINT_TINY]
-    } else {
-        &[INPUT_HINT, INPUT_HINT_SHORT]
+    if !discard_asked
+        && let Target::Close {
+            confirm_asked: true,
+            ..
+        } = target
+    {
+        let ask = match app.open_threads() {
+            1 => "1 open thread stays open: ctrl+s again to approve".to_string(),
+            n => format!("{n} open threads stay open: ctrl+s again to approve"),
+        };
+        let style = Style::new().add_modifier(Modifier::BOLD);
+        return (Cow::Owned(wrap::cut(&ask, room).into_owned()), style);
+    }
+    let hints: &[&str] = match target {
+        _ if discard_asked => &[DISCARD_HINT, DISCARD_HINT_SHORT, DISCARD_HINT_TINY],
+        Target::NewThread | Target::Reply(_) => &[INPUT_HINT, INPUT_HINT_SHORT],
+        Target::HandOff => &HAND_OFF_HINTS,
+        Target::Close { .. } => &CLOSE_HINTS,
     };
     let hint = hints
         .iter()
@@ -322,16 +394,21 @@ fn draw_input(
     app: &App,
     draft: &Draft,
     (hint, hint_style): (Cow<'_, str>, Style),
-    reply_to: Option<&str>,
+    target: &Target,
     buf: &mut Buffer,
     area: Rect,
 ) {
     if area.is_empty() {
         return;
     }
-    let title = match reply_to {
-        Some(id) => format!("Reply to {id} as {}", app.author()),
-        None => match app.selection() {
+    let title = match target {
+        Target::Reply(id) => format!("Reply to {id} as {}", app.author()),
+        Target::HandOff => "Hand off to the agent (note optional)".to_string(),
+        Target::Close { verdict, .. } => {
+            let verdict = verdict.map_or("?", Verdict::as_str);
+            format!("Close as {verdict} (tab: approved / dropped)")
+        }
+        Target::NewThread => match app.selection() {
             (first, last) if first == last => {
                 format!("Comment on line {} as {}", first + 1, app.author())
             }
@@ -374,8 +451,10 @@ fn draw_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Anchor, State, Status, Thread};
-    use crate::review::ThreadView;
+    use crate::model::{
+        Anchor, Entry, Event as LogEvent, ReviewState, Side, State, Status, Thread, Verdict,
+    };
+    use crate::review::{ReviewStatus, ThreadView};
     use crate::tui::app::{Event, update};
     use crate::tui::keys;
     use ratatui::Terminal;
@@ -384,6 +463,8 @@ mod tests {
     use ratatui::style::{Color, Modifier};
 
     const W: u16 = 80;
+    /// The screen row of the file view's first row, below the banner.
+    const TOP: u16 = 1;
 
     fn lines(n: usize) -> Vec<String> {
         (1..=n).map(|i| format!("line {i}")).collect()
@@ -415,6 +496,17 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// `left`, then `right` flush against the right edge of `width` cells.
+    fn spread(left: &str, right: &str, width: usize) -> String {
+        let pad = width - left.chars().count() - right.chars().count();
+        format!("{left}{}{right}", " ".repeat(pad))
+    }
+
+    /// A fresh review's banner, the top row, `width` cells wide.
+    fn banner_row(width: u16) -> String {
+        spread("your turn", "H:hand off C:close", usize::from(width))
     }
 
     fn key(app: &mut App, code: KeyCode) {
@@ -518,13 +610,13 @@ mod tests {
         let screen = screen(&draw(&app, W, 16));
 
         let expected = [
+            &banner_row(W),
             "◆  1│line 1",
             "   2│line 2",
             "   3│line 3",
             "   4│line 4",
             "   5│line 5",
             "   6│line 6",
-            "   7│line 7",
             &box_top("Threads on line 1"),
             &boxed("▶ c1 open"),
             &boxed("  > line 1"),
@@ -681,7 +773,7 @@ mod tests {
         assert!(text.contains("┌Comment on line 1 as scott"), "{text}");
         assert!(text.contains("│ok"));
         assert!(!text.contains("Threads on line"));
-        assert!(text.starts_with("◆  1│line 1"));
+        assert_eq!(text.lines().nth(1), Some("◆  1│line 1"), "{text}");
     }
 
     #[test]
@@ -759,8 +851,9 @@ mod tests {
         let terminal = draw(&app, W, 16);
 
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(6, 2)].bg, Color::DarkGray);
-        assert_eq!(buffer[(6, 1)].bg, Color::Reset);
+        // Line 3 is row 3, below the banner.
+        assert_eq!(buffer[(6, 3)].bg, Color::DarkGray);
+        assert_eq!(buffer[(6, 2)].bg, Color::Reset);
     }
 
     #[test]
@@ -771,14 +864,17 @@ mod tests {
 
         assert_eq!(
             screen,
-            "   1│line 1
+            format!(
+                "{}
+   1│line 1
    2│line 2
    3│line 3
    4│line 4
    5│line 5
    6│line 6
-   7│line 7
-plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help"
+plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help",
+                banner_row(W)
+            )
         );
     }
 
@@ -794,14 +890,17 @@ plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help"
 
         assert_eq!(
             screen,
-            "   1│line 1
+            format!(
+                "{}
+   1│line 1
 ●  2│line 2
 ●  3│line 3
    4│line 4
    5│line 5
 ●  6│line 6
-   7│line 7
-plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:sea…"
+plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:sea…",
+                banner_row(W)
+            )
         );
     }
 
@@ -834,7 +933,8 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:sea�
         let terminal = draw(&app, W, 8);
 
         let buffer = terminal.backend().buffer();
-        let cell = |y: u16| &buffer[(0, y)];
+        // Line `n` (0-based) is row `n + 1`, below the banner.
+        let cell = |n: u16| &buffer[(0, n + 1)];
         assert_eq!(cell(0).symbol(), "●");
         assert_eq!(cell(1).symbol(), "◆");
         assert_eq!(cell(1).fg, Color::Yellow);
@@ -862,7 +962,8 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:sea�
         assert_eq!(
             screen,
             format!(
-                "   1│line 1\n   2│line 2\n   3│line 3\n   4│line 4\n   5│line 5\n{top}\n│why?{}│\n{bottom}",
+                "{}\n   1│line 1\n   2│line 2\n   3│line 3\n   4│line 4\n{top}\n│why?{}│\n{bottom}",
+                banner_row(W),
                 " ".repeat(usize::from(W) - 2 - 4)
             )
         );
@@ -1211,7 +1312,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:sea�
         let mut app = box_with("hi", (2, 8));
         update(&mut app, Event::SaveFailed(LOCKED.into()));
 
-        let (text, _) = box_border(&app, false, 2);
+        let (text, _) = box_border(&app, false, &Target::NewThread, 2);
 
         assert_eq!(text, "");
     }
@@ -1357,12 +1458,12 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:sea�
 
     #[test]
     fn a_scrolled_view_starts_at_top() {
-        let mut app = app_with(lines(30), &[], 8);
+        let mut app = app_with(lines(30), &[], 9);
         key(&mut app, KeyCode::Char('G'));
 
-        let screen = screen(&draw(&app, 120, 8));
+        let screen = screen(&draw(&app, 120, 9));
 
-        let first = screen.lines().next().unwrap();
+        let first = screen.lines().nth(1).unwrap();
         assert_eq!(first, "  24│line 24");
         assert!(
             screen
@@ -1381,13 +1482,14 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:sea�
 
     #[test]
     fn long_lines_wrap_with_the_number_on_the_first_row_only() {
-        let app = narrow(&[LONG, "short"], &[], (20, 5));
+        let app = narrow(&[LONG, "short"], &[], (20, 6));
 
-        let screen = screen(&draw(&app, 20, 5));
+        let screen = screen(&draw(&app, 20, 6));
 
         assert_eq!(
             screen,
-            "  1│a    bravo
+            "your turn
+  1│a    bravo
    │charlie delta
    │echo foxtrot
   2│short
@@ -1397,13 +1499,13 @@ plan.md  L1/2  ente…"
 
     #[test]
     fn the_cursor_highlight_covers_every_row_of_a_wrapped_line() {
-        let mut app = narrow(&["one", LONG, "three"], &[], (20, 6));
+        let mut app = narrow(&["one", LONG, "three"], &[], (20, 7));
         key(&mut app, KeyCode::Char('j'));
 
-        let terminal = draw(&app, 20, 6);
+        let terminal = draw(&app, 20, 7);
 
         let buffer = terminal.backend().buffer();
-        let bg = |y: u16| buffer[(5, y)].bg;
+        let bg = |y: u16| buffer[(5, TOP + y)].bg;
         for y in 1..=3 {
             assert_eq!(bg(y), Color::DarkGray, "row {y}");
         }
@@ -1414,14 +1516,14 @@ plan.md  L1/2  ente…"
     #[test]
     fn a_thread_glyph_shows_on_a_wrapped_lines_first_row_only() {
         let threads = [open_thread("c1", (1, 1), State::Current)];
-        let app = narrow(&[LONG, "short"], &threads, (20, 5));
+        let app = narrow(&[LONG, "short"], &threads, (20, 6));
 
-        let terminal = draw(&app, 20, 5);
+        let terminal = draw(&app, 20, 6);
 
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, 0)].symbol(), "●");
-        assert_eq!(buffer[(0, 1)].symbol(), " ");
-        assert_eq!(buffer[(0, 2)].symbol(), " ");
+        assert_eq!(buffer[(0, TOP)].symbol(), "●");
+        assert_eq!(buffer[(0, TOP + 1)].symbol(), " ");
+        assert_eq!(buffer[(0, TOP + 2)].symbol(), " ");
     }
 
     const TABLE: [&str; 5] = [
@@ -1434,11 +1536,11 @@ plan.md  L1/2  ente…"
 
     #[test]
     fn a_table_shows_aligned_in_place_with_a_number_on_every_row() {
-        let app = narrow(&TABLE, &[], (40, 6));
+        let app = narrow(&TABLE, &[], (40, 7));
 
-        let screen = screen(&draw(&app, 40, 6));
+        let screen = screen(&draw(&app, 40, 7));
 
-        let file: Vec<&str> = screen.lines().take(5).collect();
+        let file: Vec<&str> = screen.lines().skip(1).take(5).collect();
         assert_eq!(
             file,
             [
@@ -1454,18 +1556,18 @@ plan.md  L1/2  ente…"
     #[test]
     fn a_table_rows_glyph_and_the_cursor_highlight_cover_that_row_alone() {
         let threads = [open_thread("c1", (4, 4), State::Current)];
-        let mut app = narrow(&TABLE, &threads, (40, 6));
+        let mut app = narrow(&TABLE, &threads, (40, 7));
         key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Char('j'));
 
-        let terminal = draw(&app, 40, 6);
+        let terminal = draw(&app, 40, 7);
 
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, 3)].symbol(), "●");
+        assert_eq!(buffer[(0, TOP + 3)].symbol(), "●");
         for y in [0, 1, 2, 4] {
-            assert_eq!(buffer[(0, y)].symbol(), " ", "row {y}");
+            assert_eq!(buffer[(0, TOP + y)].symbol(), " ", "row {y}");
         }
-        let bg = |y: u16| buffer[(5, y)].bg;
+        let bg = |y: u16| buffer[(5, TOP + y)].bg;
         assert_eq!(bg(2), Color::DarkGray);
         for y in [0, 1, 3, 4] {
             assert_eq!(bg(y), Color::Reset, "row {y}");
@@ -1483,13 +1585,14 @@ plan.md  L1/2  ente…"
 
     #[test]
     fn a_wide_table_wraps_its_cells_in_their_columns_numbered_once_per_line() {
-        let app = narrow(&WIDE_TABLE, &[], (30, 8));
+        let app = narrow(&WIDE_TABLE, &[], (30, 9));
 
-        let screen = screen(&draw(&app, 30, 8));
+        let screen = screen(&draw(&app, 30, 9));
 
         assert_eq!(
             screen,
-            "  1│before
+            "your turn
+  1│before
   2│ Q │ Decision
   3│───┼──────────────────────
   4│ 1 │ use the water
@@ -1503,19 +1606,19 @@ plan.md  L1/5  enter:thread/c…"
     #[test]
     fn a_wrapped_table_lines_glyph_is_on_its_first_row_and_its_highlight_on_all() {
         let threads = [open_thread("c1", (4, 4), State::Current)];
-        let mut app = narrow(&WIDE_TABLE, &threads, (30, 8));
+        let mut app = narrow(&WIDE_TABLE, &threads, (30, 9));
         for _ in 0..3 {
             key(&mut app, KeyCode::Char('j'));
         }
 
-        let terminal = draw(&app, 30, 8);
+        let terminal = draw(&app, 30, 9);
 
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, 3)].symbol(), "●");
+        assert_eq!(buffer[(0, TOP + 3)].symbol(), "●");
         for y in [0, 1, 2, 4, 5, 6] {
-            assert_eq!(buffer[(0, y)].symbol(), " ", "row {y}");
+            assert_eq!(buffer[(0, TOP + y)].symbol(), " ", "row {y}");
         }
-        let bg = |y: u16| buffer[(5, y)].bg;
+        let bg = |y: u16| buffer[(5, TOP + y)].bg;
         for y in 3..=5 {
             assert_eq!(bg(y), Color::DarkGray, "row {y}");
         }
@@ -1549,7 +1652,10 @@ plan.md  L1/5  enter:thread/c…"
 
         assert_eq!(
             screen,
-            "(empty file)\n\n\nplan.md  L0/0  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help"
+            format!(
+                "{}\n(empty file)\n\nplan.md  L0/0  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help",
+                banner_row(W)
+            )
         );
     }
 
@@ -1560,7 +1666,7 @@ plan.md  L1/5  enter:thread/c…"
         let first = |width| {
             screen(&draw(&app, width, 4))
                 .lines()
-                .next()
+                .nth(1)
                 .unwrap()
                 .to_string()
         };
@@ -1577,7 +1683,7 @@ plan.md  L1/5  enter:thread/c…"
         let terminal = draw(&app, W, 8);
 
         let buffer = terminal.backend().buffer();
-        let bg = |y: u16| buffer[(5, y)].bg;
+        let bg = |y: u16| buffer[(5, TOP + y)].bg;
         assert_eq!(bg(1), Color::DarkGray);
         for y in [0, 2, 3, 4] {
             assert_eq!(bg(y), Color::Reset, "row {y}");
@@ -1596,15 +1702,16 @@ plan.md  L1/5  enter:thread/c…"
         let terminal = draw(&app, W, 6);
 
         let buffer = terminal.backend().buffer();
-        assert_eq!(screen(&terminal).lines().nth(1), Some("  2│# Title"));
+        assert_eq!(screen(&terminal).lines().nth(2), Some("  2│# Title"));
+        let y = TOP + 1;
         for x in 4..11 {
-            assert_eq!(buffer[(x, 1)].fg, Color::Magenta, "x {x}");
-            assert!(buffer[(x, 1)].modifier.contains(Modifier::BOLD), "x {x}");
+            assert_eq!(buffer[(x, y)].fg, Color::Magenta, "x {x}");
+            assert!(buffer[(x, y)].modifier.contains(Modifier::BOLD), "x {x}");
         }
         for x in 0..4 {
-            assert_eq!(buffer[(x, 1)].fg, Color::Reset, "gutter x {x}");
+            assert_eq!(buffer[(x, y)].fg, Color::Reset, "gutter x {x}");
             assert!(
-                !buffer[(x, 1)].modifier.contains(Modifier::BOLD),
+                !buffer[(x, y)].modifier.contains(Modifier::BOLD),
                 "gutter x {x}"
             );
         }
@@ -1616,9 +1723,9 @@ plan.md  L1/5  enter:thread/c…"
 
         let terminal = draw(&app, W, 6);
 
-        let cell = &terminal.backend().buffer()[(4, 0)];
+        let cell = &terminal.backend().buffer()[(4, TOP)];
         assert_eq!((cell.fg, cell.bg), (Color::Magenta, Color::DarkGray));
-        assert_eq!(terminal.backend().buffer()[(20, 0)].bg, Color::DarkGray);
+        assert_eq!(terminal.backend().buffer()[(20, TOP)].bg, Color::DarkGray);
     }
 
     #[test]
@@ -1629,10 +1736,13 @@ plan.md  L1/5  enter:thread/c…"
 
         let buffer = terminal.backend().buffer();
         for y in [1, 3] {
-            assert!(buffer[(4, y)].modifier.contains(Modifier::DIM), "fence {y}");
+            assert!(
+                buffer[(4, TOP + y)].modifier.contains(Modifier::DIM),
+                "fence {y}"
+            );
         }
-        assert_eq!(buffer[(4, 2)].fg, Color::Cyan);
-        assert_eq!(buffer[(7, 2)].fg, Color::Cyan);
+        assert_eq!(buffer[(4, TOP + 2)].fg, Color::Cyan);
+        assert_eq!(buffer[(7, TOP + 2)].fg, Color::Cyan);
     }
 
     #[test]
@@ -1642,25 +1752,26 @@ plan.md  L1/5  enter:thread/c…"
         let terminal = draw(&app, W, 6);
 
         let buffer = terminal.backend().buffer();
-        let cell = &buffer[(4, 0)];
+        let cell = &buffer[(4, TOP)];
         assert!(!cell.modifier.contains(Modifier::DIM));
         assert_eq!(cell.bg, Color::DarkGray);
         assert!(
-            buffer[(4, 2)].modifier.contains(Modifier::DIM),
+            buffer[(4, TOP + 2)].modifier.contains(Modifier::DIM),
             "off the cursor row"
         );
         assert!(
-            buffer[(4, 3)].modifier.contains(Modifier::DIM),
+            buffer[(4, TOP + 3)].modifier.contains(Modifier::DIM),
             "quote marker"
         );
     }
 
     // --- visual selection ---
 
-    /// Background of column 5 (file text) on each of the first `n` rows.
+    /// Background of column 5 (file text) on each of the file view's first
+    /// `n` rows.
     fn backgrounds(terminal: &Terminal<TestBackend>, n: u16) -> Vec<bool> {
         let buffer = terminal.backend().buffer();
-        (0..n)
+        (TOP..TOP + n)
             .map(|y| buffer[(5, y)].bg == Color::DarkGray)
             .collect()
     }
@@ -1686,20 +1797,20 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_selected_wrapped_line_is_highlighted_on_all_its_rows() {
-        let mut app = narrow(&["one", LONG, "three"], &[], (20, 6));
+        let mut app = narrow(&["one", LONG, "three"], &[], (20, 7));
         keys(&mut app, "vj");
 
-        let terminal = draw(&app, 20, 6);
+        let terminal = draw(&app, 20, 7);
 
         assert_eq!(backgrounds(&terminal, 5), [true, true, true, true, false]);
     }
 
     #[test]
     fn a_selected_wrapped_table_line_is_highlighted_on_all_its_rows() {
-        let mut app = narrow(&WIDE_TABLE, &[], (30, 8));
+        let mut app = narrow(&WIDE_TABLE, &[], (30, 9));
         keys(&mut app, "jjvj");
 
-        let terminal = draw(&app, 30, 8);
+        let terminal = draw(&app, 30, 9);
 
         assert_eq!(
             backgrounds(&terminal, 7),
@@ -1749,11 +1860,11 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_box_from_visual_names_the_range_and_keeps_it_highlighted() {
-        let mut app = app_with(lines(12), &[], 8);
+        let mut app = app_with(lines(12), &[], 9);
         keys(&mut app, "jvjj");
         key(&mut app, KeyCode::Enter);
 
-        let terminal = draw(&app, W, 8);
+        let terminal = draw(&app, W, 9);
 
         assert!(
             screen(&terminal).contains("┌Comment on lines 2-4 as scott─"),
@@ -2085,5 +2196,146 @@ plan.md  L1/5  enter:thread/c…"
         assert!(footer(&app, 70).contains("q:quit"));
         assert!(!footer(&app, 70).contains("?:help"));
         assert!(footer(&app, 80).ends_with("?:help"));
+    }
+
+    // --- the review banner ---
+
+    fn status(state: ReviewState, note: Option<&str>) -> ReviewStatus {
+        let latest = note.map(|note| Entry {
+            event: LogEvent::HandOff,
+            side: Side::Human,
+            author: "scott".into(),
+            created_at: "2026-10-12T10:00:00Z".into(),
+            revision: "r1".into(),
+            next_id: 1,
+            note: Some(note.into()),
+        });
+        ReviewStatus { state, latest }
+    }
+
+    fn banner(review: ReviewStatus, width: u16) -> String {
+        let app = App::open(lines(3), &[], "scott", (width, 6))
+            .labeled("plan.md")
+            .with_review(review);
+        screen(&draw(&app, width, 6))
+            .lines()
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn a_fresh_review_shows_your_turn_and_the_hand_off_keys_on_top() {
+        let app = app_with(lines(3), &[], 6);
+
+        let screen = screen(&draw(&app, W, 6));
+
+        let rows: Vec<&str> = screen.lines().collect();
+        assert_eq!(rows[0], spread("your turn", "H:hand off C:close", 80));
+        assert_eq!(rows[1], "  1│line 1");
+    }
+
+    #[test]
+    fn during_the_agents_turn_the_banner_shows_the_latest_note() {
+        let review = status(ReviewState::Turn(Side::Agent), Some("Over to you"));
+
+        assert_eq!(
+            banner(review, W),
+            spread("agent's turn · scott: Over to you", "C:close", 80)
+        );
+    }
+
+    #[test]
+    fn a_closed_review_shows_its_verdict_and_the_reopen_key() {
+        let review = status(ReviewState::Closed(Verdict::Approved), None);
+
+        assert_eq!(
+            banner(review, W),
+            spread("closed: approved", "O:reopen", 80)
+        );
+    }
+
+    #[test]
+    fn a_long_or_multi_line_note_is_cut_on_one_row() {
+        let multi = status(ReviewState::Turn(Side::Human), Some("First line\nsecond"));
+        let long = status(ReviewState::Turn(Side::Human), Some(&"word ".repeat(30)));
+
+        assert_eq!(
+            banner(multi, W),
+            spread("your turn · scott: First line…", "H:hand off C:close", 80)
+        );
+        let row = banner(long, 50);
+        assert_eq!(row.chars().count(), 50, "{row:?}");
+        assert!(row.starts_with("your turn · scott: word"), "{row:?}");
+        assert!(row.ends_with("… H:hand off C:close"), "{row:?}");
+    }
+
+    #[test]
+    fn a_banner_too_narrow_for_its_hint_drops_the_hint() {
+        assert_eq!(banner(ReviewStatus::default(), 16), "your turn");
+    }
+
+    // --- hand-off and close boxes ---
+
+    fn shift_key(app: &mut App, c: char) {
+        update(
+            app,
+            Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)),
+        );
+    }
+
+    #[test]
+    fn the_hand_off_box_says_what_saving_does() {
+        let mut app = app_with(lines(3), &[], 8);
+        shift_key(&mut app, 'H');
+
+        let rows = box_rows(&draw(&app, W, 8), 3);
+
+        assert!(
+            rows[0].starts_with("┌Hand off to the agent (note optional)─"),
+            "{rows:?}"
+        );
+        assert!(
+            rows[2].starts_with("└ctrl+s:hand off enter:newline esc:cancel─"),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn the_close_box_title_follows_the_verdict() {
+        let mut app = app_with(lines(3), &[], 8);
+        shift_key(&mut app, 'C');
+        let title = |app: &App| box_rows(&draw(app, W, 8), 3)[0].clone();
+
+        assert!(title(&app).starts_with("┌Close as ? (tab: approved / dropped)─"));
+        assert!(
+            box_rows(&draw(&app, W, 8), 3)[2].starts_with("└tab:verdict ctrl+s:close esc:cancel─")
+        );
+        key(&mut app, KeyCode::Tab);
+        assert!(title(&app).starts_with("┌Close as approved (tab: approved / dropped)─"));
+        key(&mut app, KeyCode::Tab);
+        assert!(title(&app).starts_with("┌Close as dropped (tab: approved / dropped)─"));
+    }
+
+    #[test]
+    fn approving_with_open_threads_asks_on_the_border() {
+        let threads = [
+            open_thread("c1", (1, 1), State::Current),
+            open_thread("c2", (2, 2), State::Current),
+        ];
+        let mut app = app_with(lines(3), &threads, 8);
+        shift_key(&mut app, 'C');
+        key(&mut app, KeyCode::Tab);
+        update(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+        );
+
+        let rows = box_rows(&draw(&app, W, 8), 3);
+
+        assert!(
+            rows[2].starts_with("└2 open threads stay open: ctrl+s again to approve─"),
+            "{rows:?}"
+        );
     }
 }

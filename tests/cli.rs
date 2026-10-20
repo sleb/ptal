@@ -269,3 +269,39 @@ fn a_thread_follows_lines_inserted_above_it_across_processes() {
     assert_eq!(replied["thread"]["anchor"]["end_line"], 5);
     assert_eq!(sb.run_json(&["comments", "FILE"])["revision"], "r2");
 }
+
+#[test]
+fn turns_pass_between_the_tui_and_separate_cli_processes() {
+    let sb = sandbox("one\ntwo\n");
+    assert_failure(
+        &sb.run(&["handoff", "FILE", "--as", "claude"]),
+        2,
+        "not_your_turn",
+    );
+
+    // The human hands off as the TUI does, through the library.
+    let reviews = ptal::review::Reviews::new(ptal::store::Store::new(&sb.data));
+    reviews
+        .hand_off(
+            &sb.file,
+            ptal::model::Side::Human,
+            "scott",
+            Some("Over to you"),
+        )
+        .unwrap();
+    let seen = sb.run_json(&["comments", "FILE"]);
+    assert_eq!(seen["review"]["turn"], "agent");
+    assert_eq!(seen["review"]["latest"]["note"], "Over to you");
+    assert_eq!(seen["review"]["latest"]["revision"], seen["revision"]);
+
+    fs::write(&sb.file, "one\ntwo\nthree\n").unwrap();
+    let handed = sb.run_json(&["handoff", "FILE", "--as", "claude", "--note", "Added three"]);
+    assert_eq!(handed["review"]["turn"], "human");
+
+    let back = sb.run_json(&["comments", "FILE"]);
+    assert_eq!(back["review"]["turn"], "human");
+    assert_eq!(back["review"]["latest"]["author"], "claude");
+    assert_eq!(back["review"]["latest"]["note"], "Added three");
+    assert_eq!(back["review"]["latest"]["revision"], "r2");
+    assert_eq!(back["revision"], "r2");
+}

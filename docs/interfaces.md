@@ -23,7 +23,7 @@ acceptance criteria and link here instead of restating commands.
 | Search the file | n/a (the agent greps the file itself) | `/` opens a prompt (Normal or Visual); typing searches incrementally from where `/` was pressed and moves the cursor to the first matching line after it, `backspace` edits, `enter` keeps the position and makes the query the active search, `esc` or `ctrl+c` restores cursor and view. Smart-case. `n` / `N` jump to the next / previous matching line, wrapping; `esc` in Normal clears the search. Matches are highlighted; the footer shows `/query` | none |
 | Quit | n/a (process exits) | `q`, or `ctrl+c` in Normal mode (in Visual mode they only leave the selection) | none |
 | List open threads | `ptal comments <file>` | Gutter glyph on covered lines: `●` open, `◆` waiting on you (last comment not by `$USER`), `○` resolved only | `view(include_resolved=false)` |
-| Read thread text | `comments` output: the file's current `revision`, and per thread id, status, `state`, range, quote, comments; `revision` fields say which version of the file the anchor, each comment and a resolve referred to | `enter` on a threaded line opens the thread panel: status, `outdated`, quote, every comment with author, time and body | `view` |
+| Read thread text | `comments` output: the file's current `revision`, the review's state (`review`), and per thread id, status, `state`, range, quote, comments; `revision` fields say which version of the file the anchor, each comment, a resolve and the latest hand-off, close or reopen referred to | `enter` on a threaded line opens the thread panel: status, `outdated`, quote, every comment with author, time and body | `view` |
 | Open a thread's conversation | n/a | In the panel: `tab`/`shift+tab` select among the line's threads (wraps), `j`/`k` (`↓`/`↑`) scroll, `r` replies, `x` resolves, `o` reopens the selected thread, `esc` (or `q`, `ctrl+c`) closes | none |
 | Jump between threads | n/a | `]` / `[`: next / previous threaded line, no wrap | none |
 | List resolved threads | `ptal comments <file> --all` | Shown in the panel (`resolved by <name>`, dimmed) and as `○` in the gutter | `view(include_resolved=true)` |
@@ -33,6 +33,10 @@ acceptance criteria and link here instead of restating commands.
 | Resolve a thread | `ptal resolve <file> <id> --as <name> [--note "..."]` (`already_resolved` if resolved) | `x` in the thread panel resolves the selected thread (no note; already resolved: footer says so) | `resolve` |
 | Reply to a thread | `ptal reply <file> <id> "text" --as <name>` (reopens a resolved thread) | `r` in the thread panel replies to the selected thread (the box says `Reply to <id>`); `ctrl+s` saves, `esc` (or `ctrl+c`) cancels as for a new comment | `reply` |
 | Reopen a thread | `ptal reopen <file> <id> --as <name> [--note "..."]` (`already_open` if open) | `o` in the thread panel reopens the selected resolved thread (no note; already open: footer says so) | `reopen` |
+| See whose turn it is | `review` in `comments`: `turn` (`human`, `agent`, or `null` when closed), `verdict` (`approved`, `dropped`, or `null`), and `latest`, the last hand-off, close or reopen with its side, author, time, revision, `next_id` and note; on a TTY, a `turn: agent` or `closed: approved` header and the latest note | A banner on the top row: `your turn`, `agent's turn` or `closed: approved`, then ` · <author>: <note>` (its first line, `…` if cut or longer), and on the right the keys for what you can do now. `i` in Normal opens the review full-screen: the state, the latest hand-off, close or reopen with its author, side, time and revision, and the whole note (`j`/`k`, `g`/`G` scroll; `i`, `esc`, `q` or `ctrl+c` close). Read at open and after each of your own writes | `view` |
+| Hand off | `ptal handoff <file> --as <name> [--note "..."]`, as the agent (`--side human` to act as the human); prints `{"file", "review", "waiting"}`, where `waiting` lists open threads whose last comment isn't yours; `not_your_turn` if the side doesn't hold the turn or the review is closed | `H` in Normal opens a box titled `Hand off to the agent (note optional)`; `ctrl+s` hands off, even with the box blank (no note); `esc` (or `ctrl+c`) cancels as for a comment. The footer then reads `handed off`, with `· waiting on you: c3, c5` when open threads' last comment isn't yours. Out of turn, `not your turn` shows on the box's border and the draft is kept | `hand_off` |
+| Close a review | n/a: only the human closes; `comments` shows the `verdict` and the close's note in `latest` | `C` in Normal opens a box titled `Close as ? (tab: approved / dropped)`; `tab` picks `approved`, then `dropped`, then `approved` again, and the title follows; the text is the note (optional). `ctrl+s` closes; with no verdict chosen, the core's `missing_verdict` message shows on the border and the draft is kept. Approving with open threads asks first (`N open threads stay open: ctrl+s again to approve`): a second `ctrl+s` closes, any other key cancels the ask. Works during either turn | `close` |
+| Reopen a review | `ptal reopen <file> --as <name> [--note "..."]` (no thread id), as the agent (`--side human` to act as the human); prints `{"file", "review"}`; back to the human's turn; `not_closed` if active | `O` in Normal reopens the review at once (no note); on an active one the footer says `review is not closed` | `reopen_review` |
 | See whether a thread is stale | `state: "current" \| "outdated"` in `comments`; the range is where the anchored text is now (edits above move it), `outdated` once an anchored line is edited or removed, at a best guess with the original quote | `outdated` in the thread panel; the footer counts open outdated threads (`N outdated`); the gutter and panel follow the same mapped range | `view` |
 | Learn the tool | `ptal --help` (workflow, conversation model, JSON shape, exit codes); `ptal <command> --help` has an example | `?` in Normal mode or the thread panel opens a full-screen key listing, grouped by mode (`?`, `esc`, `q` or `ctrl+c` close it; `j`/`k`, `ctrl+d`/`ctrl+u`, `PgDn`/`PgUp`, `g`/`G`, `Home`/`End` scroll it); the footer ends with `?:help` when it fits | none |
 
@@ -43,7 +47,7 @@ acceptance criteria and link here instead of restating commands.
 | Author | `--as <name>` or `PTAL_AUTHOR`; never invented | `$USER` |
 | Output | JSON when stdout is not a TTY or with `--json`; readable on a TTY | Rendered screen |
 | Errors | `{"error": {"code", "message"}}` on stderr when not a TTY or with `--json`; exit codes below | A failed write shows its message in the footer (on the comment box's bottom border while writing) and keeps the draft; startup failures print as the CLI does, before the screen is taken over |
-| Seeing the other side's writes | Every call reads from disk | Re-reads after its own writes; reopen to see the agent's |
+| Seeing the other side's writes | Every call reads from disk | Re-reads threads and the review's state after its own writes; reopen to see the agent's. Until then the banner can be stale (for example, `agent's turn` after the agent handed back): the core, not the banner, decides a hand-off, so a stale banner never writes the wrong thing. Live refresh is #36 |
 | Reviewed file | Read-only | Read-only |
 | Markdown highlighting | n/a (raw text) | `.md`, `.markdown` and `.mdx` files show headings, emphasis, strikethrough, code, lists, quotes and links highlighted; off when `NO_COLOR` is set and non-empty. No key toggles it |
 
@@ -56,12 +60,17 @@ stderr carries one error. The table below is pinned by a unit test in
 | Exit | Meaning | Error codes |
 |---|---|---|
 | `0` | Success (also `--help`, `--version`) | none |
-| `2` | The caller can fix the invocation | `usage`, `missing_author`, `not_found`, `invalid_range`, `empty_body`, `already_open`, `already_resolved` |
+| `2` | The caller can fix the invocation | `usage`, `missing_author`, `not_found`, `invalid_range`, `empty_body`, `already_open`, `already_resolved`, `not_your_turn`, `missing_verdict`, `not_closed`, `already_closed` |
 | `1` | Runtime failure | `file_unreadable`, `locked`, `unsupported_schema`, `io`, `corrupt`, `no_data_dir`, `not_a_terminal`, `terminal` |
 
 `no_data_dir` is reported only by commands that read or write review data.
 `--help`, `--version` and usage errors never touch the data directory, so they
 behave the same with `PTAL_DATA_DIR`, `XDG_DATA_HOME` and `HOME` all unset.
+
+`not_your_turn` is a hand-off by the side that doesn't hold the turn, or on
+a closed review. `missing_verdict` is a close without a verdict; only the TUI
+closes, so no CLI command produces it. `not_closed` is reopening an active
+review, and `already_closed` is closing a closed one.
 
 `not_a_terminal` is `ptal <file>` run without a terminal on stdin and
 stdout (an agent running it by mistake gets this JSON error instead of a hung
@@ -71,7 +80,7 @@ the TUI runs.
 ## Bare `ptal <file>` and subcommand names
 
 `ptal <file>` opens the TUI. A first argument that is exactly `comments`,
-`add`, `resolve`, `reply`, `reopen` or `help` is the subcommand; to open a file with one of those names,
+`add`, `resolve`, `reply`, `reopen`, `handoff` or `help` is the subcommand; to open a file with one of those names,
 write `./comments`. With no arguments, `ptal` prints help and exits `2`. The
 `--json` flag is accepted with a file and has no effect on the TUI. Unlike
 the agent commands, the TUI takes its author from `$USER` only (never
@@ -80,9 +89,11 @@ the terminal is taken over.
 
 ## Deliberate asymmetries
 
+- **Only the human closes a review.** The CLI has no close command; the
+  agent reads the verdict and note from `comments`.
 - **Navigation and quitting** are TUI-only; the agent has no cursor.
 - **The TUI reads threads, adds threads on a line or a line range, replies,
-  resolves and reopens.** Notes on resolve/reopen are CLI-only for now. A thread covers its range
+  resolves and reopens.** Notes on resolve/reopen are CLI-only for now, and so is a note on reopening a review (`O` takes none); hand-offs and closes take a note on both sides. A thread covers its range
   as mapped to the file now, whatever its state, so an outdated thread
   carries the same gutter glyph at its best-guess lines and opens from them;
   the panel labels it `outdated` and shows its original quote.

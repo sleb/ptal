@@ -6,17 +6,21 @@
 file, usually a throwaway plan or design doc (`.md`) that you and a coding
 agent are iterating on together and that will never be committed.
 
-You read the file, leave threaded comments on lines, and quit. The agent reads
-your comments through a small JSON CLI, edits the file, replies, and resolves
-threads. You re-open ptal and see what changed. Comments, replies, and resolved
-state persist across rounds and revisions.
+You read the file, leave threaded comments on lines, and hand off. The agent
+reads your comments through a small JSON CLI, edits the file, replies,
+resolves threads, and hands back. You re-open ptal and see what changed, and
+when the plan is done you close the review as `approved` or `dropped`.
+Comments, replies, resolved state and whose turn it is persist across rounds
+and revisions.
 
 > **Status:** core library, the agent CLI (`comments`, `add`, `resolve`, `reply`,
-> `reopen`), and a TUI implemented: scroll a file (long lines wrap, markdown
+> `reopen`, `handoff`), and a TUI implemented: scroll a file (long lines wrap, markdown
 > tables align, markdown structure is highlighted), comment on a line or a
 > selected range, read threads and the agent's replies, jump between threads,
-> search, write multi-line comments, reply, resolve, reopen, `?` lists the
-> keys. Live refresh is planned. See [ARCHITECTURE.md](ARCHITECTURE.md).
+> search, write multi-line comments, reply, resolve, reopen, hand the turn to
+> the agent and close a review with a verdict, `?` lists the keys. Live
+> refresh and waiting for a turn are planned. See
+> [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why not a PR?
 
@@ -59,6 +63,10 @@ Normal mode:
 | `esc` | Clear the active search and its highlight |
 | `v` (or `V`) | Select lines from the cursor (see Visual select below) |
 | `enter` | On a threaded line: open the thread panel. Otherwise comment on the line |
+| `H` | Hand off to the agent: type an optional note, `ctrl+s` (even blank) hands off |
+| `C` | Close the review: `tab` picks `approved` or `dropped`, type an optional note, `ctrl+s` closes (approving with open threads asks once more) |
+| `O` | Reopen a closed review |
+| `i` | Show the review full-screen: whose turn it is (or the verdict), the latest hand-off, close or reopen, and its whole note |
 | `?` | Show the key listing (Normal and thread-panel keys), grouped by mode; the footer ends with `?:help` when it fits |
 | `q` (or `ctrl+c`) | Quit |
 
@@ -101,12 +109,16 @@ Comment box:
 | `←` / `→`, `↑` / `↓`, `Home` / `End` | Move by character, by screen row, to the line's start / end; `backspace` / `delete` remove (and join lines) |
 | Paste | Insert the pasted text, line breaks and tabs included |
 
-Help overlay:
+Help and review overlays:
 
 | Key | Action |
 |---|---|
 | `j` / `k` (or `↓` / `↑`), `ctrl+d` / `ctrl+u` (or `PgDn` / `PgUp`), `g` / `G` (or `Home` / `End`) | Scroll the listing |
-| `?` (or `esc`, `q`, `ctrl+c`) | Close |
+| `?` for help, `i` for the review (or `esc`, `q`, `ctrl+c`) | Close |
+
+The top row is the review's banner: `your turn`, `agent's turn` or
+`closed: approved`, the latest note's first line, and the keys for what you
+can do now.
 
 Long lines wrap at word boundaries onto continuation rows; the line number and
 thread marker show on a line's first row, and `j` / `k` move by file line,
@@ -167,6 +179,8 @@ ptal add plan.md --lines 12-14 "Why not X?" --as claude
 ptal reply plan.md c3 "Which of the two do you mean?" --as claude
 ptal resolve plan.md c3 --as claude --note "Done, see step 2."
 ptal reopen plan.md c3 --as scott --note "Not fixed."
+ptal handoff plan.md --as claude --note "Addressed all but c4."   # your turn, human
+ptal reopen plan.md --as claude   # a closed review, when asked to revise again
 ptal --help                    # the full agent guide: workflow, JSON shape, exit codes
 ```
 
@@ -175,7 +189,7 @@ Failures print nothing on stdout and one JSON error line on stderr; exit `2`
 means the invocation can be fixed, `1` is a runtime failure (see
 [docs/interfaces.md](docs/interfaces.md#exit-codes)). A skill or prompt for
 your agent of choice is just: *"run `ptal comments <file>`, edit the file to
-address each thread, then `ptal resolve` it."*
+address each thread, `ptal resolve` it, then `ptal handoff`."*
 
 **Planned, not built:** `ptal schema` (JSON Schema for all output).
 
@@ -183,6 +197,13 @@ The full command and key map, agent and human side by side, is in
 [docs/interfaces.md](docs/interfaces.md).
 How a review runs between you and the agent (threads, revisions, turns,
 closing with a verdict) is in [docs/protocol.md](docs/protocol.md).
+
+**Turns.** A review is on your turn or the agent's, or closed. You hand off
+with `H` in the TUI; the agent sees `"turn": "agent"` and your note in
+`ptal comments`, and hands back with `ptal handoff`. You close with `C` and a
+verdict (`approved`: go ahead; `dropped`: don't), and either side can reopen
+a closed review. The turn is a signal, not a lock: both sides can comment at
+any time.
 
 ## Troubleshooting
 

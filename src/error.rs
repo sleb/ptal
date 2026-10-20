@@ -21,6 +21,23 @@ pub enum Error {
     #[error("thread {0} is already resolved")]
     AlreadyResolved(String),
 
+    /// A hand-off by a side that doesn't hold the turn, or on a closed
+    /// review, which has no turn.
+    #[error("not your turn")]
+    NotYourTurn,
+
+    /// A close must say `approved` or `dropped`.
+    #[error("a close needs a verdict: approved or dropped")]
+    MissingVerdict,
+
+    /// The review is active, so there is nothing to reopen.
+    #[error("review is not closed")]
+    NotClosed,
+
+    /// The review is closed already; its verdict stands.
+    #[error("review is already closed")]
+    AlreadyClosed,
+
     /// The requested line range is not valid for the file.
     #[error("invalid line range {start}-{end}: {reason}")]
     InvalidRange {

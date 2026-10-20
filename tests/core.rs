@@ -104,3 +104,50 @@ fn full_review_round() {
     let authors: Vec<_> = thread.comments.iter().map(|c| c.author.as_str()).collect();
     assert_eq!(authors, ["scott", "claude"]);
 }
+
+#[test]
+fn a_whole_round_persists_through_separate_handles() {
+    use ptal::model::{Event, ReviewState, Side, Verdict};
+    let env = env("one\n");
+    let open = || Reviews::new(Store::new(&env.data));
+
+    open()
+        .hand_off(&env.file, Side::Human, "scott", Some("Look"))
+        .unwrap();
+    fs::write(&env.file, "one\ntwo\n").unwrap();
+    open()
+        .hand_off(&env.file, Side::Agent, "claude", None)
+        .unwrap();
+    open()
+        .close(&env.file, "scott", Some(Verdict::Approved), Some("Ship it"))
+        .unwrap();
+    fs::write(&env.file, "one\ntwo\nthree\n").unwrap();
+    open()
+        .reopen_review(&env.file, Side::Agent, "claude", Some("Again"))
+        .unwrap();
+
+    let review = Store::new(&env.data).load(&env.file).unwrap();
+    assert_eq!(review.state(), ReviewState::Turn(Side::Human));
+    let log: Vec<(Event, Side, &str)> = review
+        .log
+        .iter()
+        .map(|e| (e.event, e.side, e.revision.as_str()))
+        .collect();
+    assert_eq!(
+        log,
+        [
+            (Event::HandOff, Side::Human, "r1"),
+            (Event::HandOff, Side::Agent, "r2"),
+            (
+                Event::Close {
+                    verdict: Verdict::Approved
+                },
+                Side::Human,
+                "r2"
+            ),
+            (Event::Reopen, Side::Agent, "r3"),
+        ]
+    );
+    let view = open().view(&env.file, true).unwrap();
+    assert_eq!(view.review.latest.unwrap().note.as_deref(), Some("Again"));
+}

@@ -7,11 +7,11 @@ definitions were worked out from are in `docs/review-interactions.md` at
 commit `0365930` (removed since).
 
 > **Status.** Threads, comments, replies, resolving and reopening are built,
-> and so are revisions and threads that follow edits (#45). Changes since
-> your last look (#46), turns, hand-offs and closing a review (#35), and waiting for
-> a turn (#36) are planned for v0.3.0. Each section below says which it is.
-> Planned behavior has no command names yet; those are settled in the
-> stories.
+> and so are revisions and threads that follow edits (#45), and turns,
+> hand-offs and closing a review (#35). Waiting for a turn (#36) and changes
+> since your last look (#46) are planned for v0.3.0. Each section below says
+> which it is. Planned behavior has no command names yet; those are settled
+> in its story.
 
 ## The shape of a review
 
@@ -50,11 +50,11 @@ hand off; the agent revises and answers, hands back; until you close it.
 
 ## Revisions
 
-*Built (#45), except hand-offs, which are planned (#35).*
+*Built (#45, #35).*
 
 - A **revision** is one version of the file's content. ptal never edits
   the file; it notices a new revision when someone writes something (a
-  comment, a resolve, a reopen, later a hand-off) against content it hasn't
+  comment, a resolve, a reopen, a hand-off, a close) against content it hasn't
   kept yet, and keeps a copy. Reading never keeps one, so edits made between
   two writes are one revision, and content nobody has written against yet
   has no number. Revisions are numbered `r1`, `r2`, … in the order they
@@ -67,8 +67,9 @@ hand off; the agent revises and answers, hands back; until you close it.
   - any anchored line edited or removed: the thread is **outdated**, shown
     near where its text was, with the original text quoted.
 - Every comment and every resolve records the revision it was written
-  against (a reopen through its note, if it has one; later each hand-off
-  too), so you can see which version of the file a fix referred to.
+  against (a thread reopen through its note, if it has one), and so does
+  every hand-off, close and review reopen, so you can see which version of
+  the file a fix or a hand-off referred to.
 - Revisions have no author. What the agent changed is what changed between
   your hand-off and its hand-back.
 - A review belongs to the file's path. However much the file is rewritten,
@@ -76,7 +77,7 @@ hand off; the agent revises and answers, hands back; until you close it.
 
 ## Turns
 
-*Planned (#35, #36).*
+*Built (#35), except waiting for a turn, which is planned (#36).*
 
 - One side at a time has the **turn**: the side expected to act next. A
   review starts on your turn.
@@ -87,12 +88,16 @@ hand off; the agent revises and answers, hands back; until you close it.
   threads still waiting on the side handing off, without refusing.
 - Your hand-off means "your move": what you want is in the threads and the
   note. The agent's hand-back means its revision is ready for you to read.
+- Every hand-off, close and reopen is kept, in order, with the review, and
+  whose turn it is (or the verdict) is read from them, so it survives
+  restarts of ptal on either side.
 - An agent can **wait** for its turn instead of being told in chat. The
-  wait returns when you hand off, or when you close the review.
+  wait returns when you hand off, or when you close the review. *(Planned,
+  #36.)*
 
 ## Closing and the verdict
 
-*Planned (#35).*
+*Built (#35).*
 
 - Only you **close** a review, at any time, even during the agent's turn.
   A closed review has no turn: nothing more is expected in it.
@@ -103,8 +108,8 @@ hand off; the agent revises and answers, hands back; until you close it.
   - **dropped**: don't. Why (abandoned, covered elsewhere, not now) goes in
     the close note.
 - Approving with threads still open accepts them as they stand. They stay
-  open in the record, and the agent owes nothing on them. ptal may ask you
-  to confirm first.
+  open in the record, and the agent owes nothing on them. ptal asks you to
+  confirm first.
 - A closed review still accepts comments and edits; they don't reopen it.
 - Either side can **reopen** a closed review, which starts a new round on
   your turn. The agent does this when you've asked it, outside the review,

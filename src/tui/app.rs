@@ -7,8 +7,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::model::{State, Status};
-use crate::review::ThreadView;
+use crate::model::{Entry, Event as LogEvent, ReviewState, Side, State, Status, Verdict};
+use crate::review::{ReviewStatus, ThreadView};
 
 use super::draft::Draft;
 use super::highlight::{self, Styling};
@@ -63,33 +63,89 @@ pub enum Mode {
         /// Whether an `esc` (or `ctrl+c`) on a draft that is not blank is
         /// waiting for a second one to discard it.
         discard_asked: bool,
-        /// The id of the thread being replied to; `None` adds a new thread.
-        ///
-        /// Captured when `r` is pressed, so a re-read between the keypress
-        /// and the write cannot retarget the reply.
-        reply_to: Option<String>,
+        /// What saving the box writes.
+        target: Target,
     },
-    /// Reading the key listing, which replaces the whole screen.
+    /// Reading a full-screen overlay, which replaces the whole screen.
     ///
     /// `back` is only ever Normal or the panel, and is where closing returns.
-    Help {
+    Overlay {
+        /// What the overlay shows.
+        kind: Overlay,
         /// Where the overlay was opened from.
         back: Back,
-        /// First visible row of the listing.
+        /// First visible row of its listing.
         scroll: usize,
     },
 }
 
+/// What a [`Mode::Overlay`] shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overlay {
+    /// The key listing, [`keys::HELP`].
+    Help,
+    /// The review's state and its latest log entry, note in full.
+    Review,
+}
+
+impl Overlay {
+    /// The overlay's title row.
+    pub fn title(self) -> &'static str {
+        match self {
+            Overlay::Help => "Help",
+            Overlay::Review => "Review",
+        }
+    }
+
+    /// The key that opens the overlay, and closes it again.
+    fn toggle(self) -> char {
+        match self {
+            Overlay::Help => '?',
+            Overlay::Review => 'i',
+        }
+    }
+}
+
 impl Mode {
-    /// An empty comment box that returns to `back`, adding a thread or, with
-    /// `reply_to`, replying to that thread.
-    fn input(back: Back, reply_to: Option<String>) -> Self {
+    /// An empty comment box that returns to `back` and writes `target`.
+    fn input(back: Back, target: Target) -> Self {
         Mode::Input {
             draft: Draft::default(),
             discard_asked: false,
             back,
-            reply_to,
+            target,
         }
+    }
+}
+
+/// What a comment box writes when saved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// A new thread on the selection.
+    NewThread,
+    /// A reply to the thread with this id.
+    ///
+    /// Captured when `r` is pressed, so a re-read between the keypress and
+    /// the write cannot retarget the reply.
+    Reply(String),
+    /// A hand-off to the agent; the text is its note, and a blank box hands
+    /// off with none.
+    HandOff,
+    /// A close of the review; the text is its note.
+    Close {
+        /// The verdict chosen with `tab`; `None` until one is.
+        verdict: Option<Verdict>,
+        /// Whether a `ctrl+s` approving with open threads is waiting for a
+        /// second one to confirm.
+        confirm_asked: bool,
+    },
+}
+
+impl Target {
+    /// Whether saving a blank box writes: a hand-off or a close needs no
+    /// note, a comment needs a body.
+    fn saves_blank(&self) -> bool {
+        matches!(self, Target::HandOff | Target::Close { .. })
     }
 }
 
@@ -139,6 +195,15 @@ pub enum Event {
         id: String,
         done: Done,
         threads: Vec<ThreadView>,
+        /// The review's state, re-read with the threads.
+        review: ReviewStatus,
+    },
+    /// The driver wrote a hand-off, close or reopen; `message` is the
+    /// footer's, and `threads` and `review` are the re-read view.
+    ReviewSaved {
+        message: String,
+        threads: Vec<ThreadView>,
+        review: ReviewStatus,
     },
     /// The driver could not perform the write. A pending draft is kept.
     SaveFailed(String),
@@ -185,6 +250,17 @@ pub enum Effect {
     Resolve { id: String },
     /// Reopen thread `id` with no note; answered like [`Effect::Add`].
     Reopen { id: String },
+    /// Hand the turn to the agent with `note`, then answer with
+    /// [`Event::ReviewSaved`] or [`Event::SaveFailed`].
+    HandOff { note: Option<String> },
+    /// Close the review with `verdict` (`None` if none was chosen, which the
+    /// core refuses) and `note`; answered like [`Effect::HandOff`].
+    Close {
+        verdict: Option<Verdict>,
+        note: Option<String>,
+    },
+    /// Reopen the closed review; answered like [`Effect::HandOff`].
+    ReopenReview,
     /// Leave the TUI.
     Quit,
 }
@@ -213,6 +289,11 @@ pub struct App {
     pub(super) search: Option<String>,
     /// The help listing laid out for `cols`.
     help: Vec<keys::Row>,
+    /// The review overlay's listing laid out for `cols`, from `review`.
+    review_rows: Vec<keys::Row>,
+    /// Whose turn it is, or the verdict, and the latest log entry. Re-read
+    /// from disk after each write, like the threads.
+    review: ReviewStatus,
     /// The reviewed file's path as shown in the footer.
     file: String,
     /// Who the comments will be written as, shown in the input box.
@@ -249,8 +330,11 @@ pub struct ScreenRow {
 
 /// Terminal rows taken by the footer in Normal mode.
 const FOOTER_ROWS: usize = 1;
-/// Rows the help overlay spends on its title and its footer.
-pub(super) const HELP_CHROME_ROWS: usize = 2;
+/// Terminal rows the review banner takes at the top, in every mode but an
+/// overlay.
+pub(super) const BANNER_ROWS: usize = 1;
+/// Rows an overlay spends on its title and its footer.
+pub(super) const OVERLAY_CHROME_ROWS: usize = 2;
 /// Rows the comment box's border takes; the box replaces the footer.
 const BOX_BORDER_ROWS: usize = 2;
 /// The comment box shows at most this many rows of its draft.
@@ -287,6 +371,8 @@ impl App {
             status: None,
             search: None,
             help: Vec::new(),
+            review_rows: Vec::new(),
+            review: ReviewStatus::default(),
             file: String::new(),
             author: author.to_string(),
             threads: threads.to_vec(),
@@ -303,6 +389,26 @@ impl App {
         self
     }
 
+    /// Show `review` as the review's state.
+    #[must_use]
+    pub fn with_review(mut self, review: ReviewStatus) -> Self {
+        self.set_review(review);
+        self
+    }
+
+    fn set_review(&mut self, review: ReviewStatus) {
+        self.review_rows = review_rows(&review, self.cols);
+        self.review = review;
+    }
+
+    /// How many threads are open.
+    pub fn open_threads(&self) -> usize {
+        self.threads
+            .iter()
+            .filter(|t| t.thread.status == Status::Open)
+            .count()
+    }
+
     /// Style the file view's markdown structure when `on`; plain otherwise.
     #[must_use]
     pub fn highlighted(mut self, on: bool) -> Self {
@@ -312,6 +418,36 @@ impl App {
             Vec::new()
         };
         self
+    }
+
+    /// The review's state as last read.
+    pub fn review(&self) -> &ReviewStatus {
+        &self.review
+    }
+
+    /// The banner's text, `your turn`, `agent's turn` or `closed: <verdict>`
+    /// then ` · <author>: <note>` with the latest entry's note (its first
+    /// line, ending in `…` when there are more), and the key hint for what
+    /// the human can do now.
+    pub fn banner(&self) -> (String, &'static str) {
+        let mut text = state_name(self.review.state);
+        if let Some(Entry {
+            author,
+            note: Some(note),
+            ..
+        }) = &self.review.latest
+        {
+            let mut lines = note.lines();
+            let first = lines.next().unwrap_or_default();
+            let more = if lines.next().is_some() { "…" } else { "" };
+            text.push_str(&format!(" · {author}: {first}{more}"));
+        }
+        let hint = match self.review.state {
+            ReviewState::Turn(Side::Human) => "H:hand off C:close",
+            ReviewState::Turn(Side::Agent) => "C:close",
+            ReviewState::Closed(_) => "O:reopen",
+        };
+        (text, hint)
     }
 
     /// The file path shown in the footer.
@@ -422,7 +558,7 @@ impl App {
             Mode::Normal | Mode::Visual { .. } | Mode::Search { .. } => FOOTER_ROWS,
             Mode::Input { .. } => self.box_text_rows() + BOX_BORDER_ROWS,
             Mode::Panel { .. } => self.panel_rows() + FOOTER_ROWS,
-            Mode::Help { .. } => self.rows,
+            Mode::Overlay { .. } => self.rows,
         }
     }
 
@@ -431,16 +567,30 @@ impl App {
         &self.help
     }
 
-    /// Listing rows the help overlay shows: the screen less its title and
-    /// footer rows.
-    pub(super) fn help_body_rows(&self) -> usize {
-        self.rows.saturating_sub(HELP_CHROME_ROWS)
+    /// The listing of overlay `kind`, laid out for the window.
+    pub fn overlay_rows(&self, kind: Overlay) -> &[keys::Row] {
+        match kind {
+            Overlay::Help => self.help_rows(),
+            Overlay::Review => &self.review_rows,
+        }
     }
 
-    /// Keep the help scroll inside the listing.
-    fn clamp_help(&mut self) {
-        let max = self.help_rows().len().saturating_sub(self.help_body_rows());
-        if let Mode::Help { scroll, .. } = &mut self.mode {
+    /// Listing rows an overlay shows: the screen less its title and footer
+    /// rows.
+    pub(super) fn overlay_body_rows(&self) -> usize {
+        self.rows.saturating_sub(OVERLAY_CHROME_ROWS)
+    }
+
+    /// Keep an overlay's scroll inside its listing.
+    fn clamp_overlay(&mut self) {
+        let Mode::Overlay { kind, .. } = self.mode else {
+            return;
+        };
+        let max = self
+            .overlay_rows(kind)
+            .len()
+            .saturating_sub(self.overlay_body_rows());
+        if let Mode::Overlay { scroll, .. } = &mut self.mode {
             *scroll = (*scroll).min(max);
         }
     }
@@ -494,10 +644,13 @@ impl App {
         Some(panel::layout(&threads, selected, width))
     }
 
-    /// Rows available to the file view; never zero, so the arithmetic in
-    /// `clamp_view` and the half-page step stay total on tiny terminals.
+    /// Rows available to the file view, between the banner and the chrome
+    /// below it; never zero, so the arithmetic in `clamp_view` and the
+    /// half-page step stay total on tiny terminals.
     pub(super) fn height(&self) -> usize {
-        self.rows.saturating_sub(self.chrome_rows()).max(1)
+        self.rows
+            .saturating_sub(BANNER_ROWS + self.chrome_rows())
+            .max(1)
     }
 
     /// Digits in the largest line number; the gutter right-aligns numbers to
@@ -541,6 +694,7 @@ impl App {
     fn relayout(&mut self) {
         self.tables = table::align(&self.lines, self.text_width());
         self.help = keys::rows(self.cols);
+        self.review_rows = review_rows(&self.review, self.cols);
     }
 
     /// The screen rows of 0-based `line` at the current width: its table
@@ -604,9 +758,9 @@ impl App {
         if matches!(self.mode, Mode::Panel { .. }) && self.threads_on(self.cursor).is_empty() {
             self.mode = Mode::Normal;
         }
-        if matches!(self.mode, Mode::Help { .. }) {
+        if matches!(self.mode, Mode::Overlay { .. }) {
             // The file is hidden, so its view stays as it was.
-            self.clamp_help();
+            self.clamp_overlay();
             return;
         }
         let height = self.height();
@@ -635,9 +789,13 @@ impl App {
         }
     }
 
-    /// Open the help overlay from `back`.
-    fn open_help(&mut self, back: Back) {
-        self.mode = Mode::Help { back, scroll: 0 };
+    /// Open overlay `kind` from `back`.
+    fn open_overlay(&mut self, kind: Overlay, back: Back) {
+        self.mode = Mode::Overlay {
+            kind,
+            back,
+            scroll: 0,
+        };
     }
 
     /// Open the panel on the cursor line's threads, selecting the first one
@@ -859,6 +1017,62 @@ impl App {
     }
 }
 
+/// `your turn`, `agent's turn` or `closed: <verdict>`, as the human reads it.
+fn state_name(state: ReviewState) -> String {
+    match state {
+        ReviewState::Turn(Side::Human) => "your turn".into(),
+        ReviewState::Turn(Side::Agent) => "agent's turn".into(),
+        ReviewState::Closed(verdict) => format!("closed: {}", verdict.as_str()),
+    }
+}
+
+/// The review overlay's listing for `width` cells: the state as a header,
+/// what the latest entry was, by whom, when and on which revision, then its
+/// whole note, each line wrapped.
+fn review_rows(review: &ReviewStatus, width: usize) -> Vec<keys::Row> {
+    let width = width.max(1);
+    let row = |text: String, heading| keys::Row { text, heading };
+    let mut out = vec![
+        row(state_name(review.state), true),
+        row(String::new(), false),
+    ];
+    let Some(entry) = &review.latest else {
+        out.extend(
+            wrap::plain_rows("no hand-off yet", width)
+                .into_iter()
+                .map(|t| row(t, false)),
+        );
+        return out;
+    };
+    let what = match entry.event {
+        LogEvent::HandOff => "hand-off".to_string(),
+        LogEvent::Close { verdict } => format!("closed as {}", verdict.as_str()),
+        LogEvent::Reopen => "reopened".to_string(),
+    };
+    let about = [
+        format!("{what} by {} ({})", entry.author, entry.side.as_str()),
+        format!("at {} on {}", entry.created_at, entry.revision),
+    ];
+    for line in about {
+        out.extend(
+            wrap::plain_rows(&line, width)
+                .into_iter()
+                .map(|t| row(t, false)),
+        );
+    }
+    if let Some(note) = &entry.note {
+        out.push(row(String::new(), false));
+        for line in note.lines() {
+            out.extend(
+                wrap::plain_rows(line, width)
+                    .into_iter()
+                    .map(|t| row(t, false)),
+            );
+        }
+    }
+    out
+}
+
 /// Apply `event` to `app`; return the effect the driver must perform.
 pub fn update(app: &mut App, event: Event) -> Option<Effect> {
     let effect = apply(app, event);
@@ -875,8 +1089,14 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.relayout();
             None
         }
-        Event::Saved { id, done, threads } => {
+        Event::Saved {
+            id,
+            done,
+            threads,
+            review,
+        } => {
             app.threads = threads;
+            app.set_review(review);
             let from_panel = matches!(
                 app.mode,
                 Mode::Panel { .. }
@@ -892,6 +1112,17 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.status = Some(format!("{} {id}", done.verb()));
             None
         }
+        Event::ReviewSaved {
+            message,
+            threads,
+            review,
+        } => {
+            app.threads = threads;
+            app.set_review(review);
+            app.mode = Mode::Normal;
+            app.status = Some(message);
+            None
+        }
         Event::SaveFailed(message) => {
             app.status = Some(message);
             None
@@ -904,7 +1135,7 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
                 Mode::Search { .. } => search_key(app, key),
                 Mode::Panel { .. } => panel_key(app, key),
                 Mode::Input { .. } => input_key(app, key),
-                Mode::Help { .. } => help_key(app, key),
+                Mode::Overlay { .. } => overlay_key(app, key),
             }
         }
         Event::Key(_) => None,
@@ -980,7 +1211,17 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Char('?') if !ctrl => app.open_help(Back::Normal),
+        KeyCode::Char('?') if !ctrl => app.open_overlay(Overlay::Help, Back::Normal),
+        KeyCode::Char('i') if !ctrl => app.open_overlay(Overlay::Review, Back::Normal),
+        KeyCode::Char('H') if !ctrl => app.mode = Mode::input(Back::Normal, Target::HandOff),
+        KeyCode::Char('C') if !ctrl => {
+            let close = Target::Close {
+                verdict: None,
+                confirm_asked: false,
+            };
+            app.mode = Mode::input(Back::Normal, close);
+        }
+        KeyCode::Char('O') if !ctrl => return Some(Effect::ReopenReview),
         KeyCode::Char('v' | 'V') if !ctrl && !app.lines.is_empty() => {
             app.mode = Mode::Visual { anchor: app.cursor };
         }
@@ -988,7 +1229,7 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Esc => app.search = None,
         KeyCode::Enter if !app.threads_on(app.cursor).is_empty() => app.open_panel(),
         KeyCode::Enter if !app.lines.is_empty() => {
-            app.mode = Mode::input(Back::Normal, None);
+            app.mode = Mode::input(Back::Normal, Target::NewThread);
         }
         _ => {}
     }
@@ -1013,7 +1254,7 @@ fn visual_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Char('v' | 'V') if !ctrl => app.mode = Mode::Normal,
         KeyCode::Char('/') if !ctrl => app.start_search(Some(anchor)),
         KeyCode::Enter => {
-            app.mode = Mode::input(Back::Visual { anchor }, None);
+            app.mode = Mode::input(Back::Visual { anchor }, Target::NewThread);
         }
         _ => {}
     }
@@ -1068,22 +1309,23 @@ fn search_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     None
 }
 
-/// Leave the help overlay for `back`.
+/// Leave an overlay for `back`.
 fn close(app: &mut App, back: Back) -> Option<Effect> {
     app.mode = back.mode();
     None
 }
 
-/// Keys in [`Mode::Help`]: `?`, `esc`, `q` and `ctrl+c` close it (never
-/// quit), the movement keys scroll the listing.
-fn help_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
-    let Mode::Help { back, scroll } = app.mode else {
+/// Keys in [`Mode::Overlay`]: its own key (`?` for help), `esc`, `q` and
+/// `ctrl+c` close it (never quit), the movement keys scroll the listing.
+fn overlay_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    let Mode::Overlay { kind, back, scroll } = app.mode else {
         return None;
     };
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let half = (app.help_body_rows() / 2).max(1);
+    let half = (app.overlay_body_rows() / 2).max(1);
     let to = match key.code {
-        KeyCode::Esc | KeyCode::Char('?' | 'q') if !ctrl => return close(app, back),
+        KeyCode::Esc | KeyCode::Char('q') if !ctrl => return close(app, back),
+        KeyCode::Char(c) if !ctrl && c == kind.toggle() => return close(app, back),
         KeyCode::Char('c') if ctrl => return close(app, back),
         KeyCode::Char('j') | KeyCode::Down if !ctrl => scroll + 1,
         KeyCode::Char('k') | KeyCode::Up if !ctrl => scroll.saturating_sub(1),
@@ -1095,7 +1337,11 @@ fn help_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Char('G') | KeyCode::End if !ctrl => usize::MAX,
         _ => return None,
     };
-    app.mode = Mode::Help { back, scroll: to };
+    app.mode = Mode::Overlay {
+        kind,
+        back,
+        scroll: to,
+    };
     None
 }
 
@@ -1111,9 +1357,11 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let count = app.threads_on(app.cursor).len().max(1);
     match key.code {
-        KeyCode::Char('?') if !ctrl => app.open_help(Back::Panel { selected, scroll }),
+        KeyCode::Char('?') if !ctrl => {
+            app.open_overlay(Overlay::Help, Back::Panel { selected, scroll })
+        }
         KeyCode::Char('a') if !ctrl => {
-            app.mode = Mode::input(Back::Panel { selected, scroll }, None);
+            app.mode = Mode::input(Back::Panel { selected, scroll }, Target::NewThread);
         }
         KeyCode::Char('r') if !ctrl => {
             let id = app
@@ -1121,7 +1369,7 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 .get(selected)
                 .map(|view| view.thread.id.clone());
             if let Some(id) = id {
-                app.mode = Mode::input(Back::Panel { selected, scroll }, Some(id));
+                app.mode = Mode::input(Back::Panel { selected, scroll }, Target::Reply(id));
             }
         }
         KeyCode::Char('x') if !ctrl => return app.change_status(selected, true),
@@ -1155,29 +1403,40 @@ fn saved_body(draft: &str) -> &str {
 }
 
 /// A key in the comment box: `ctrl+s` (either case, as some terminals
-/// report it with shift or caps lock) saves a draft that is not blank, as
-/// [`saved_body`] trims it; `enter` starts a new line; the rest edit the
-/// draft. `esc` or `ctrl+c` returns to where the box came from: at once for
-/// a blank draft, else on a second press, any other key in between keeping
-/// the draft.
+/// report it with shift or caps lock) saves, as [`save`] decides; `tab` picks
+/// a close's verdict; `enter` starts a new line; the rest edit the draft.
+/// `esc` or `ctrl+c` returns to where the box came from: at once for a
+/// blank draft, else on a second press, any other key in between keeping
+/// the draft (and cancelling a pending confirmation).
 fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let save = ctrl && matches!(key.code, KeyCode::Char('s' | 'S'));
+    // Only a save needs these; computed before the mode is borrowed.
+    let (selection, open_threads) = if save {
+        (app.selection(), app.open_threads())
+    } else {
+        ((0, 0), 0)
+    };
     let width = app.draft_width();
     let Mode::Input {
         draft,
         discard_asked,
         back,
-        reply_to,
+        target,
     } = &mut app.mode
     else {
         return None;
     };
-    let back = back.mode();
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let blank = draft.text().trim().is_empty();
+    // Any key but a save cancels a pending confirmation, `esc` included.
+    if let Target::Close { confirm_asked, .. } = target
+        && !save
+    {
+        *confirm_asked = false;
+    }
     let cancel = key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c'));
     if cancel {
-        if blank || *discard_asked {
-            app.mode = back;
+        if draft.text().trim().is_empty() || *discard_asked {
+            app.mode = back.mode();
         } else {
             *discard_asked = true;
         }
@@ -1185,24 +1444,14 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     }
     *discard_asked = false;
     match key.code {
-        KeyCode::Char('s' | 'S') if ctrl && blank => {}
-        KeyCode::Char('s' | 'S') if ctrl => {
-            let body = saved_body(draft.text()).to_owned();
-            return Some(match reply_to {
-                Some(id) => Effect::Reply {
-                    id: id.clone(),
-                    body,
-                },
-                None => {
-                    let (first, last) = app.selection();
-                    let one_based = |line: usize| u32::try_from(line + 1).unwrap_or(u32::MAX);
-                    Effect::Add {
-                        start: one_based(first),
-                        end: one_based(last),
-                        body,
-                    }
-                }
-            });
+        _ if save => return save_box(draft.text(), target, selection, open_threads),
+        KeyCode::Tab => {
+            if let Target::Close { verdict, .. } = target {
+                *verdict = Some(match verdict {
+                    Some(Verdict::Approved) => Verdict::Dropped,
+                    None | Some(Verdict::Dropped) => Verdict::Approved,
+                });
+            }
         }
         KeyCode::Char(c) if !ctrl => draft.insert(c),
         KeyCode::Enter => draft.newline(),
@@ -1219,9 +1468,59 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     None
 }
 
+/// What `ctrl+s` in a box writing `target` asks for, with `text` as typed:
+/// the text as [`saved_body`] trims it, as the body of a comment (on the
+/// 0-based `selection`, for a new thread) or as the note of a hand-off or
+/// close (none when blank). A blank comment saves nothing. Approving with
+/// `open_threads` asks first: the first press sets `confirm_asked` and
+/// returns `None`, a second one closes.
+fn save_box(
+    text: &str,
+    target: &mut Target,
+    (first, last): (usize, usize),
+    open_threads: usize,
+) -> Option<Effect> {
+    let body = saved_body(text);
+    if body.trim().is_empty() && !target.saves_blank() {
+        return None;
+    }
+    let note = (!body.trim().is_empty()).then(|| body.to_owned());
+    let body = body.to_owned();
+    Some(match target {
+        Target::Reply(id) => Effect::Reply {
+            id: id.clone(),
+            body,
+        },
+        Target::NewThread => {
+            let one_based = |line: usize| u32::try_from(line + 1).unwrap_or(u32::MAX);
+            Effect::Add {
+                start: one_based(first),
+                end: one_based(last),
+                body,
+            }
+        }
+        Target::HandOff => Effect::HandOff { note },
+        Target::Close {
+            verdict,
+            confirm_asked,
+        } => {
+            if *verdict == Some(Verdict::Approved) && open_threads > 0 && !*confirm_asked {
+                *confirm_asked = true;
+                return None;
+            }
+            Effect::Close {
+                verdict: *verdict,
+                note,
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Entry, ReviewState, Side, Verdict};
+    use crate::review::ReviewStatus;
     use ratatui::crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
     use ratatui::style::{Color, Modifier, Style};
 
@@ -1267,7 +1566,7 @@ mod tests {
 
     #[test]
     fn g_and_capital_g_jump_to_first_and_last_line() {
-        let mut a = app(20, 6); // view height 5
+        let mut a = app(20, 7); // view height 5
 
         send(&mut a, [ch('G')]);
         assert_eq!(at(&a), (19, 15));
@@ -1277,7 +1576,7 @@ mod tests {
 
     #[test]
     fn ctrl_d_and_ctrl_u_move_half_a_page_and_the_view_follows() {
-        let mut a = app(20, 11); // view height 10, half page 5
+        let mut a = app(20, 12); // view height 10, half page 5
 
         send(&mut a, [ctrl('d')]);
         assert_eq!(at(&a), (5, 5));
@@ -1291,7 +1590,7 @@ mod tests {
 
     #[test]
     fn half_page_is_at_least_one_line() {
-        let mut a = app(5, 2); // view height 1
+        let mut a = app(5, 3); // view height 1
 
         send(&mut a, [ctrl('d')]);
 
@@ -1300,7 +1599,7 @@ mod tests {
 
     #[test]
     fn cursor_stays_inside_the_view_through_a_scripted_walk() {
-        let mut a = app(30, 8); // view height 7
+        let mut a = app(30, 9); // view height 7
         let walk = "jjjjjjjjjjGkkkkkgjjjjjjjjjj";
         let mut events: Vec<Event> = walk.chars().map(ch).collect();
         events.extend([ctrl('d'), ctrl('u'), ctrl('d'), ctrl('d')]);
@@ -1318,11 +1617,11 @@ mod tests {
 
     #[test]
     fn resize_reclamps_the_view_and_zero_height_does_not_panic() {
-        let mut a = app(20, 11);
+        let mut a = app(20, 12); // view height 10
         send(&mut a, [ch('G')]);
         assert_eq!(at(&a), (19, 10));
 
-        send(&mut a, [Event::Resize(40, 4)]); // view height 3
+        send(&mut a, [Event::Resize(40, 5)]); // view height 3
         assert_eq!(at(&a), (19, 17));
         send(&mut a, [Event::Resize(40, 0), ch('k'), ctrl('d'), ch('g')]);
         assert_eq!(a.cursor, 0);
@@ -1369,7 +1668,7 @@ mod tests {
         // Gutter 4, text width 10; the second line wraps into 3 rows.
         let a = wrapped(
             &["short", "aaaa bbbb cccc dddd eeee", "x", "y"],
-            (14, 6), // view height 5
+            (14, 7), // view height 5
         );
 
         let row = |line, first, text: &str| (line, first, text.to_string());
@@ -1405,7 +1704,7 @@ mod tests {
 
     #[test]
     fn j_scrolls_so_a_wrapped_cursor_line_is_fully_shown() {
-        let mut a = wrapped(&[W3, W3, W3, "x"], (14, 8)); // height 7
+        let mut a = wrapped(&[W3, W3, W3, "x"], (14, 9)); // height 7
 
         send(&mut a, [ch('j'), ch('j')]);
 
@@ -1417,7 +1716,7 @@ mod tests {
     fn capital_g_shows_all_of_a_wrapped_last_line_with_no_blank_rows() {
         let mut lines = vec!["x"; 10];
         lines.push(W3);
-        let mut a = wrapped(&lines, (15, 8)); // 2 digits, width 10, height 7
+        let mut a = wrapped(&lines, (15, 9)); // 2 digits, width 10, height 7
 
         send(&mut a, [ch('G')]);
 
@@ -1427,7 +1726,7 @@ mod tests {
 
     #[test]
     fn a_cursor_line_taller_than_the_view_starts_at_the_top() {
-        let mut a = wrapped(&["x", W3, "y"], (14, 3)); // height 2
+        let mut a = wrapped(&["x", W3, "y"], (14, 4)); // height 2
 
         send(&mut a, [ch('j')]);
 
@@ -1438,7 +1737,7 @@ mod tests {
     fn a_bracket_jump_past_wrapped_lines_shows_the_target() {
         let lines = [W3, W3, W3, "x", "y"].map(String::from).to_vec();
         let threads = [view("c1", (4, 4), Status::Open, State::Current)];
-        let mut a = App::open(lines, &threads, "scott", (14, 8)); // height 7
+        let mut a = App::open(lines, &threads, "scott", (14, 9)); // height 7
 
         send(&mut a, [ch(']')]);
 
@@ -1450,7 +1749,7 @@ mod tests {
     fn opening_the_panel_below_wrapped_lines_keeps_the_cursor_line_shown() {
         let lines = [W3, W3, W3, W3, "t"].map(String::from).to_vec();
         let threads = [chatty("c1", (5, 5), 1)];
-        let mut a = App::open(lines, &threads, "scott", (14, 16)); // height 15
+        let mut a = App::open(lines, &threads, "scott", (14, 17)); // height 15
         send(&mut a, [ch('G')]);
         assert_eq!(at(&a), (4, 0));
 
@@ -1464,11 +1763,11 @@ mod tests {
 
     #[test]
     fn resizing_narrower_rewraps_and_keeps_the_cursor_line_shown() {
-        let mut a = wrapped(&[W3, W3, W3, "x"], (80, 8));
+        let mut a = wrapped(&[W3, W3, W3, "x"], (80, 9));
         send(&mut a, [ch('G')]);
         assert_eq!(at(&a), (3, 0));
 
-        send(&mut a, [Event::Resize(14, 8)]);
+        send(&mut a, [Event::Resize(14, 9)]);
 
         assert_eq!(a.screen_rows()[0].text.to_string(), "aaaa bbbb ");
         assert_eq!(at(&a), (3, 1));
@@ -1478,7 +1777,7 @@ mod tests {
     #[test]
     fn half_a_page_counts_rows_not_lines() {
         // 2 digits, width 10: every line is 3 rows. Height 11, half page 5.
-        let mut a = wrapped(&[W3; 20], (15, 12));
+        let mut a = wrapped(&[W3; 20], (15, 13));
 
         send(&mut a, [ctrl('d')]);
         assert_eq!(at(&a), (1, 1), "a second line would make 6 rows");
@@ -1742,7 +2041,7 @@ mod tests {
     fn the_clamp_counts_the_rows_of_a_wrapped_table_line() {
         let mut lines = vec!["x"; 6];
         lines.extend(&DECISION[..3]);
-        let mut a = wrapped(&lines, (24, 5)); // text width 20, height 4
+        let mut a = wrapped(&lines, (24, 6)); // text width 20, height 4
 
         send(&mut a, [ch('G')]);
         assert_eq!(at(&a), (8, 7), "the delimiter and the body's 3 rows");
@@ -1775,7 +2074,7 @@ mod tests {
         // Text width 20: the raw header wraps into 2 rows, aligned it is 1.
         let mut a = wrapped(
             &["| a                        | b |", "|---|---|", "| c | d |"],
-            (24, 4), // height 3
+            (24, 5), // height 3
         );
 
         send(&mut a, [ch('G')]);
@@ -2022,6 +2321,7 @@ mod tests {
                 id: "c3".into(),
                 done: Done::Added,
                 threads: vec![],
+                review: ReviewStatus::default(),
             },
         );
 
@@ -2568,6 +2868,7 @@ mod tests {
                 id: "c1".into(),
                 done: Done::Added,
                 threads,
+                review: ReviewStatus::default(),
             },
         );
 
@@ -2826,17 +3127,21 @@ mod tests {
 
     #[test]
     fn the_panel_shrinks_the_view_keeps_the_cursor_visible_and_closing_restores() {
-        let mut a = panel_app(&[chatty("c1", (6, 6), 1)], 12); // height 11
+        let mut a = panel_app(&[chatty("c1", (6, 6), 1)], 12); // height 10
         send(&mut a, [ch('G'), ch('g')]);
         send(&mut a, [ch('j'), ch('j'), ch('j'), ch('j'), ch('j')]);
         assert_eq!(a.cursor, 5);
 
         send(&mut a, [press(KeyCode::Enter)]);
 
-        assert_eq!(a.height(), 5, "12 rows minus a 6-row panel and the footer");
-        assert!(a.top <= a.cursor && a.cursor < a.top + 5);
+        assert_eq!(
+            a.height(),
+            4,
+            "12 rows minus the banner, a 6-row panel and the footer"
+        );
+        assert!(a.top <= a.cursor && a.cursor < a.top + 4);
         send(&mut a, [press(KeyCode::Esc)]);
-        assert_eq!(a.height(), 11);
+        assert_eq!(a.height(), 10);
     }
 
     #[test]
@@ -2862,6 +3167,7 @@ mod tests {
                 id: "c9".into(),
                 done: Done::Added,
                 threads: vec![],
+                review: ReviewStatus::default(),
             }],
         );
 
@@ -2923,6 +3229,7 @@ mod tests {
                 id: "c9".into(),
                 done: Done::Added,
                 threads,
+                review: ReviewStatus::default(),
             },
         );
 
@@ -2986,13 +3293,17 @@ mod tests {
 
     #[test]
     fn input_box_shrinks_the_view_and_keeps_the_cursor_visible() {
-        let mut a = app(20, 7); // view height 6 in Normal
+        let mut a = app(20, 8); // view height 6 in Normal
         send(&mut a, [ch('j'), ch('j'), ch('j'), ch('j'), ch('j')]);
         assert_eq!(at(&a), (5, 0), "cursor on the last visible row");
 
         send(&mut a, [press(KeyCode::Enter)]);
 
-        assert_eq!(a.height(), 4, "7 rows minus a 3-row input box");
+        assert_eq!(
+            a.height(),
+            4,
+            "8 rows minus the banner and a 3-row input box"
+        );
         assert!(a.top <= a.cursor && a.cursor < a.top + 4, "{:?}", at(&a));
         send(&mut a, [press(KeyCode::Esc)]);
         assert_eq!(a.height(), 6);
@@ -3098,7 +3409,11 @@ mod tests {
 
     fn reply_target(a: &App) -> Option<&str> {
         match &a.mode {
-            Mode::Input { reply_to, .. } => reply_to.as_deref(),
+            Mode::Input {
+                target: Target::Reply(id),
+                ..
+            } => Some(id),
+            Mode::Input { .. } => None,
             other => panic!("not in Input mode: {other:?}"),
         }
     }
@@ -3186,6 +3501,7 @@ mod tests {
                 id: "c2".into(),
                 done: Done::Replied,
                 threads,
+                review: ReviewStatus::default(),
             },
         );
 
@@ -3295,6 +3611,7 @@ mod tests {
                     id: "c2".into(),
                     done,
                     threads,
+                    review: ReviewStatus::default(),
                 },
             );
 
@@ -3361,7 +3678,7 @@ mod tests {
 
     #[test]
     fn every_movement_key_moves_the_end_and_the_view_follows_it() {
-        let mut a = visual_at(20, 6, 2); // view height 5
+        let mut a = visual_at(20, 7, 2); // view height 5
 
         send(&mut a, [ch('G')]);
         assert_eq!((a.selection(), at(&a)), ((2, 19), (19, 15)));
@@ -3468,7 +3785,7 @@ mod tests {
             a.mode,
             Mode::Input {
                 back: Back::Visual { anchor: 1 },
-                reply_to: None,
+                target: Target::NewThread,
                 ..
             }
         ));
@@ -3505,6 +3822,7 @@ mod tests {
                 id: "c4".into(),
                 done: Done::Added,
                 threads,
+                review: ReviewStatus::default(),
             },
         );
 
@@ -3830,8 +4148,8 @@ mod tests {
 
     fn help_scroll(a: &App) -> usize {
         match a.mode {
-            Mode::Help { scroll, .. } => scroll,
-            _ => panic!("not in Help mode: {:?}", a.mode),
+            Mode::Overlay { scroll, .. } => scroll,
+            _ => panic!("not in an overlay: {:?}", a.mode),
         }
     }
 
@@ -3852,7 +4170,8 @@ mod tests {
             send(&mut a, [ch('?')]);
             assert!(matches!(
                 a.mode,
-                Mode::Help {
+                Mode::Overlay {
+                    kind: Overlay::Help,
                     back: Back::Normal,
                     ..
                 }
@@ -3884,7 +4203,8 @@ mod tests {
             send(&mut a, [ch('?')]);
             assert!(matches!(
                 a.mode,
-                Mode::Help {
+                Mode::Overlay {
+                    kind: Overlay::Help,
                     back: Back::Panel { .. },
                     ..
                 }
@@ -3914,7 +4234,7 @@ mod tests {
     #[test]
     fn help_scrolls_and_clamps_to_the_listing() {
         let mut a = app(5, 10);
-        let max = a.help_rows().len() - a.help_body_rows();
+        let max = a.help_rows().len() - a.overlay_body_rows();
         assert!(max > 3, "the listing must not fit in 10 rows");
 
         send(&mut a, [ch('?'), ch('k')]);
@@ -3930,7 +4250,7 @@ mod tests {
         send(&mut a, [ch('g')]);
         assert_eq!(help_scroll(&a), 0);
         send(&mut a, [ctrl('d')]);
-        assert_eq!(help_scroll(&a), a.help_body_rows() / 2);
+        assert_eq!(help_scroll(&a), a.overlay_body_rows() / 2);
         send(&mut a, [ctrl('u')]);
         assert_eq!(help_scroll(&a), 0);
         send(&mut a, [press(KeyCode::End)]);
@@ -4099,5 +4419,307 @@ mod tests {
                 }
             }
         }
+    }
+
+    // --- the review state ---
+
+    fn handed_off(note: &str) -> ReviewStatus {
+        ReviewStatus {
+            state: ReviewState::Turn(Side::Agent),
+            latest: Some(Entry {
+                event: crate::model::Event::HandOff,
+                side: Side::Human,
+                author: "scott".into(),
+                created_at: "2026-10-12T10:00:00Z".into(),
+                revision: "r2".into(),
+                next_id: 4,
+                note: Some(note.into()),
+            }),
+        }
+    }
+
+    #[test]
+    fn the_banner_takes_a_row_from_the_file_view() {
+        let a = app(20, 10);
+
+        assert_eq!(a.height(), 8, "10 rows less the banner and the footer");
+    }
+
+    fn overlay_text(a: &App) -> Vec<String> {
+        let Mode::Overlay { kind, .. } = a.mode else {
+            panic!("not in an overlay: {:?}", a.mode);
+        };
+        a.overlay_rows(kind)
+            .iter()
+            .map(|r| r.text.clone())
+            .collect()
+    }
+
+    #[test]
+    fn i_opens_the_review_with_its_whole_note_and_its_closing_keys_go_back() {
+        let note = "Over to you.\nSee c1 and c3.\nThanks";
+        for close in [ch('i'), press(KeyCode::Esc), ch('q'), ctrl('c')] {
+            let mut a = app(20, 10).with_review(handed_off(note));
+            send(&mut a, [ch('j')]);
+            let before = snapshot(&a);
+
+            send(&mut a, [ch('i')]);
+            assert!(matches!(
+                a.mode,
+                Mode::Overlay {
+                    kind: Overlay::Review,
+                    back: Back::Normal,
+                    ..
+                }
+            ));
+            let text = overlay_text(&a).join("\n");
+            for needle in [
+                "agent's turn",
+                "scott",
+                "2026-10-12T10:00:00Z",
+                "r2",
+                "Over to you.",
+                "See c1 and c3.",
+                "Thanks",
+            ] {
+                assert!(text.contains(needle), "{needle}: {text}");
+            }
+            assert_eq!(update(&mut a, close), None);
+            assert_eq!(snapshot(&a), before);
+        }
+    }
+
+    #[test]
+    fn the_review_overlay_scrolls_and_clamps_like_help() {
+        let note = (1..=20)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut a = app(5, 8).with_review(handed_off(&note));
+        send(&mut a, [ch('i')]);
+        let max = overlay_text(&a).len() - a.overlay_body_rows();
+        assert!(max > 3, "the note must not fit");
+
+        send(&mut a, [ch('j'), ch('j')]);
+        assert_eq!(help_scroll(&a), 2);
+        send(&mut a, [ch('k')]);
+        assert_eq!(help_scroll(&a), 1);
+        send(&mut a, [ch('G')]);
+        assert_eq!(help_scroll(&a), max);
+        send(&mut a, [ch('g')]);
+        assert_eq!(help_scroll(&a), 0);
+    }
+
+    #[test]
+    fn a_fresh_review_overlay_says_nothing_was_handed_off() {
+        let mut a = app(5, 10);
+
+        send(&mut a, [ch('i')]);
+
+        let text = overlay_text(&a).join("\n");
+        assert!(text.contains("your turn"), "{text}");
+        assert!(text.contains("no hand-off yet"), "{text}");
+    }
+
+    // --- hand off, close, reopen ---
+
+    fn target(a: &App) -> &Target {
+        match &a.mode {
+            Mode::Input { target, .. } => target,
+            other => panic!("not in Input mode: {other:?}"),
+        }
+    }
+
+    fn shift(c: char) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT))
+    }
+
+    #[test]
+    fn capital_h_opens_a_hand_off_box_that_saves_even_when_blank() {
+        let mut a = app(5, 10);
+
+        send(&mut a, [shift('H')]);
+        assert_eq!(target(&a), &Target::HandOff);
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::HandOff { note: None })
+        );
+
+        let mut a = app(5, 10);
+        send(&mut a, [shift('H')]);
+        typed(&mut a, "\nall yours  ");
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::HandOff {
+                note: Some("all yours".into())
+            })
+        );
+    }
+
+    #[test]
+    fn esc_leaves_a_hand_off_box_like_a_comment() {
+        let mut a = app(5, 10);
+        send(&mut a, [shift('H'), press(KeyCode::Esc)]);
+        assert_eq!(a.mode, Mode::Normal);
+
+        send(&mut a, [shift('H')]);
+        typed(&mut a, "x");
+        send(&mut a, [press(KeyCode::Esc)]);
+        assert!(discard_asked(&a));
+        send(&mut a, [press(KeyCode::Esc)]);
+        assert_eq!(a.mode, Mode::Normal);
+    }
+
+    fn verdict(a: &App) -> Option<Verdict> {
+        match target(a) {
+            Target::Close { verdict, .. } => *verdict,
+            other => panic!("not a close: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capital_c_opens_a_close_box_and_tab_picks_the_verdict() {
+        let mut a = app(5, 10);
+
+        send(&mut a, [shift('C')]);
+        assert_eq!(verdict(&a), None);
+        send(&mut a, [press(KeyCode::Tab)]);
+        assert_eq!(verdict(&a), Some(Verdict::Approved));
+        send(&mut a, [press(KeyCode::Tab)]);
+        assert_eq!(verdict(&a), Some(Verdict::Dropped));
+        send(&mut a, [press(KeyCode::Tab)]);
+        assert_eq!(verdict(&a), Some(Verdict::Approved));
+    }
+
+    #[test]
+    fn a_close_with_no_verdict_still_asks_the_core() {
+        let mut a = app(5, 10);
+        send(&mut a, [shift('C')]);
+        typed(&mut a, "done");
+
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::Close {
+                verdict: None,
+                note: Some("done".into())
+            })
+        );
+    }
+
+    fn with_an_open_thread() -> App {
+        let threads = [said_by(
+            view("c1", (1, 1), Status::Open, State::Current),
+            &["claude"],
+        )];
+        App::open(
+            vec!["one".into(), "two".into()],
+            &threads,
+            "scott",
+            (80, 10),
+        )
+    }
+
+    #[test]
+    fn approving_with_open_threads_asks_once_more_and_any_other_key_cancels_the_ask() {
+        let mut a = with_an_open_thread();
+        send(&mut a, [shift('C'), press(KeyCode::Tab)]);
+
+        assert_eq!(update(&mut a, ctrl('s')), None, "the first press asks");
+        assert!(matches!(
+            target(&a),
+            Target::Close {
+                confirm_asked: true,
+                ..
+            }
+        ));
+        typed(&mut a, "x");
+        assert!(matches!(
+            target(&a),
+            Target::Close {
+                confirm_asked: false,
+                ..
+            }
+        ));
+        assert_eq!(update(&mut a, ctrl('s')), None, "asked again");
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::Close {
+                verdict: Some(Verdict::Approved),
+                note: Some("x".into())
+            })
+        );
+    }
+
+    #[test]
+    fn dropping_or_approving_with_no_open_threads_closes_at_once() {
+        let mut a = with_an_open_thread();
+        send(
+            &mut a,
+            [shift('C'), press(KeyCode::Tab), press(KeyCode::Tab)],
+        );
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::Close {
+                verdict: Some(Verdict::Dropped),
+                note: None
+            })
+        );
+
+        let mut a = app(5, 10);
+        send(&mut a, [shift('C'), press(KeyCode::Tab)]);
+        assert_eq!(
+            update(&mut a, ctrl('s')),
+            Some(Effect::Close {
+                verdict: Some(Verdict::Approved),
+                note: None
+            })
+        );
+    }
+
+    #[test]
+    fn capital_o_asks_to_reopen_the_review() {
+        let mut a = app(5, 10);
+
+        assert_eq!(update(&mut a, shift('O')), Some(Effect::ReopenReview));
+        assert_eq!(a.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn a_review_write_updates_the_state_and_returns_to_normal() {
+        let mut a = app(5, 10);
+        send(&mut a, [shift('H')]);
+
+        update(
+            &mut a,
+            Event::ReviewSaved {
+                message: "handed off".into(),
+                threads: vec![],
+                review: handed_off("ok"),
+            },
+        );
+
+        assert_eq!(a.mode, Mode::Normal);
+        assert_eq!(a.status(), Some("handed off"));
+        assert_eq!(a.review().state, ReviewState::Turn(Side::Agent));
+        assert!(a.banner().0.starts_with("agent's turn · scott: ok"));
+    }
+
+    #[test]
+    fn an_esc_between_the_two_presses_cancels_the_approve_confirmation() {
+        let mut a = with_an_open_thread();
+        send(&mut a, [shift('C'), press(KeyCode::Tab)]);
+        typed(&mut a, "x");
+        assert_eq!(update(&mut a, ctrl('s')), None, "the first press asks");
+
+        send(&mut a, [press(KeyCode::Esc)]);
+
+        assert!(matches!(
+            target(&a),
+            Target::Close {
+                confirm_asked: false,
+                ..
+            }
+        ));
+        assert_eq!(update(&mut a, ctrl('s')), None, "asked again");
     }
 }

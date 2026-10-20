@@ -22,6 +22,10 @@ pub struct Review {
     #[serde(default)]
     pub revisions: Vec<Revision>,
     pub threads: Vec<Thread>,
+    /// Hand-offs, closes and reopens, oldest first. Append-only: entries are
+    /// only ever pushed. The review's [`ReviewState`] is derived from it.
+    #[serde(default)]
+    pub log: Vec<Entry>,
 }
 
 impl Review {
@@ -33,6 +37,25 @@ impl Review {
             next_id: 1,
             revisions: Vec::new(),
             threads: Vec::new(),
+            log: Vec::new(),
+        }
+    }
+
+    /// Whose turn it is, or the verdict if closed: derived from the
+    /// [`log`](Review::log), never stored.
+    ///
+    /// A review starts on the human's turn. A hand-off by one side gives the
+    /// turn to the other, a close ends it with its verdict, and a reopen
+    /// gives it back to the human. Each entry sets the state outright, so it
+    /// is the latest entry's.
+    pub fn state(&self) -> ReviewState {
+        match self.log.last() {
+            None => ReviewState::Turn(Side::Human),
+            Some(entry) => match entry.event {
+                Event::HandOff => ReviewState::Turn(entry.side.other()),
+                Event::Close { verdict } => ReviewState::Closed(verdict),
+                Event::Reopen => ReviewState::Turn(Side::Human),
+            },
         }
     }
 
@@ -145,6 +168,96 @@ pub struct Anchor {
     pub quote: String,
 }
 
+/// A party to a review: the human (in the TUI) or the agent (through the
+/// CLI). Which side acts is set by the front end, never guessed from an
+/// author name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    Human,
+    Agent,
+}
+
+impl Side {
+    /// The side's name, as on the wire: `human` or `agent`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Side::Human => "human",
+            Side::Agent => "agent",
+        }
+    }
+
+    /// The side across the review from this one.
+    pub fn other(self) -> Self {
+        match self {
+            Side::Human => Side::Agent,
+            Side::Agent => Side::Human,
+        }
+    }
+}
+
+/// How the human ended a review: what the agent does next, outside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Verdict {
+    /// The agent takes the next step with the file as it stands.
+    Approved,
+    /// The agent doesn't.
+    Dropped,
+}
+
+impl Verdict {
+    /// The verdict's name, as on the wire: `approved` or `dropped`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Verdict::Approved => "approved",
+            Verdict::Dropped => "dropped",
+        }
+    }
+}
+
+/// One entry of a review's [`log`](Review::log).
+///
+/// On the wire, `"event": "hand_off" | "close" | "reopen"`, with `verdict`
+/// present only on a close and `note` only when there is one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Entry {
+    #[serde(flatten)]
+    pub event: Event,
+    /// The side that wrote the entry.
+    pub side: Side,
+    pub author: String,
+    pub created_at: String,
+    /// The revision of the file the entry was written against.
+    pub revision: String,
+    /// The review's `next_id` when the entry was written: every comment id
+    /// below it came before the entry.
+    pub next_id: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// What a log [`Entry`] records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum Event {
+    /// The side holding the turn passed it to the other.
+    HandOff,
+    /// The human ended the review.
+    Close { verdict: Verdict },
+    /// A closed review was brought back, on the human's turn.
+    Reopen,
+}
+
+/// A review's overall state, derived by [`Review::state`]. Never persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewState {
+    /// Active, with this side expected to act next.
+    Turn(Side),
+    /// Closed with this verdict; nobody holds the turn.
+    Closed(Verdict),
+}
+
 /// Whether an anchor still matches the file. Computed, never persisted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -215,6 +328,37 @@ mod tests {
                 },
             ],
         });
+        review.log = vec![
+            Entry {
+                event: Event::HandOff,
+                side: Side::Human,
+                author: "scott".into(),
+                created_at: "2026-10-12T10:10:00Z".into(),
+                revision: "r1".into(),
+                next_id: 3,
+                note: Some("Over to you".into()),
+            },
+            Entry {
+                event: Event::Close {
+                    verdict: Verdict::Approved,
+                },
+                side: Side::Human,
+                author: "scott".into(),
+                created_at: "2026-10-12T12:00:00Z".into(),
+                revision: "r2".into(),
+                next_id: 4,
+                note: Some("Ship it".into()),
+            },
+            Entry {
+                event: Event::Reopen,
+                side: Side::Agent,
+                author: "claude".into(),
+                created_at: "2026-10-12T13:00:00Z".into(),
+                revision: "r2".into(),
+                next_id: 4,
+                note: None,
+            },
+        ];
         review
     }
 
@@ -295,6 +439,35 @@ mod tests {
         }
       ]
     }
+  ],
+  "log": [
+    {
+      "event": "hand_off",
+      "side": "human",
+      "author": "scott",
+      "created_at": "2026-10-12T10:10:00Z",
+      "revision": "r1",
+      "next_id": 3,
+      "note": "Over to you"
+    },
+    {
+      "event": "close",
+      "verdict": "approved",
+      "side": "human",
+      "author": "scott",
+      "created_at": "2026-10-12T12:00:00Z",
+      "revision": "r2",
+      "next_id": 4,
+      "note": "Ship it"
+    },
+    {
+      "event": "reopen",
+      "side": "agent",
+      "author": "claude",
+      "created_at": "2026-10-12T13:00:00Z",
+      "revision": "r2",
+      "next_id": 4
+    }
   ]
 }"#;
         assert_eq!(json, golden);
@@ -350,6 +523,7 @@ mod tests {
         let review: Review = serde_json::from_str(json).unwrap();
 
         assert!(review.revisions.is_empty());
+        assert!(review.log.is_empty());
         let thread = &review.threads[0];
         assert_eq!(thread.anchor.revision, None);
         assert_eq!(thread.comments[0].revision, None);
@@ -375,5 +549,74 @@ mod tests {
         assert_eq!(review.revision_id("c"), None);
         assert_eq!(review.revision_sha("r1"), Some("a"));
         assert_eq!(review.revisions.len(), 2);
+    }
+
+    fn entry(event: Event, side: Side) -> Entry {
+        Entry {
+            event,
+            side,
+            author: "x".into(),
+            created_at: "2026-10-12T10:00:00Z".into(),
+            revision: "r1".into(),
+            next_id: 1,
+            note: None,
+        }
+    }
+
+    #[test]
+    fn state_is_a_fold_over_the_log() {
+        use ReviewState::{Closed, Turn};
+        let hand_off = |side| entry(Event::HandOff, side);
+        let close = |verdict| entry(Event::Close { verdict }, Side::Human);
+        let reopen = |side| entry(Event::Reopen, side);
+        let cases: Vec<(Vec<Entry>, ReviewState)> = vec![
+            (vec![], Turn(Side::Human)),
+            (vec![hand_off(Side::Human)], Turn(Side::Agent)),
+            (
+                vec![hand_off(Side::Human), hand_off(Side::Agent)],
+                Turn(Side::Human),
+            ),
+            (vec![close(Verdict::Approved)], Closed(Verdict::Approved)),
+            (
+                vec![hand_off(Side::Human), close(Verdict::Dropped)],
+                Closed(Verdict::Dropped),
+            ),
+            (
+                vec![close(Verdict::Approved), reopen(Side::Agent)],
+                Turn(Side::Human),
+            ),
+            (
+                vec![
+                    hand_off(Side::Human),
+                    close(Verdict::Dropped),
+                    reopen(Side::Human),
+                ],
+                Turn(Side::Human),
+            ),
+        ];
+
+        for (log, expected) in cases {
+            let review = Review {
+                log: log.clone(),
+                ..Review::new("/x")
+            };
+            assert_eq!(review.state(), expected, "{log:?}");
+        }
+    }
+
+    #[test]
+    fn names_are_the_wire_names() {
+        for side in [Side::Human, Side::Agent] {
+            assert_eq!(serde_json::to_value(side).unwrap(), side.as_str());
+        }
+        for verdict in [Verdict::Approved, Verdict::Dropped] {
+            assert_eq!(serde_json::to_value(verdict).unwrap(), verdict.as_str());
+        }
+    }
+
+    #[test]
+    fn the_other_side_of_each_side() {
+        assert_eq!(Side::Human.other(), Side::Agent);
+        assert_eq!(Side::Agent.other(), Side::Human);
     }
 }
