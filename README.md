@@ -99,6 +99,7 @@ Comment box:
 | `ctrl+s` | Save |
 | `esc` (or `ctrl+c`) | Cancel; with text in the box, press it twice (the first asks, any key in between keeps the draft) |
 | `←` / `→`, `↑` / `↓`, `Home` / `End` | Move by character, by screen row, to the line's start / end; `backspace` / `delete` remove (and join lines) |
+| Paste | Insert the pasted text, line breaks and tabs included |
 
 Help overlay:
 
@@ -126,8 +127,11 @@ new line and `ctrl+s` saves (leading and trailing blank lines are dropped). With
 the box, `esc` asks first; a second `esc` discards the draft and any other
 key keeps it. Text wraps inside the box, which grows with it
 up to 10 rows (and never past half the terminal), then scrolls to follow the
-cursor. If a save fails, the box stays open with your draft and shows the
-error on its bottom border.
+cursor. Pasting into the box keeps the text's line breaks and tab
+indentation (a tab shows as four spaces and is saved as a tab); a paste
+never saves or closes the box, and outside the box a paste is ignored. If a
+save fails, the box stays open with your draft and shows the error on its
+bottom border.
 
 Comments are written as `$USER`. The gutter marks lines inside a thread: `●`
 open, `◆` open and waiting on you (its last comment is not yours), `○`

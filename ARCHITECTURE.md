@@ -36,7 +36,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
 | `review` | Built: `add_thread`, `view` (anchors mapped across revisions), `resolve`, `reply`, `reopen` |
 | `cli` | Built: `comments`, `add`, `resolve`, `reply`, `reopen` |
-| `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Help` modes, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), `?` help overlay, `…` marks cut-off one-row text |
+| `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Help` modes, incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor` | Built: `map_range`, `Diff`, `clamp` (Myers line diff via `similar`) |
 | `diffview` | Deferred |
@@ -347,7 +347,10 @@ Its parts:
   (or `ctrl+S`) saves the draft as typed less trailing whitespace and leading blank lines (one that
   is only whitespace and newlines saves nothing). `esc` or `ctrl+c` returns
   to `back` at once on a blank draft; otherwise the first sets
-  `discard_asked` and only a second discards, any other key clearing it. The box is as tall as
+  `discard_asked` and only a second discards, any other key (or a paste)
+  clearing it. A paste in `Input` goes in through `Draft::paste` and clears
+  `status` as a key does; in every other mode it is ignored, `status`
+  included. The box is as tall as
   its draft's rows at `draft_width()` (terminal columns less the border and
   one cell for a cursor after a full row), at least 1, capped at
   `min(10, rows / 2 - 2)` (at least 1), plus its 2 border rows; the view
@@ -365,7 +368,8 @@ Its parts:
   text, so layout, the clamp and every key behave the same highlighted or
   not. `render` draws from it, and the view clamp in `update` counts the
   same rows; `lines()` stays the raw file.
-  `Event` is `Key | Resize | Saved { id, done, threads } | SaveFailed`, where
+  `Event` is `Key | Resize | Saved { id, done, threads } | SaveFailed |
+  Paste(text)` (the terminal's bracketed paste), where
   `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
   always the thread id; `Effect` is `Add { start, end, body } | Reply { id,
   body } | Resolve { id } | Reopen { id } | Quit`, where `start..=end` is
@@ -373,10 +377,14 @@ Its parts:
   an index; `x` on a resolved thread and `o` on an open one are refused in
   `update` with a footer message. `update` does no I/O and reads no clock.
 - `tui::draft`: `Draft { text, cursor, goal, scroll }`, pure, no widgets:
-  the comment being typed. `text` holds printable characters and `\n` only
-  (control characters, tabs included, are never inserted), so `wrap` drops
-  none of it and rows are byte ranges of it; a zero-width cluster has a
-  range but no cell.
+  the comment being typed. `text` holds printable characters, `\t` and
+  `\n` only, so `wrap` drops none of it and rows are byte ranges of it; a
+  zero-width cluster has a range but no cell. `insert` refuses every
+  control character, so a tab is never typed; `paste(text)` inserts at the
+  cursor in one step, making `\r\n`, `\r` and `\n` each a `\n`, keeping
+  `\t` and dropping every other control character, then leaves the cursor
+  after it (on a boundary). A tab is one cluster four cells wide, drawn as
+  four spaces.
   `cursor` is a byte offset that always sits on a grapheme cluster boundary
   (`wrap::clusters`, plus each `\n` as its own cluster): `←`/`→`,
   `backspace` and `delete` move over or remove one whole cluster, and an
@@ -412,7 +420,10 @@ Its parts:
   cells, thread panel rows, and the view clamp, which counts rows without
   building them); `row_ranges(text, width)` gives each row's byte range and
   `clusters(text)` each drawn cluster's, for the comment draft, whose text
-  has no tabs or control characters.
+  has no control characters but tabs: for these two a tab is not expanded
+  but kept as one cluster four cells wide (ratatui would drop it), so the
+  ranges stay byte ranges of the draft and each, its tabs expanded, is the
+  `plain_rows` row.
   Breaks after the last whitespace that fits, hard-breaks a word wider than
   a row, and leaves whitespace at a break hanging on the end of its row, so
   the rows join back to the displayed line. Tabs are four spaces and control
@@ -506,7 +517,8 @@ Its parts:
   above it. A title too wide for its box is `wrap::cut` to end in `…`
   before the corner. In `Input` the bordered box
   replaces the footer (and hides the panel it came from), as tall as
-  `App` says; it draws the draft's `rows(draft_width())` from its `scroll`,
+  `App` says; it draws the draft's `rows(draft_width())` from its `scroll`
+  (tabs expanded to four spaces, as the cursor counts them),
   so text wraps inside the border exactly as `update` counts it, the cursor
   is a reversed cell at `cursor_at`, and the bottom border reads
   `ctrl+s:save enter:newline esc:cancel` (`ctrl+s:save esc:cancel` when
@@ -526,7 +538,11 @@ Its parts:
   place effects are performed (`Add` → `Reviews::add_thread`, `Reply` →
   `Reviews::reply`, `Resolve`/`Reopen` → `Reviews::resolve`/`reopen` with no
   note, then `Reviews::view(file, true)` → `Event::Saved`); `run` is the blocking loop (read event →
-  `step` → draw) on a `TerminalSession`.
+  `step` → draw) on a `TerminalSession`. Setup turns on raw mode, the
+  alternate screen and bracketed paste, so a paste arrives as one
+  `Event::Paste` rather than as keys (a `q` or `ctrl+s` in it is text);
+  the escape sequences are written by `enter_screen`/`leave_screen` over any
+  `Write`.
 
 **Invariants**
 - All keys are handled in `update`; `render` holds no logic. The state
@@ -660,9 +676,13 @@ state or `review`.
   rendering, gutter glyphs and styles (including the selection highlight on
   wrapped and table rows, before and after a resize, and the comment box
   wrapping, growing and scrolling its draft); `tui::draft` has examples of
-  its rows and cursor cell by width and of cluster and row moves, plus a
-  property over a fixed three-paragraph draft that every cluster boundary is
-  reachable by `↓` then `→` and editable there; `tui::wrap` has examples plus a property test
+  its rows and cursor cell by width, of cluster and row moves and of paste
+  normalization (tabs as 4-cell clusters), plus a
+  property over a fixed multi-line draft (one line tab-indented) that every cluster boundary is
+  reachable by `↓` then `→` and editable there; the driver's
+  `enter_screen`/`leave_screen` are checked for the bracketed-paste escape
+  sequences (`ESC[?2004h`/`ESC[?2004l`, off before leaving the alternate
+  screen) written to a `Vec<u8>`; `tui::wrap` has examples plus a property test
   over a fixed corpus (ASCII, CJK, emoji, tabs, long words) and widths
   1..=12: rows join back to the line and each fits the width; `tui::panel`
   has examples plus a property over a fixed corpus (ASCII, CJK, emoji ZWJ,
