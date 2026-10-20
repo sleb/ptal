@@ -38,7 +38,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff` |
 | `tui` | Built: `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, hand off (`H`), close with a verdict (`C`), reopen the review (`O`), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
-| `anchor` | Built: `map_range`, `Diff`, `clamp` (Myers line diff via `similar`) |
+| `anchor` | Built: `map_range`, `Diff` (with `Diff::changes`), `clamp` (Myers line diff via `similar`) |
 | `diffview` | Deferred |
 
 Deferred within built components: nested replies, edit, delete,
@@ -136,6 +136,7 @@ golden-JSON test in `model` pins it. Every persisted file carries
 ```
 map_range(old: &[&str], new: &[&str], range: LineRange) -> Mapped { range, state }
 Diff::new(old, new).map(range) -> Mapped     // one diff, many ranges
+Diff::new(old, new).changes() -> Vec<Change { range, kind }>
 clamp(range, len) -> LineRange               // into 1..=max(len, 1), no diff
 ```
 
@@ -152,15 +153,21 @@ the diff ops, not one per line.
   deleted line goes to where that change starts in the new text. The result
   is clamped to `1..=max(new_len, 1)` with `end >= start`, so an empty file
   gives `1-1`.
+- `changes()` lists what differs in the new text, one `Change` per hunk (a
+  maximal run of adjacent non-equal diff ops). A hunk with new lines is
+  `ChangeKind::Changed` over them; a pure deletion is `Removed` at the line
+  that now follows the removed text, or at the last line if it was removed at
+  the end. Deleting everything marks nothing, and removals before and after a
+  sole remaining line are one mark.
 
 **Invariants**
 - Pure: no I/O, no clock, deterministic for the same inputs.
+- `changes()` are sorted, disjoint and within `1..=new_len`; identical texts
+  have none.
 - `Current` implies the mapped lines are byte-identical to the originals.
 - `Outdated` always carries a best-guess range clamped to the new file, never
   out of bounds. A range outside the old text is `Outdated`, never a panic.
 - Identity: mapping a range between identical texts returns it unchanged.
-
-*Deferred:* `changed_lines(old, new)` for gutter change markers (#46).
 
 ### `store`
 **Role:** persistence. Reads and writes `Review`s.
