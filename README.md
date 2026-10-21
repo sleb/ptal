@@ -137,7 +137,9 @@ hiding a character; set `NO_COLOR` (to any non-empty value) to turn it off.
 Other files show plain.
 One-row text too wide for the window — the footer, a box's title or border
 message — is cut and ends in `…`; the search prompt instead keeps the end of
-a long query, after a leading `…`.
+a long query, after a leading `…`. In the footer the key hints go first; a
+path too long to leave room for the line position and counts keeps its end,
+after a leading `…`, so those stay visible.
 
 A comment can span several paragraphs: in the comment box `enter` starts a
 new line and `ctrl+s` saves (leading blank lines and trailing whitespace are
