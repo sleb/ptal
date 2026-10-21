@@ -224,9 +224,6 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
         1 => parts.push("1 change".to_string()),
         n => parts.push(format!("{n} changes")),
     }
-    if let Some(query) = app.active_search() {
-        parts.push(format!("/{query}"));
-    }
     let hints = match app.mode() {
         Mode::Panel { .. } if app.selected_is_resolved() => {
             "tab:next a:add r:reply o:reopen j/k:scroll esc:close ?:help"
@@ -236,24 +233,30 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
         _ => "enter:thread/comment ]/[:jump q:quit v:select /:search ?:help",
     };
     let counts = parts.join("  ");
+    // The search and the hints are cut first, before the path gives way.
+    let rest = match app.active_search() {
+        Some(query) => format!("/{query}  {hints}"),
+        None => hints.to_string(),
+    };
     let width = usize::from(area.width);
     let footer = match app.status() {
-        Some(status) => format!("{}  {counts}  {hints}", one_line(status)),
-        None => footer_row(app.file(), &counts, hints, width),
+        Some(status) => format!("{}  {counts}  {rest}", one_line(status)),
+        None => footer_row(app.file(), &counts, &rest, width),
     };
     let footer = wrap::cut(&footer, width);
     buf.set_stringn(area.x, area.y, footer, width, Style::new());
 }
 
-/// `path`, `counts` and `hints` on a footer row of `width` cells, for the
-/// caller to [`wrap::cut`] at the end. While `path` and `counts` fit, the
-/// row is all three, so only the hints are cut. Otherwise the hints are
-/// dropped and the path gives way: it keeps its end after an ellipsis
-/// ([`wrap::tail`]), down to the ellipsis alone, so the counts show.
-fn footer_row(path: &str, counts: &str, hints: &str, width: usize) -> String {
+/// `path`, `counts` and `rest` (the search and the hints) on a footer row
+/// of `width` cells, for the caller to [`wrap::cut`] at the end. While
+/// `path` and `counts` fit, the row is all three, so only `rest` is cut.
+/// Otherwise `rest` is dropped and the path gives way: it keeps its end
+/// after an ellipsis ([`wrap::tail`]), down to the ellipsis alone, so the
+/// counts show.
+fn footer_row(path: &str, counts: &str, rest: &str, width: usize) -> String {
     let lead = format!("{path}  {counts}");
     if wrap::width(&lead) <= width {
-        return format!("{lead}  {hints}");
+        return format!("{lead}  {rest}");
     }
     let room = width.saturating_sub(wrap::width(counts) + 2);
     format!("{}  {counts}", wrap::tail(path, room.max(1)))
@@ -2067,6 +2070,19 @@ plan.md  L1/5  enter:thread/c…"
 
         assert_eq!(footer(&app, 20), "…  L1/12  1 outdated");
         assert_eq!(footer(&app, 15), "…  L1/12  1 ou…");
+    }
+
+    #[test]
+    fn a_long_search_is_cut_before_the_path_gives_way() {
+        let mut app = app_with(lines(12), &[], 8);
+        key(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, &"x".repeat(70));
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            footer(&app, 30),
+            format!("plan.md  L1/12  /{}…", "x".repeat(12))
+        );
     }
 
     #[test]
