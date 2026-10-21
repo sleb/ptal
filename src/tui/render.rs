@@ -2073,6 +2073,20 @@ plan.md  L1/5  enter:thread/c…"
     }
 
     #[test]
+    fn a_path_of_wide_characters_gives_way_by_whole_clusters() {
+        let threads = [open_thread("c1", (1, 1), State::Outdated)];
+        let app = app_with(lines(12), &threads, 8).labeled("/プロジェクト/計画/plan.md");
+
+        // 21 cells for the path: a wide cluster would straddle the edge, so
+        // the path takes 20 and the row is a cell short. The screen shows a
+        // wide cluster's second cell as a space.
+        assert_eq!(
+            footer(&app, 40),
+            "…ェ ク ト /計 画 /plan.md  L1/12  1 outdated"
+        );
+    }
+
+    #[test]
     fn a_long_search_is_cut_before_the_path_gives_way() {
         let mut app = app_with(lines(12), &[], 8);
         key(&mut app, KeyCode::Char('/'));
