@@ -6,6 +6,37 @@ workflow publishes that section as the GitHub Release notes. See
 
 ## Unreleased
 
+## 0.3.0 - 2026-10-21
+
+Turns release: the human and the agent take turns on a review, threads follow
+edits to the file, and each side can see what changed while it waited.
+Existing `review.json` files still load (`schema_version` stays `1`).
+
+**Breaking (CLI):** `reply`, `resolve` and `reopen` now fail with
+`file_unreadable` (exit 1) when the file is missing or not UTF-8. `reopen` with
+no thread id now reopens the review.
+
+- Threads follow edits: each write records the file revision it was made
+  against, and threads are mapped onto the current file. A thread whose lines
+  changed is marked outdated. `comments` gains a top-level `revision`.
+- Turns and closing: `ptal handoff` passes the turn, `C` in the TUI closes the
+  review with a verdict, and `reopen` (or `O`) reopens it. `comments` gains a
+  `review` object (`turn`, `verdict`, `latest`). New errors `not_your_turn`,
+  `missing_verdict`, `not_closed` and `already_closed` exit 2.
+- TUI: a top banner shows the review's state and the keys you can use, `i`
+  opens the review overlay, and `H` hands off.
+- `ptal wait <file> [--timeout SECS]` blocks until it is your turn, the review
+  closes, or the timeout passes.
+- The TUI refreshes live when the file or review changes. The cursor and
+  selection follow their text, and a write made against content you haven't
+  seen fails with `file_changed` and refreshes the screen, keeping your draft.
+- Change markers: the gutter shows lines changed (`┃`) or removed (`-`) since
+  your last hand-off or close, the footer counts them, and `}`/`{` jump between
+  them.
+- Bracketed paste in the comment box; pasted tabs are kept.
+- `ptal --help` walks the turn loop, and each `<command> --help` documents its
+  output shape, errors and examples.
+
 ## 0.2.0 - 2026-10-18
 
 TUI-focused release: richer commenting and a much better reading view.
