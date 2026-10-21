@@ -205,10 +205,7 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
     if area.is_empty() {
         return;
     }
-    let mut parts = vec![match app.status() {
-        Some(status) => one_line(status),
-        None => app.file().to_string(),
-    }];
+    let mut parts = Vec::new();
     let position = if app.lines().is_empty() {
         0
     } else {
@@ -238,16 +235,28 @@ fn draw_footer(app: &App, buf: &mut Buffer, area: Rect) {
         Mode::Visual { .. } => "esc:cancel enter:comment j/k:extend",
         _ => "enter:thread/comment ]/[:jump q:quit v:select /:search ?:help",
     };
-    parts.push(hints.to_string());
-    let footer = parts.join("  ");
-    let footer = wrap::cut(&footer, usize::from(area.width));
-    buf.set_stringn(
-        area.x,
-        area.y,
-        footer,
-        usize::from(area.width),
-        Style::new(),
-    );
+    let counts = parts.join("  ");
+    let width = usize::from(area.width);
+    let footer = match app.status() {
+        Some(status) => format!("{}  {counts}  {hints}", one_line(status)),
+        None => footer_row(app.file(), &counts, hints, width),
+    };
+    let footer = wrap::cut(&footer, width);
+    buf.set_stringn(area.x, area.y, footer, width, Style::new());
+}
+
+/// `path`, `counts` and `hints` on a footer row of `width` cells, for the
+/// caller to [`wrap::cut`] at the end. While `path` and `counts` fit, the
+/// row is all three, so only the hints are cut. Otherwise the hints are
+/// dropped and the path gives way: it keeps its end after an ellipsis
+/// ([`wrap::tail`]), down to the ellipsis alone, so the counts show.
+fn footer_row(path: &str, counts: &str, hints: &str, width: usize) -> String {
+    let lead = format!("{path}  {counts}");
+    if wrap::width(&lead) <= width {
+        return format!("{lead}  {hints}");
+    }
+    let room = width.saturating_sub(wrap::width(counts) + 2);
+    format!("{}  {counts}", wrap::tail(path, room.max(1)))
 }
 
 /// Overlay `kind` over the whole screen: a title row, its listing from
@@ -2036,6 +2045,20 @@ plan.md  L1/5  enter:thread/c…"
 
     const NORMAL_FOOTER: &str =
         "plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help";
+
+    /// A path wider than any footer it is drawn in.
+    const LONG_PATH: &str = "/var/folders/xy/0123456789abcdef/T/.tmpAbC123/deep/q3/drafts/plan.md";
+
+    #[test]
+    fn a_long_path_is_cut_from_the_left_so_the_counts_show() {
+        let threads = [open_thread("c1", (1, 1), State::Outdated)];
+        let app = app_with(lines(12), &threads, 8).labeled(LONG_PATH);
+
+        assert_eq!(
+            footer(&app, 60),
+            "…cdef/T/.tmpAbC123/deep/q3/drafts/plan.md  L1/12  1 outdated"
+        );
+    }
 
     #[test]
     fn a_footer_that_fits_exactly_is_drawn_unchanged() {
