@@ -140,7 +140,7 @@ message — is cut and ends in `…`; the search prompt instead keeps the end of
 a long query, after a leading `…`.
 
 A comment can span several paragraphs: in the comment box `enter` starts a
-new line and `ctrl+s` saves (leading and trailing blank lines are dropped). With text in
+new line and `ctrl+s` saves (leading blank lines and trailing whitespace are dropped). With text in
 the box, `esc` asks first; a second `esc` discards the draft and any other
 key keeps it. Text wraps inside the box, which grows with it
 up to 10 rows (and never past half the terminal), then scrolls to follow the
