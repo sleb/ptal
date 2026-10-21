@@ -17,11 +17,18 @@ Produce an execution plan for one GitHub issue in this repo, in the same shape a
    - The code that exists now (`src/`, `tests/`, `Cargo.toml`) — plans must build on what is actually there, not what the docs say should be.
    - Project instruction files if present (`AGENTS.md`, `CLAUDE.md`, or equivalent for the running agent).
 2. **Draft the plan** to the scratchpad as `plan-<n>.md` using the template below.
-3. **Review it with ptal.** `ptal` is expected on `PATH` (`command -v ptal`); if it is missing, stop and tell the user to install it (`cargo install --path .`). Then:
-   - Give the user the plan's absolute path to open: `ptal <absolute path to plan-<n>.md>`, in their own terminal (it needs an interactive terminal; you cannot open it). Lead the reply with the decisions you made that they may want to veto, and wait for them to say they are done.
-   - Work the threads with `ptal comments <file>`; edit the plan; `ptal reply` or `ptal resolve ... --as <agent> --note "<what changed>"` (use your own agent name, e.g. `claude`, `pi`, `codex`, or set `PTAL_AUTHOR`); re-run `ptal comments` since edits can leave threads outdated. `ptal --help` has the details. Leave a thread open and reply when a comment is unclear or you disagree.
-   - Tell the user what changed and ask for another look. Repeat until no thread is open and they approve.
-4. **Publish only on explicit approval**: `gh issue comment <n> --body-file <file>`. Post as a comment (keeps the original scope and acceptance criteria intact) unless the user asks to edit the body. Return the comment URL.
+3. **Review it with ptal.** `ptal --help` has the details of every command below; read it once. Use your own agent name for every write (`--as claude`, `pi`, `codex`, or set `PTAL_AUTHOR`).
+   - **Check ptal.** `ptal wait <file> --timeout 0` must exit 0 (it prints `"reason": "timeout"` on a fresh review, which starts on the human's turn). If `ptal` is missing or the command is a usage error, the installed ptal is too old: stop and tell the user to run `cargo install --path .`.
+   - **Open the review for the user.** Inside herdr (`HERDR_ENV=1`), open it in a pane beside you:
+     `herdr pane split --current --direction right --cwd "$PWD" --focus`, read the new pane's id from `.result.pane.pane_id`, then `herdr pane run <pane_id> "exec ptal <absolute path to plan-<n>.md>"` (`exec`: the pane closes when the user quits ptal). Outside herdr, or if a herdr call fails, ask the user to run `ptal <absolute path to plan-<n>.md>` in a terminal (it needs an interactive one).
+   - **Hand over.** In your reply, lead with the decisions the user may want to veto, and say that when they're done they hand the turn back with `H` in ptal (or close with `C`: `approved` or `dropped`).
+   - **Wait for your turn:** `ptal wait <file>`. It blocks until the user hands off or closes, so run it in the background if your harness can (in Claude Code: `run_in_background`, and you are re-invoked when it exits); otherwise loop on `ptal wait <file> --timeout 300`. Act on its `reason`:
+     - `timeout`: wait again.
+     - `turn`: read the hand-off note (`review.latest.note`) and the threads (`ptal comments <file>`). Edit the plan for each thread, then `ptal reply <file> <id> "..."`, or `ptal resolve <file> <id> --note "<what changed>"` once it is addressed. Re-run `ptal comments`, since edits can leave threads `outdated`. Leave a thread open and reply when a comment is unclear or you disagree. Then `ptal handoff <file> --note "<what changed>"`, tell the user in a line or two what changed, and wait again. The review pane refreshes on its own; don't reopen it while it is still open.
+     - `closed` with verdict `approved`: that is the user's approval; go to step 4. Mention any threads still open.
+     - `closed` with verdict `dropped`: don't publish; tell the user and stop.
+   - If the user answers in the conversation instead (approval, or "done" without handing off), follow that: it overrides the wait. Stop any background `ptal wait` before ending.
+4. **Publish only on explicit approval** (an `approved` close, or the user saying so): `gh issue comment <n> --body-file <file>`. Post as a comment (keeps the original scope and acceptance criteria intact) unless the user asks to edit the body. Return the comment URL.
 5. Do not start implementing unless asked.
 
 ## Non-negotiable working agreements
