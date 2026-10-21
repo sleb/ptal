@@ -2,8 +2,8 @@
 
 ptal has two front ends over one core (`review`). This page lists each
 operation once, with the way an agent does it and the way a human does it, so
-the CLI and the TUI cannot drift apart. It covers what is in the MVP; anything
-not listed is not built.
+the CLI and the TUI cannot drift apart. It covers what is built; anything not
+listed is not built.
 
 > **Rule: every change to the user-facing surface updates this table.** Adding,
 > renaming, or removing a CLI command or flag, or a TUI key or mode, edits the
@@ -30,7 +30,7 @@ acceptance criteria and link here instead of restating commands.
 | List resolved threads | `ptal comments <file> --all` | Shown in the panel (`resolved by <name>`, dimmed) and as `○` in the gutter | `view(include_resolved=true)` |
 | Comment on one line | `ptal add <file> --lines N "text" --as <name>` | `enter` on an unthreaded line (or `a` in the thread panel, which adds a thread beside the existing ones), type, `ctrl+s` saves (leading blank lines and trailing whitespace dropped), `esc` (or `ctrl+c`) cancels; with text in the box the first press asks and a second discards, any other key keeps the draft | `add_thread` |
 | Edit the draft | n/a | `←`/`→` move by grapheme cluster, `↑`/`↓` by screen row (keeping the column), `Home`/`End` to the line's start/end; `backspace`/`delete` remove (and join lines); `enter` starts a new line. Pasting inserts the text at the cursor in one step: line breaks kept, tabs kept (shown as four spaces), other control characters dropped, so a paste never saves, cancels or leaves the box; outside the comment box a paste does nothing. Text wraps at the box width; the box grows with it to 10 rows (at most half the terminal), then scrolls to follow the cursor | none |
-| Comment on a range | `ptal add <file> --lines A-B "text" --as <name>` | `v` (or `V`) starts a line selection at the cursor; the movement keys and `]`/`[` extend it either way (footer `visual A-B`); `enter` opens the box (`Comment on lines A-B`), even on threaded lines (the new thread sits beside any it overlaps); `ctrl+s` saves; `esc` (or `ctrl+c`) in the box returns to the selection (twice with text in the box); `esc`, `q`, `ctrl+c`, `v` or `V` leave the selection without writing | `add_thread` |
+| Comment on a range | `ptal add <file> --lines A-B "text" --as <name>` | `v` (or `V`) starts a line selection at the cursor; the movement keys, `]`/`[`, `}`/`{` and `n`/`N` extend it either way (footer `visual A-B`); `enter` opens the box (`Comment on lines A-B`), even on threaded lines (the new thread sits beside any it overlaps); `ctrl+s` saves; `esc` (or `ctrl+c`) in the box returns to the selection (twice with text in the box); `esc`, `q`, `ctrl+c`, `v` or `V` leave the selection without writing | `add_thread` |
 | Resolve a thread | `ptal resolve <file> <id> --as <name> [--note "..."]` (`already_resolved` if resolved) | `x` in the thread panel resolves the selected thread (no note; already resolved: footer says so) | `resolve` |
 | Reply to a thread | `ptal reply <file> <id> "text" --as <name>` (reopens a resolved thread) | `r` in the thread panel replies to the selected thread (the box says `Reply to <id>`); `ctrl+s` saves, `esc` (or `ctrl+c`) cancels as for a new comment | `reply` |
 | Reopen a thread | `ptal reopen <file> <id> --as <name> [--note "..."]` (`already_open` if open) | `o` in the thread panel reopens the selected resolved thread (no note; already open: footer says so) | `reopen` |
@@ -40,7 +40,7 @@ acceptance criteria and link here instead of restating commands.
 | Close a review | n/a: only the human closes; `comments` shows the `verdict` and the close's note in `latest` | `C` in Normal opens a box titled `Close as ? (tab: approved / dropped)`; `tab` picks `approved`, then `dropped`, then `approved` again, and the title follows; the text is the note (optional). `ctrl+s` closes; with no verdict chosen, the core's `missing_verdict` message shows on the border and the draft is kept. Approving with open threads asks first (`N open threads stay open: ctrl+s again to approve`): a second `ctrl+s` closes, any other key cancels the ask. Works during either turn | `close` |
 | Reopen a review | `ptal reopen <file> --as <name> [--note "..."]` (no thread id), as the agent (`--side human` to act as the human); prints `{"file", "review"}`; back to the human's turn; `not_closed` if active | `O` in Normal reopens the review at once (no note); on an active one the footer says `review is not closed` | `reopen_review` |
 | See whether a thread is stale | `state: "current" \| "outdated"` in `comments`; the range is where the anchored text is now (edits above move it), `outdated` once an anchored line is edited or removed, at a best guess with the original quote | `outdated` in the thread panel; the footer counts open outdated threads (`N outdated`); the gutter and panel follow the same mapped range | `view` |
-| Learn the tool | `ptal --help` is the one page an agent must read: the turn loop (`wait` → `comments` → edit → reply/resolve/reopen → `handoff` → `wait`) with what each `wait` reason and verdict means, the concepts (threads, waiting on you, turns, revisions, `outdated`), author, output and error conventions, the exit-code table and environment variables. Each `ptal <command> --help` has that command's output shape, the errors it can return beyond the common ones, and examples | `?` in Normal mode or the thread panel opens a full-screen key listing, grouped by mode (`?`, `esc`, `q` or `ctrl+c` close it; `j`/`k`, `ctrl+d`/`ctrl+u`, `PgDn`/`PgUp`, `g`/`G`, `Home`/`End` scroll it); the footer ends with `?:help` when it fits | none |
+| Learn the tool | `ptal --help` is the one page an agent must read: the turn loop (once per review, open `ptal <file>` for the human in a multiplexer pane or ask them to run it → `wait` → `comments` → edit → reply/resolve/reopen → `handoff` → `wait`) with what each `wait` reason and verdict means, the concepts (threads, waiting on you, turns, revisions, `outdated`), author, output and error conventions, the exit-code table and environment variables. Each `ptal <command> --help` has that command's output shape, the errors it can return beyond the common ones, and examples | `?` in Normal mode or the thread panel opens a full-screen key listing, grouped by mode (`?`, `esc`, `q` or `ctrl+c` close it; `j`/`k`, `ctrl+d`/`ctrl+u`, `PgDn`/`PgUp`, `g`/`G`, `Home`/`End` scroll it); the footer ends with `?:help` when it fits | none |
 
 ## Cross-cutting
 
@@ -95,7 +95,6 @@ the terminal is taken over.
 ## Deliberate asymmetries
 
 - **Changes since the last look are TUI-only.** They answer the human's "what did the agent change?"; the agent made the edits and reads the file itself, so `comments` carries no changes.
-
 - **Only the agent waits.** `ptal wait` blocks the agent until its turn; the
   human's side of waiting is the TUI's live refresh, so `wait` has no
   `--side`, and no `--as`, since it only reads.

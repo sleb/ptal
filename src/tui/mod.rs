@@ -1,5 +1,6 @@
-//! The human-facing terminal UI: a read-only file view with line comments and
-//! a panel for reading the threads on a line.
+//! The human-facing terminal UI: a read-only file view where the human
+//! comments on lines, answers threads in a panel, hands off and closes the
+//! review, and sees the agent's writes through live refresh.
 //!
 //! Depends on [`crate::review`] and [`crate::model`] (and the crate-wide
 //! [`crate::error`]), never on `store`.
