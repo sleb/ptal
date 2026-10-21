@@ -228,14 +228,16 @@ Review a throwaway text file. A human comments on lines in the TUI,
 from disk, so each call sees the other side's latest writes.
 
 The turn loop:
-  0. open the review for the human. `ptal <file>` needs an interactive
-     terminal (without one it fails with not_a_terminal), and its working
-     directory may differ from yours, so give it an absolute path.
+  0. open the review for the human, once per review (skip this if they
+     already have it open; the loop goes back to 1, not here).
+     `ptal <file>` needs an interactive terminal (without one it fails with
+     not_a_terminal), and its working directory may differ from yours, so
+     give it an absolute path, shell-quoted.
      In a terminal multiplexer, open a pane beside you running
-     `exec ptal <absolute file>`; the pane closes when the human quits.
+     `exec ptal '<absolute file>'`; the pane closes when the human quits.
      In herdr:
        herdr pane split --current --direction right --cwd \"$PWD\" --focus
-       herdr pane run <pane_id> \"exec ptal <absolute file>\"
+       herdr pane run <pane_id> \"exec ptal '<absolute file>'\"
      with <pane_id> from the split's .result.pane.pane_id.
      Outside a multiplexer, ask the human to run `ptal <file>` in a terminal.
   1. ptal wait <file>                 block until your turn or a close
@@ -1792,15 +1794,17 @@ c2  open  outdated  lines 3-4
             help.find(needle)
                 .unwrap_or_else(|| panic!("help is missing {needle:?}:\n{help}"))
         };
+        let wait_step = at("1. ptal wait <file>");
         for open in [
+            "once per review",
             "herdr pane split --current --direction right --cwd \"$PWD\" --focus",
-            "pane_id",
-            "exec ptal <absolute file>",
+            "herdr pane run <pane_id> \"exec ptal '<absolute file>'\"",
+            ".result.pane.pane_id",
             "ask the human to run `ptal <file>`",
         ] {
-            assert!(at(open) < at("ptal wait"), "{open} comes after ptal wait");
+            assert!(at(open) < wait_step, "{open} comes after the wait step");
         }
-        assert!(at("ptal wait") < at("ptal comments"));
+        assert!(wait_step < at("ptal comments"));
         assert!(at("ptal comments") < at("edit the file"));
         assert!(at("edit the file") < at("ptal resolve"));
         assert!(at("ptal resolve") < at("ptal handoff"));

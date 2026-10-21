@@ -31,8 +31,8 @@ plans, specs-in-progress, notes. It is inspired by
 [crit](https://github.com/kevindutra/crit) and deliberately smaller:
 
 - One file per review. No code-review mode, no multi-file tabs.
-- No terminal-multiplexer integration. The agent opens `ptal plan.md` in a
-  pane beside it (`ptal --help` says how, with herdr's commands), or you run
+- No built-in multiplexer integration: ptal never creates panes. Its help
+  tells your agent how to open `ptal plan.md` in a pane beside it, or you run
   it yourself in any terminal.
 - Agent-agnostic. The contract is JSON on stdout, not a plugin.
 - Threads are flat conversations that can be resolved and reopened (nested replies are deferred).
@@ -140,11 +140,11 @@ message — is cut and ends in `…`; the search prompt instead keeps the end of
 a long query, after a leading `…`.
 
 A comment can span several paragraphs: in the comment box `enter` starts a
-new line and `ctrl+s` saves (leading blank lines and trailing whitespace are dropped). With text in
-the box, `esc` asks first; a second `esc` discards the draft and any other
-key keeps it. Text wraps inside the box, which grows with it
-up to 10 rows (and never past half the terminal), then scrolls to follow the
-cursor. Pasting into the box keeps the text's line breaks and tab
+new line and `ctrl+s` saves (leading blank lines and trailing whitespace are
+dropped). With text in the box, `esc` asks first; a second `esc` discards the
+draft and any other key keeps it. Text wraps inside the box, which grows with
+it up to 10 rows (and never past half the terminal), then scrolls to follow
+the cursor. Pasting into the box keeps the text's line breaks and tab
 indentation (a tab shows as four spaces and is saved as a tab); a paste
 never saves or closes the box, and outside the box a paste is ignored. If a
 save fails, the box stays open with your draft and shows the error on its
@@ -211,9 +211,9 @@ ptal comments --help           # one command's output shape, errors and examples
 
 The loop `ptal --help` walks through:
 
-0. Open the review for the human: in a terminal multiplexer, a pane beside
-   the agent running `exec ptal <absolute file>` (herdr's commands are in
-   the help); otherwise ask the human to run `ptal <file>`.
+0. Once per review, open it for the human: in a terminal multiplexer, a
+   pane beside the agent running `exec ptal '<absolute file>'` (herdr's
+   commands are in the help); otherwise ask the human to run `ptal <file>`.
 1. `ptal wait <file>`: on `"turn"`, read the human's note; on `"closed"`, act
    on the verdict (`approved`: take the next step; `dropped`: stop) and stop;
    on `"timeout"`, wait again.
