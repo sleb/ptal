@@ -2061,6 +2061,34 @@ plan.md  L1/5  enter:thread/c…"
     }
 
     #[test]
+    fn the_path_shrinks_to_an_ellipsis_before_the_counts_are_cut() {
+        let threads = [open_thread("c1", (1, 1), State::Outdated)];
+        let app = app_with(lines(12), &threads, 8).labeled(LONG_PATH);
+
+        assert_eq!(footer(&app, 20), "…  L1/12  1 outdated");
+        assert_eq!(footer(&app, 15), "…  L1/12  1 ou…");
+    }
+
+    #[test]
+    fn the_visual_and_panel_footers_shorten_the_path_too() {
+        let threads = [open_thread("c1", (1, 1), State::Outdated)];
+        let mut app = app_with(lines(12), &threads, 8).labeled(LONG_PATH);
+        keys(&mut app, "vj");
+
+        assert_eq!(
+            footer(&app, 60),
+            "…bC123/deep/q3/drafts/plan.md  L2/12  visual 1-2  1 outdated"
+        );
+
+        let app = panel_app(&threads).labeled(LONG_PATH);
+        let screen = screen(&draw(&app, 60, 16));
+        assert_eq!(
+            screen.lines().last().unwrap(),
+            "…cdef/T/.tmpAbC123/deep/q3/drafts/plan.md  L1/12  1 outdated"
+        );
+    }
+
+    #[test]
     fn a_footer_that_fits_exactly_is_drawn_unchanged() {
         let app = app_with(lines(12), &[], 8);
         let width = u16::try_from(NORMAL_FOOTER.len()).unwrap();
