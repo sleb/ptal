@@ -686,8 +686,13 @@ Its parts:
   box's border),
   `L<line>/<total>`, `visual <a>-<b>` in `Visual` (1-based, ascending),
   `N outdated` (open threads only), `N changes` (hunks since the last
-  look, `1 change` for one, nothing when there are none), key hints, the whole row `wrap::cut` to
-  the terminal width, so a footer too wide ends in `…`. The input box is titled
+  look, `1 change` for one, nothing when there are none), `/query` while a
+  search is active, key hints, the whole row `wrap::cut` to the terminal
+  width, so a footer too wide ends in `…`. The search and the hints give way
+  first; when the path and the counts alone don't fit, they are dropped and the path
+  keeps its end after `…` (`wrap::tail`), down to `…` alone, before the counts
+  are cut. A save message in place of the path is not shortened; it keeps its
+  start like the rest of the row. The input box is titled
   `Comment on line N as <author>`, `Comment on lines A-B as <author>` for a
   range, `Reply to <id> as <author>`, `Hand off to the agent (note
   optional)`, or `Close as <verdict or ?> (tab: approved / dropped)`; its
