@@ -8,20 +8,21 @@ agent are iterating on together and that will never be committed.
 
 You read the file, leave threaded comments on lines, and hand off. The agent
 reads your comments through a small JSON CLI, edits the file, replies,
-resolves threads, and hands back. You re-open ptal and see what changed, and
-when the plan is done you close the review as `approved` or `dropped`.
+resolves threads, and hands back. ptal's screen follows along as the agent
+writes and marks what changed since you handed off, and when the plan is done
+you close the review as `approved` or `dropped`.
 Comments, replies, resolved state and whose turn it is persist across rounds
 and revisions.
 
-> **Status:** core library, the agent CLI (`comments`, `add`, `resolve`, `reply`,
-> `reopen`, `handoff`, `wait`), and a TUI implemented: scroll a file (long lines wrap, markdown
-> tables align, markdown structure is highlighted), comment on a line or a
-> selected range, read threads and the agent's replies, jump between threads,
-> search, write multi-line comments, reply, resolve, reopen, hand the turn to
-> the agent and close a review with a verdict, `?` lists the keys, and the
-> screen refreshes live as the agent writes; agents block on `ptal wait`
-> for their turn. See
-> [ARCHITECTURE.md](ARCHITECTURE.md).
+> **Status:** the agent CLI (`comments`, `add`, `reply`, `resolve`, `reopen`,
+> `handoff`, `wait`) and the TUI are built. In the TUI: scroll a file (long
+> lines wrap, markdown tables align, markdown structure is highlighted),
+> search, comment on a line or a selected range (multi-line, paste works),
+> read, reply to, resolve and reopen threads, hand the turn to the agent,
+> close a review with a verdict and reopen it; `?` lists the keys. Threads
+> follow the file as the agent edits it, the gutter marks what changed since
+> your last look, and the screen refreshes live. Agents block on `ptal wait`
+> for their turn. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Why not a PR?
 
@@ -30,7 +31,9 @@ plans, specs-in-progress, notes. It is inspired by
 [crit](https://github.com/kevindutra/crit) and deliberately smaller:
 
 - One file per review. No code-review mode, no multi-file tabs.
-- No tmux integration. Open a pane, run `ptal plan.md`, go back to the agent.
+- No terminal-multiplexer integration. The agent opens `ptal plan.md` in a
+  pane beside it (`ptal --help` says how, with herdr's commands), or you run
+  it yourself in any terminal.
 - Agent-agnostic. The contract is JSON on stdout, not a plugin.
 - Threads are flat conversations that can be resolved and reopened (nested replies are deferred).
 - Comments live in your user data directory, never in your repo.
@@ -208,6 +211,9 @@ ptal comments --help           # one command's output shape, errors and examples
 
 The loop `ptal --help` walks through:
 
+0. Open the review for the human: in a terminal multiplexer, a pane beside
+   the agent running `exec ptal <absolute file>` (herdr's commands are in
+   the help); otherwise ask the human to run `ptal <file>`.
 1. `ptal wait <file>`: on `"turn"`, read the human's note; on `"closed"`, act
    on the verdict (`approved`: take the next step; `dropped`: stop) and stop;
    on `"timeout"`, wait again.
@@ -223,7 +229,8 @@ Writes require `--as <name>` (or `PTAL_AUTHOR`) so every message is attributed.
 Failures print nothing on stdout and one JSON error line on stderr; exit `2`
 means the invocation can be fixed, `1` is a runtime failure (see
 [docs/interfaces.md](docs/interfaces.md#exit-codes)). A skill or prompt for
-your agent of choice is just: *"run `ptal wait <file>`, then `ptal comments`,
+your agent of choice is just: *"open `ptal <file>` for me in a pane, run
+`ptal wait <file>`, then `ptal comments`,
 edit the file to address each thread, `ptal resolve` it, `ptal handoff`, and
 wait again."*
 
