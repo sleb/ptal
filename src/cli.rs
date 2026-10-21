@@ -223,13 +223,21 @@ Examples:
   ptal wait plan.md --timeout 300    # give up after 5 minutes: reason \"timeout\"";
 
 const WORKFLOW: &str = "\
-Review a throwaway text file. A human comments on lines in the TUI, opened
-with `ptal <file>` (interactive terminals only; without one it fails with
-not_a_terminal). Their terminal's working directory may differ from yours, so
-give them an absolute path. You read and answer those comments here. Every
-command reads from disk, so each call sees the other side's latest writes.
+Review a throwaway text file. A human comments on lines in the TUI,
+`ptal <file>`; you read and answer those comments here. Every command reads
+from disk, so each call sees the other side's latest writes.
 
 The turn loop:
+  0. open the review for the human. `ptal <file>` needs an interactive
+     terminal (without one it fails with not_a_terminal), and its working
+     directory may differ from yours, so give it an absolute path.
+     In a terminal multiplexer, open a pane beside you running
+     `exec ptal <absolute file>`; the pane closes when the human quits.
+     In herdr:
+       herdr pane split --current --direction right --cwd \"$PWD\" --focus
+       herdr pane run <pane_id> \"exec ptal <absolute file>\"
+     with <pane_id> from the split's .result.pane.pane_id.
+     Outside a multiplexer, ask the human to run `ptal <file>` in a terminal.
   1. ptal wait <file>                 block until your turn or a close
      \"turn\":    your move; the human's note is in review.latest.note
      \"closed\":  act on review.verdict, then stop (see below)
@@ -1784,6 +1792,14 @@ c2  open  outdated  lines 3-4
             help.find(needle)
                 .unwrap_or_else(|| panic!("help is missing {needle:?}:\n{help}"))
         };
+        for open in [
+            "herdr pane split --current --direction right --cwd \"$PWD\" --focus",
+            "pane_id",
+            "exec ptal <absolute file>",
+            "ask the human to run `ptal <file>`",
+        ] {
+            assert!(at(open) < at("ptal wait"), "{open} comes after ptal wait");
+        }
         assert!(at("ptal wait") < at("ptal comments"));
         assert!(at("ptal comments") < at("edit the file"));
         assert!(at("edit the file") < at("ptal resolve"));
