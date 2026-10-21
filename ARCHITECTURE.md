@@ -18,7 +18,7 @@ for, and the invariants and contracts between them.
           └───┬────┘   └────┬────┘
               └──────┬──────┘
                ┌─────▼─────┐
-               │   model   │   plain data types, serde, JSON Schema
+               │   model   │   plain data types, serde
                └───────────┘
         (highlight lives under tui)
 ```
@@ -421,8 +421,9 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
 - `--lines` is `N` or `A-B`; syntax errors are `usage`, range validity
   against the file is the core's `InvalidRange`.
 - `--help` is part of the product, split so each fact lives in one place.
-  The top-level help is the one page an agent must read: the human's entry
-  point, the turn loop (`wait` first, what each `reason` and verdict means,
+  The top-level help is the one page an agent must read: the turn loop
+  (opening `ptal <file>` for the human in a multiplexer pane, or asking them
+  to run it, then `wait`, what each `reason` and verdict means,
   backgrounding or `--timeout`), the concepts, author, output and error
   conventions, the full exit-code table and env vars, and a pointer to each
   command's help. Each command's `after_long_help` (one `*_HELP` const) has
@@ -843,7 +844,7 @@ layers already described: `anchor::Diff::changes` finds the hunks,
 trait is built for other presentations while there is one.
 
 *Deferred:* inline and side-by-side views of old against new text, and
-browsing older revisions (#34); a "mark as seen" that is a look without a
+browsing older revisions; a "mark as seen" that is a look without a
 hand-off or close.
 
 ## Cross-cutting rules
