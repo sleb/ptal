@@ -5,7 +5,7 @@ description: Draft an execution plan for a ptal GitHub issue (story), review it 
 
 # ptal-plan
 
-Produce an execution plan for one GitHub issue in this repo, in the same shape as the plan on #3. Input: an issue number (`/ptal-plan 4`). If none is given, list open issues with `gh issue list` and ask which one.
+Produce an execution plan for one GitHub issue in this repo, in the shape of the plan template below. Input: an issue number (`/ptal-plan 4`). If none is given, list open issues with `gh issue list` and ask which one.
 
 ## Process
 
@@ -49,11 +49,12 @@ Definition of done for every step: `cargo fmt --check`, `cargo clippy --all-targ
 Working agreements: <the three above, plus the definition of done>
 
 ### Overview
-**Objective.** <what is wrong or missing today and what the story changes, in a few sentences, with its scope limits>
+- **Today:** <what is wrong or missing, in one or two lines>
+- **Change:** <what the story changes>
+- **Out of scope:** <the issue's limits>
 
-**Acceptance criteria** (from the issue): <each criterion, condensed to one bullet>
-
-**Shape of the work:** <one line: which modules and docs change>
+**Acceptance criteria** (from the issue, verbatim):
+- <each criterion, one bullet each>
 
 ### Decisions made up front
 | Question | Decision |
@@ -77,7 +78,7 @@ Working agreements: <the three above, plus the definition of done>
 
 ## Rules for good plans
 
-- **Always open with the Overview.** A reader should know the objective and the acceptance criteria before any decision or step.
+- **The Overview comes right after the working agreements,** before any decision or step, so a reader knows the objective and the acceptance criteria first. Its criteria are the issue's, verbatim, the same list the closing table maps to tests.
 - **Every acceptance criterion maps to a named test/step.** If one can't be mapped, the criterion is under-specified: say so and propose a precise reading in the decisions table.
 - **Stay inside the issue's scope and the parent's out-of-scope list.** Flag, don't absorb, anything adjacent.
 - **Prefer seams for testability:** pure functions over env/clock/randomness injected, no printing in core, front ends thin.
