@@ -48,6 +48,13 @@ Definition of done for every step: `cargo fmt --check`, `cargo clippy --all-targ
 
 Working agreements: <the three above, plus the definition of done>
 
+### Overview
+**Objective.** <what is wrong or missing today and what the story changes, in a few sentences, with its scope limits>
+
+**Acceptance criteria** (from the issue): <each criterion, condensed to one bullet>
+
+**Shape of the work:** <one line: which modules and docs change>
+
 ### Decisions made up front
 | Question | Decision |
 <one row per choice not settled by the issue/parent: crates, file layout, error types, wire shapes, edge-case semantics. Include "no X crate" decisions with the reason.>
@@ -70,6 +77,7 @@ Working agreements: <the three above, plus the definition of done>
 
 ## Rules for good plans
 
+- **Always open with the Overview.** A reader should know the objective and the acceptance criteria before any decision or step.
 - **Every acceptance criterion maps to a named test/step.** If one can't be mapped, the criterion is under-specified: say so and propose a precise reading in the decisions table.
 - **Stay inside the issue's scope and the parent's out-of-scope list.** Flag, don't absorb, anything adjacent.
 - **Prefer seams for testability:** pure functions over env/clock/randomness injected, no printing in core, front ends thin.
