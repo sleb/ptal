@@ -578,22 +578,39 @@ fn state_line(review: &ReviewStatus) -> String {
     }
 }
 
-/// Readable state header: `turn: <side>` or `closed: <verdict>`, then each
-/// line of the latest note under its author.
+/// `  author: text`, with each later line of `text` indented to sit under the
+/// first character of the body. Blank lines stay empty.
+fn indent_body(author: &str, text: &str) -> String {
+    let pad = " ".repeat(2 + author.chars().count() + 2);
+    let mut out = String::new();
+    for (i, line) in text.lines().enumerate() {
+        match (i, line.is_empty()) {
+            (0, _) => out.push_str(&format!("  {author}: {line}")),
+            (_, true) => {}
+            _ => out.push_str(&format!("{pad}{line}")),
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Readable state header: `turn: <side>` or `closed: <verdict>`, then the
+/// latest note under its author.
 fn render_status(review: &ReviewStatus) -> String {
     let mut text = match review.state {
         ReviewState::Turn(side) => format!("turn: {}\n", side.as_str()),
         ReviewState::Closed(_) => format!("{}\n", state_line(review)),
     };
     if let Some(entry) = &review.latest {
-        for line in entry.note.iter().flat_map(|note| note.lines()) {
-            text.push_str(&format!("  {}: {line}\n", entry.author));
+        if let Some(note) = &entry.note {
+            text.push_str(&indent_body(&entry.author, note));
         }
     }
     text
 }
 
-/// Readable listing: a header per thread, the quote, then the comments.
+/// Readable listing: a header per thread, the quote, then the comments, each
+/// continuation line hanging under its body.
 fn render_text(threads: &[ThreadView]) -> String {
     if threads.is_empty() {
         return "no threads\n".to_string();
@@ -623,7 +640,7 @@ fn render_text(threads: &[ThreadView]) -> String {
                 block.push_str(&format!("  > {line}\n"));
             }
             for comment in comments {
-                block.push_str(&format!("  {}: {}\n", comment.author, comment.body));
+                block.push_str(&indent_body(&comment.author, &comment.body));
             }
             block
         })
@@ -2276,9 +2293,34 @@ c2  open  outdated  lines 3-4
 
         assert_eq!(
             agent.stdout,
-            "turn: agent\n  scott: Look at c1\n  scott: and c2\n\nno threads\n"
+            "turn: agent\n  scott: Look at c1\n         and c2\n\nno threads\n"
         );
         assert_eq!(closed.stdout, "closed: dropped\n\nno threads\n");
+    }
+
+    #[test]
+    fn comments_on_a_tty_indents_every_line_of_a_multi_line_comment() {
+        let fx = fixture("one\ntwo\n");
+        fx.run(&[
+            "add",
+            "FILE",
+            "--lines",
+            "1",
+            "one\ntwo\nthree",
+            "--as",
+            "scott",
+        ]);
+        fx.run(&["add", "FILE", "--lines", "2", "a\n\nb", "--as", "claude"]);
+        fx.human_hands_off(Some("Look at c1\nand c2"));
+
+        let out = fx.run_with(&["comments", "FILE"], &fx.env(None, true));
+
+        assert_eq!(
+            out.stdout,
+            "turn: agent\n  scott: Look at c1\n         and c2\n\n\
+             c1  open  current  lines 1-1\n  > one\n  scott: one\n         two\n         three\n\n\
+             c2  open  current  lines 2-2\n  > two\n  claude: a\n\n          b\n"
+        );
     }
 
     #[test]
@@ -2525,7 +2567,7 @@ c2  open  outdated  lines 3-4
         assert_eq!(timeout.stdout, "timeout: still the human's turn\n");
         assert_eq!(
             turn.stdout,
-            "turn: agent\n  scott: Look at c1\n  scott: and c2\n"
+            "turn: agent\n  scott: Look at c1\n         and c2\n"
         );
         assert_eq!(closed.stdout, "closed: dropped\n");
     }
