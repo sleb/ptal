@@ -581,15 +581,17 @@ fn state_line(review: &ReviewStatus) -> String {
 }
 
 /// `  author: text`, with each later line of `text` indented to sit under the
-/// first character of the body. Blank lines stay empty.
+/// first character of the body (counted in `char`s, so wide or combining
+/// author names may misalign). Trailing blank lines are dropped and
+/// whitespace-only lines print empty.
 fn indent_body(author: &str, text: &str) -> String {
+    let mut lines = text.trim_end().lines();
+    let mut out = format!("  {author}: {}\n", lines.next().unwrap_or(""));
     let pad = " ".repeat(2 + author.chars().count() + 2);
-    let mut out = String::new();
-    for (i, line) in text.lines().enumerate() {
-        match (i, line.is_empty()) {
-            (0, _) => out.push_str(&format!("  {author}: {line}")),
-            (_, true) => {}
-            _ => out.push_str(&format!("{pad}{line}")),
+    for line in lines {
+        if !line.trim().is_empty() {
+            out.push_str(&pad);
+            out.push_str(line);
         }
         out.push('\n');
     }
@@ -2340,8 +2342,13 @@ c2  open  outdated  lines 3-4
         let env = fx.env(None, false);
         let run_on = |args: &[&str], file: &Path| {
             let mut argv: Vec<OsString> = vec!["ptal".into()];
-            argv.extend(args.iter().map(OsString::from));
-            argv.push(file.into());
+            argv.extend(args.iter().map(|a| {
+                if *a == "FILE" {
+                    file.into()
+                } else {
+                    OsString::from(a)
+                }
+            }));
             let (mut out, mut err) = (Vec::new(), Vec::new());
             let code = run(argv, &env, &mut out, &mut err);
             (
@@ -2351,16 +2358,36 @@ c2  open  outdated  lines 3-4
             )
         };
 
-        let (code, stdout, stderr) = run_on(&["comments"], &odd);
-        assert_eq!(code, 0, "{stderr}");
-        let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-        assert!(json["file"].as_str().unwrap().ends_with("plan-\u{FFFD}.md"));
+        for args in [
+            &["comments", "FILE"][..],
+            &["add", "FILE", "--lines", "1", "Hi", "--as", "scott"],
+            &["handoff", "FILE", "--as", "scott", "--side", "human"],
+            &["wait", "FILE", "--timeout", "0"],
+        ] {
+            let (code, stdout, stderr) = run_on(args, &odd);
+            assert_eq!(code, 0, "{args:?}: {stderr}");
+            let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+            assert!(
+                json["file"].as_str().unwrap().ends_with("plan-\u{FFFD}.md"),
+                "{args:?}"
+            );
+        }
 
         let missing = odd.with_file_name(OsStr::from_bytes(b"gone-\xff.md"));
-        let (code, stdout, stderr) = run_on(&["comments"], &missing);
+        let (code, stdout, stderr) = run_on(&["comments", "FILE"], &missing);
         assert_eq!((code, stdout.as_str()), (1, ""));
         let json: serde_json::Value = serde_json::from_str(&stderr).unwrap();
         assert_eq!(json["error"]["code"], "file_unreadable");
+    }
+
+    #[test]
+    fn indent_body_keeps_an_empty_body_and_trims_blank_edges() {
+        assert_eq!(indent_body("scott", ""), "  scott: \n");
+        assert_eq!(indent_body("scott", "a\n\n"), "  scott: a\n");
+        assert_eq!(
+            indent_body("scott", "a\n   \nb"),
+            "  scott: a\n\n         b\n"
+        );
     }
 
     #[test]
