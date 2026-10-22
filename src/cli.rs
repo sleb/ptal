@@ -603,10 +603,10 @@ fn render_status(review: &ReviewStatus) -> String {
         ReviewState::Turn(side) => format!("turn: {}\n", side.as_str()),
         ReviewState::Closed(_) => format!("{}\n", state_line(review)),
     };
-    if let Some(entry) = &review.latest {
-        if let Some(note) = &entry.note {
-            text.push_str(&indent_body(&entry.author, note));
-        }
+    if let Some(entry) = &review.latest
+        && let Some(note) = &entry.note
+    {
+        text.push_str(&indent_body(&entry.author, note));
     }
     text
 }
