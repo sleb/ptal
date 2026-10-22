@@ -281,7 +281,9 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
   once, after checking the file is readable; it never writes. An `Io`
   error reading `review.json` is retried on the next poll, up to
   `WAIT_READ_RETRIES` (20, about 5 s) in a row; any other error (a corrupt
-  or newer review) ends the wait at once. `Ticker {
+  or newer review) ends the wait at once. A wait that times out without ever
+  reading `review.json` fails with the last read's `Io` error rather than
+  reporting a made-up state. `Ticker {
   now, sleep }` is injected like the clock (`SystemTicker` for real), so
   tests hand off from inside a fake `sleep`. Polling, not file watching:
   `review.json` and editors' saves replace files by rename, which breaks
@@ -403,6 +405,7 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
 - `wait <file> [--timeout SECS]` prints `{"file", "reason", "review"}`
   (`reason` is the core's `Woke`: `turn`, `closed`, `timeout`) and exits `0`
   for all three: a timeout is an outcome the agent loops on, not a failure.
+  A wait that never read the review fails with `io` (exit `1`).
   It takes no `--as` (a read) and no `--side` (only the agent waits). One
   blocking call per turn, not a stream: an agent's command tool reads a
   command's output when it exits. The ticker comes from `Env.ticker`
@@ -882,7 +885,8 @@ hand-off or close.
   reopen by either side, error precedence, out-of-turn thread writes, and
   each log entry's revision and snapshot; `wait` with a fake ticker
   (returns at once when closed or on the agent's turn, a hand-off or close
-  from another handle inside `sleep`, timeouts on the ticker's clock, the
+  from another handle inside `sleep`, timeouts on the ticker's clock, a
+  timeout before any read failing with the read's error, the
   file removed mid-wait, never writes); `against` refusing stale content
   with `review.json` byte-identical, behaving as the plain methods on the
   current content, its error precedence, and a guarded hand-off's last look;

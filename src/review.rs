@@ -499,7 +499,8 @@ impl<C: Clock> Reviews<C> {
     /// [`Error::FileUnreadable`] at the start. An [`Error::Io`] reading
     /// `review.json` is retried on the next poll, up to
     /// [`WAIT_READ_RETRIES`] in a row; any other store error ends the wait
-    /// at once.
+    /// at once. A wait that times out without ever reading `review.json`
+    /// fails with the last read's [`Error::Io`].
     ///
     /// # Examples
     /// ```
@@ -525,31 +526,41 @@ impl<C: Clock> Reviews<C> {
         let reader = self.store.reader(file)?;
         let start = ticker.now();
         let mut failed_reads = 0;
-        let mut last = ReviewStatus::default();
+        let mut last: Option<ReviewStatus> = None;
         loop {
-            let reason = match reader.load() {
+            let left = timeout.map(|t| t.saturating_sub(ticker.now() - start));
+            let timed_out = left == Some(Duration::ZERO);
+            match reader.load() {
                 Ok(review) => {
                     failed_reads = 0;
-                    last = ReviewStatus::of(&review);
-                    match last.state {
+                    let status = ReviewStatus::of(&review);
+                    let reason = match status.state {
                         ReviewState::Turn(Side::Agent) => Some(Woke::Turn),
                         ReviewState::Closed(_) => Some(Woke::Closed),
-                        ReviewState::Turn(Side::Human) => None,
+                        ReviewState::Turn(Side::Human) => timed_out.then_some(Woke::Timeout),
+                    };
+                    if let Some(reason) = reason {
+                        return Ok(Waited {
+                            reason,
+                            review: status,
+                        });
+                    }
+                    last = Some(status);
+                }
+                Err(error @ Error::Io { .. }) if failed_reads < WAIT_READ_RETRIES => {
+                    failed_reads += 1;
+                    if timed_out {
+                        // Timed out on a failed read: report the last state
+                        // read, or the error if there never was one.
+                        return last.map_or(Err(error), |review| {
+                            Ok(Waited {
+                                reason: Woke::Timeout,
+                                review,
+                            })
+                        });
                     }
                 }
-                Err(Error::Io { .. }) if failed_reads < WAIT_READ_RETRIES => {
-                    failed_reads += 1;
-                    None
-                }
                 Err(error) => return Err(error),
-            };
-            let left = timeout.map(|t| t.saturating_sub(ticker.now() - start));
-            let reason = reason.or((left == Some(Duration::ZERO)).then_some(Woke::Timeout));
-            if let Some(reason) = reason {
-                return Ok(Waited {
-                    reason,
-                    review: last,
-                });
             }
             ticker.sleep(left.map_or(POLL_INTERVAL, |left| left.min(POLL_INTERVAL)));
         }
@@ -2807,6 +2818,45 @@ mod tests {
 
         assert!(matches!(result, Err(Error::Io { .. })), "{result:?}");
         assert_eq!(ticker.sleeps.get(), WAIT_READ_RETRIES);
+    }
+
+    #[test]
+    fn a_wait_that_never_reads_the_review_fails_with_the_read_error() {
+        for (timeout, sleeps) in [(NO_WAIT, 0), (SECOND, 4)] {
+            let fx = fixture();
+            fx.reviews
+                .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+                .unwrap();
+            let path = review_json_path(&fx);
+            fs::remove_file(&path).unwrap();
+            fs::create_dir(&path).unwrap();
+            let ticker = FakeTicker::idle();
+
+            let result = fx.reviews.wait(&fx.file, timeout, &ticker);
+
+            assert!(matches!(result, Err(Error::Io { .. })), "{result:?}");
+            assert_eq!(ticker.sleeps.get(), sleeps);
+        }
+    }
+
+    #[test]
+    fn a_wait_that_read_once_still_times_out_with_that_state() {
+        let fx = fixture();
+        fx.reviews
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        let path = review_json_path(&fx);
+        let ticker = FakeTicker::new(|n| {
+            if n == 1 {
+                fs::remove_file(&path).unwrap();
+                fs::create_dir(&path).unwrap();
+            }
+        });
+
+        let waited = fx.reviews.wait(&fx.file, SECOND, &ticker).unwrap();
+
+        assert_eq!(waited.reason, Woke::Timeout);
+        assert_eq!(waited.review.state, ReviewState::Turn(Side::Human));
     }
 
     #[test]
