@@ -2595,7 +2595,10 @@ c2  open  outdated  lines 3-4
         let help = fx.run(&["wait", "--help"]).stdout;
 
         let errors = flat(&paragraph_with(&help, &["Errors:"]));
-        assert!(errors.contains("io") && errors.contains("read"), "{errors}");
+        assert!(
+            errors.contains("io if review.json can't be read"),
+            "{errors}"
+        );
     }
 
     #[test]

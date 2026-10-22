@@ -528,31 +528,39 @@ impl<C: Clock> Reviews<C> {
         let mut failed_reads = 0;
         let mut last: Option<ReviewStatus> = None;
         loop {
-            let read = reader.load();
             let left = timeout.map(|t| t.saturating_sub(ticker.now() - start));
             let timed_out = left == Some(Duration::ZERO);
-            let reason = match read {
+            match reader.load() {
                 Ok(review) => {
                     failed_reads = 0;
                     let status = ReviewStatus::of(&review);
                     let reason = match status.state {
                         ReviewState::Turn(Side::Agent) => Some(Woke::Turn),
                         ReviewState::Closed(_) => Some(Woke::Closed),
-                        ReviewState::Turn(Side::Human) => None,
+                        ReviewState::Turn(Side::Human) => timed_out.then_some(Woke::Timeout),
                     };
+                    if let Some(reason) = reason {
+                        return Ok(Waited {
+                            reason,
+                            review: status,
+                        });
+                    }
                     last = Some(status);
-                    reason
                 }
-                Err(error @ Error::Io { .. }) if timed_out && last.is_none() => return Err(error),
-                Err(Error::Io { .. }) if failed_reads < WAIT_READ_RETRIES => {
+                Err(error @ Error::Io { .. }) if failed_reads < WAIT_READ_RETRIES => {
                     failed_reads += 1;
-                    None
+                    if timed_out {
+                        // Timed out on a failed read: report the last state
+                        // read, or the error if there never was one.
+                        return last.map_or(Err(error), |review| {
+                            Ok(Waited {
+                                reason: Woke::Timeout,
+                                review,
+                            })
+                        });
+                    }
                 }
                 Err(error) => return Err(error),
-            };
-            let reason = reason.or(timed_out.then_some(Woke::Timeout));
-            if let (Some(reason), Some(review)) = (reason, last.clone()) {
-                return Ok(Waited { reason, review });
             }
             ticker.sleep(left.map_or(POLL_INTERVAL, |left| left.min(POLL_INTERVAL)));
         }
