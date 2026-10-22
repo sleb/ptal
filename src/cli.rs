@@ -216,7 +216,9 @@ already your turn or the review is closed, re-reads every 250 ms otherwise,
 and never writes. On a terminal: the turn or verdict and the note, or
 `timeout: still the human's turn`.
 
-Errors: file_unreadable if the file is missing when the wait starts.
+Errors: file_unreadable if the file is missing when the wait starts; io if
+review.json can't be read before the timeout (a read error is retried for
+about 5 s first).
 
 Examples:
   ptal wait plan.md                  # block until your turn or a close
@@ -2564,6 +2566,36 @@ c2  open  outdated  lines 3-4
         assert_eq!(out.code, 1);
         assert_eq!(out.error_code(), "file_unreadable");
         assert_eq!(out.stdout, "");
+    }
+
+    #[test]
+    fn wait_that_never_reads_the_review_is_io_with_empty_stdout() {
+        let fx = fixture("one\n");
+        fx.reviews()
+            .add_thread(&fx.file, 1, 1, "Hmm", "scott")
+            .unwrap();
+        let path = Store::new(&fx.data)
+            .review_dir(&fx.file)
+            .unwrap()
+            .join("review.json");
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+
+        let out = fx.run_with(&["wait", "FILE", "--timeout", "0"], &fx.wait_env(false));
+
+        assert_eq!(out.code, 1);
+        assert_eq!(out.error_code(), "io");
+        assert_eq!(out.stdout, "");
+    }
+
+    #[test]
+    fn wait_help_says_a_wait_that_never_read_the_review_fails() {
+        let fx = fixture("one\n");
+
+        let help = fx.run(&["wait", "--help"]).stdout;
+
+        let errors = flat(&paragraph_with(&help, &["Errors:"]));
+        assert!(errors.contains("io") && errors.contains("read"), "{errors}");
     }
 
     #[test]
