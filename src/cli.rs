@@ -507,7 +507,9 @@ enum Verb {
 }
 
 impl Output {
-    fn to_json(&self, file: &Path) -> String {
+    /// `file` is the canonical path, lossily converted so a non-UTF-8 name
+    /// prints with U+FFFD instead of failing.
+    fn to_json(&self, file: &str) -> String {
         let value = match self {
             Output::Threads(view) => json!({
                 "file": file,
@@ -718,7 +720,7 @@ fn run_command<C: Clock>(
         })
     })?;
     let text = if json || !env.stdout_is_tty {
-        output.to_json(&canonical)
+        output.to_json(&canonical.to_string_lossy())
     } else {
         output.to_text()
     };
@@ -2321,6 +2323,44 @@ c2  open  outdated  lines 3-4
              c1  open  current  lines 1-1\n  > one\n  scott: one\n         two\n         three\n\n\
              c2  open  current  lines 2-2\n  > two\n  claude: a\n\n          b\n"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_file_name_prints_lossily_instead_of_panicking() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let fx = fixture("one\n");
+        let odd = fx.file.with_file_name(OsStr::from_bytes(b"plan-\xff.md"));
+        if fs::write(&odd, "one\n").is_err() {
+            eprintln!("skipped: the filesystem rejects non-UTF-8 names");
+            return;
+        }
+        let env = fx.env(None, false);
+        let run_on = |args: &[&str], file: &Path| {
+            let mut argv: Vec<OsString> = vec!["ptal".into()];
+            argv.extend(args.iter().map(OsString::from));
+            argv.push(file.into());
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = run(argv, &env, &mut out, &mut err);
+            (
+                code,
+                String::from_utf8(out).unwrap(),
+                String::from_utf8(err).unwrap(),
+            )
+        };
+
+        let (code, stdout, stderr) = run_on(&["comments"], &odd);
+        assert_eq!(code, 0, "{stderr}");
+        let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert!(json["file"].as_str().unwrap().ends_with("plan-\u{FFFD}.md"));
+
+        let missing = odd.with_file_name(OsStr::from_bytes(b"gone-\xff.md"));
+        let (code, stdout, stderr) = run_on(&["comments"], &missing);
+        assert_eq!((code, stdout.as_str()), (1, ""));
+        let json: serde_json::Value = serde_json::from_str(&stderr).unwrap();
+        assert_eq!(json["error"]["code"], "file_unreadable");
     }
 
     #[test]

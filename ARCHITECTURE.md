@@ -379,6 +379,10 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
 - **stdout** is data only: JSON when not a TTY (or `--json`), a readable
   rendering when a TTY. **stderr** is diagnostics. Never mixed; on failure
   stdout is empty. `--help` and `--version` go to stdout with exit `0`.
+- `file` in every JSON output is the canonical path; a non-UTF-8 byte in it
+  prints as U+FFFD (the command still works, and the printed path isn't
+  usable). The readable rendering hangs a multi-line comment or note's later
+  lines under its body.
 - `comments` prints `{"file", "revision", "threads": [...]}`; `revision` is
   the file's current revision id, or `null` if nothing has been written
   against this content. Each thread is self-contained: id, `status`, `state`,
