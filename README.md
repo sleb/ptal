@@ -4,7 +4,8 @@
 
 *Please take a look.* A keyboard-driven terminal UI for reviewing a text
 file, usually a throwaway plan or design doc (`.md`) that you and a coding
-agent iterate on together.
+agent iterate on together. Comments live in your user data directory, not in
+your repo, so nothing is written next to the file.
 
 You read the file, leave threaded comments on lines, and hand off. The agent
 reads your comments through a small JSON CLI, edits the file, replies,
@@ -191,8 +192,10 @@ ptal comments plan.md          # open threads (--all includes resolved)
 ptal add plan.md --lines 12-14 "Why not X?" --as claude
 ptal reply plan.md c3 "Which of the two do you mean?" --as claude
 ptal resolve plan.md c3 --as claude --note "Done, see step 2."
+ptal reopen plan.md c3 --as claude --note "Not fixed."   # a resolved thread
+ptal reopen plan.md --as claude   # a closed review, when asked to revise again
 ptal handoff plan.md --as claude --note "Addressed all but c4."
-ptal wait plan.md --timeout 300   # block until your turn, closed, or "timeout"
+ptal wait plan.md --timeout 300   # block until the agent's turn, closed, or "timeout"
 ```
 
 The loop:

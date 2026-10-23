@@ -1,9 +1,11 @@
 //! Drift tests between the docs and the code they describe: every key in the
-//! help overlay's listing is named somewhere in README's Keys section and in
+//! help overlay's listing is named in README's key tables and in
 //! `docs/interfaces.md` (not checked per mode), and no cell
 //! of the interface map is too long to read. They also hold the contributor
 //! docs (`AGENTS.md`, the ptal-plan skill) to the repo's current vocabulary:
-//! no milestone-status bookkeeping, and one definition of done.
+//! no milestone-status bookkeeping, and one definition of done. README's prose
+//! is held to the same: no status or roadmap words, no paragraph over 120
+//! words, and a `For agents` section that links the reference docs.
 //!
 //! These read the repo at run time, so the file is not part of the published
 //! package.
@@ -70,7 +72,7 @@ fn missing_keys(tokens: &HashSet<&str>) -> Vec<String> {
 #[test]
 fn every_help_key_is_in_readme_and_interfaces() {
     let readme = read("README.md");
-    let keys = section(&readme, "### Keys", "### For agents");
+    let keys = section(&readme, "### Keys", "### Reading and navigation");
     let interfaces = read("docs/interfaces.md");
     for (doc, text) in [("README.md", keys), ("docs/interfaces.md", &interfaces)] {
         let missing = missing_keys(&backticked(text));
@@ -310,10 +312,12 @@ fn prose_units(text: &str) -> Vec<String> {
             continue;
         }
         let trimmed = line.trim_start();
-        let is_item = trimmed.starts_with("- ")
-            || trimmed
-                .split_once(". ")
-                .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+        let is_item = ["- ", "* ", "+ ", "> "]
+            .iter()
+            .any(|marker| trimmed.starts_with(marker))
+            || trimmed.split_once(". ").is_some_and(|(n, _)| {
+                (1..=2).contains(&n.len()) && n.chars().all(|c| c.is_ascii_digit())
+            });
         if in_fence || line.starts_with('|') || line.starts_with('#') || line.trim().is_empty() {
             flush(&mut units, &mut current);
         } else {
@@ -367,7 +371,8 @@ fn readme_has_no_status_or_roadmap_bookkeeping() {
     let prose = without_code_and_tables(&readme);
     let banned = [
         "**Status",
-        "Planned",
+        "**Planned",
+        "not built",
         "crit",
         "deliberately",
         "Why not a PR",
@@ -411,6 +416,8 @@ fn prose_units_split_on_blank_lines_items_and_skip_code_and_tables() {
             "1. first last para"
         ]
     );
+    assert_eq!(prose_units("wrapped\n2024. year\n"), ["wrapped 2024. year"]);
+    assert_eq!(prose_units("a\n* b\n> c\n"), ["a", "* b", "> c"]);
 }
 
 #[test]
