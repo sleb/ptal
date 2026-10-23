@@ -297,8 +297,10 @@ fn read_optional_string(path: &Path) -> Result<Option<String>> {
     optional(path, |p| fs::read_to_string(p))
 }
 
-/// Write `bytes` to `temp` (truncating a stale one), fsync, and rename it to
-/// `target`. Does not sync the directory; the caller does that once.
+/// Write `bytes` to `temp`, fsync, and rename it to
+/// `target`. `File::create` deliberately truncates a stale `temp` left by a
+/// crashed write, so do not switch it to `create_new`. Does not sync the
+/// directory; the caller does that once.
 fn write_atomically(temp: &Path, target: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = File::create(temp).map_err(io_err(temp))?;
     file.write_all(bytes).map_err(io_err(temp))?;
