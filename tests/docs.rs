@@ -1,10 +1,12 @@
 //! Drift tests between the docs and the code they describe: every key in the
 //! help overlay's listing is named somewhere in README's Keys section and in
 //! `docs/interfaces.md` (not checked per mode), and no cell
-//! of the interface map is too long to read.
+//! of the interface map is too long to read. They also hold the contributor
+//! docs (`AGENTS.md`, the ptal-plan skill) to the repo's current vocabulary:
+//! no milestone-status bookkeeping, and one definition of done.
 //!
-//! These read `README.md` and `docs/` at run time, so the file is not part of
-//! the published package (the package ships no `docs/`).
+//! These read the repo at run time, so the file is not part of the published
+//! package.
 
 use std::collections::HashSet;
 use std::fs;
@@ -140,6 +142,144 @@ fn interface_cells_are_short() {
         "cells over {MAX_CELL_WORDS} words; move detail under the tables:\n{}",
         long.join("\n")
     );
+}
+
+/// Every banned phrase in `text`, compared without case, as `phrase`, or
+/// empty. Case-insensitive so "mvp" and "Built:" variants are caught too.
+fn banned_phrases(text: &str, banned: &[&str]) -> Vec<String> {
+    let lower = text.to_lowercase();
+    banned
+        .iter()
+        .filter(|phrase| lower.contains(&phrase.to_lowercase()))
+        .map(|phrase| format!("{phrase:?}"))
+        .collect()
+}
+
+/// The titles of `text`'s markdown headings, lowercased and without `#`s or
+/// bold markers. A status section is a heading titled "status" at any level.
+fn headings(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|line| line.starts_with('#'))
+        .map(|line| {
+            line.trim_start_matches('#')
+                .trim()
+                .trim_matches('*')
+                .trim()
+                .to_lowercase()
+        })
+        .collect()
+}
+
+/// The commands in `AGENTS.md`'s "Green gate for every step:" line, in order.
+fn gate_commands() -> Vec<String> {
+    let agents = read("AGENTS.md");
+    let line = agents
+        .lines()
+        .find(|line| line.starts_with("Green gate for every step:"))
+        .expect("AGENTS.md has no \"Green gate for every step:\" line");
+    line.split("`, `")
+        .map(|command| {
+            command
+                .trim_matches(|c: char| c == '`' || c == ';')
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn agents_has_no_mvp_or_status_bookkeeping() {
+    let text = read("AGENTS.md");
+    let banned = [
+        "mvp",
+        "once the crate exists",
+        "labeled deferred",
+        "built:",
+        "built -",
+    ];
+    let found = banned_phrases(&text, &banned);
+    assert!(found.is_empty(), "AGENTS.md still says {found:?}");
+    assert!(
+        !headings(&text).iter().any(|heading| heading == "status"),
+        "AGENTS.md has a status section"
+    );
+}
+
+#[test]
+fn ptal_plan_skill_has_no_status_bookkeeping() {
+    let text = read(".agents/skills/ptal-plan/SKILL.md");
+    let banned = [
+        "mvp",
+        "architecture status",
+        "readme status",
+        "built:",
+        "built -",
+        "component-local",
+        "deferred within",
+    ];
+    let found = banned_phrases(&text, &banned);
+    assert!(found.is_empty(), "the ptal-plan skill still says {found:?}");
+    assert!(
+        !headings(&text).iter().any(|heading| heading == "status"),
+        "the ptal-plan skill has a status section"
+    );
+}
+
+#[test]
+fn ptal_plan_skill_defers_agreements_to_agents() {
+    let text = read(".agents/skills/ptal-plan/SKILL.md");
+    let agreements = section(&text, "## Working agreements", "## Plan template");
+    for expected in ["AGENTS.md", "green gate"] {
+        assert!(
+            agreements.contains(expected),
+            "the skill's Working agreements do not name {expected:?}"
+        );
+    }
+    // The section points at the gate; it does not list the commands. Elsewhere
+    // in the skill a plan step may still say "run `cargo test <name>`".
+    assert!(
+        !agreements.contains("cargo"),
+        "the skill restates gate commands in Working agreements: {agreements}"
+    );
+    // "five-command" is a claim about AGENTS.md's gate, so it must match it.
+    if text.contains("five-command") {
+        let commands = gate_commands();
+        assert_eq!(
+            commands.len(),
+            5,
+            "the skill says five-command, AGENTS.md's gate has {}: {commands:?}",
+            commands.len()
+        );
+    }
+}
+
+/// The `repository` URL in `Cargo.toml`; the crate docs derive the README link
+/// from it so a repository move updates one place.
+fn repository() -> String {
+    let manifest = read("Cargo.toml");
+    manifest
+        .lines()
+        .find(|line| line.trim_start().starts_with("repository ="))
+        .and_then(|line| line.split('"').nth(1))
+        .expect("Cargo.toml has no quoted repository URL")
+        .to_string()
+}
+
+#[test]
+fn crate_docs_say_binary_first_unstable_and_link_readme() {
+    let text = read("src/lib.rs");
+    let docs = text
+        .lines()
+        .take_while(|line| line.starts_with("//!"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!docs.is_empty(), "src/lib.rs has no crate-level docs");
+    let readme = format!("{}/blob/main/README.md", repository());
+    for expected in ["binary-first", "unstable", readme.as_str()] {
+        assert!(
+            docs.contains(expected),
+            "the crate docs do not name {expected:?}"
+        );
+    }
 }
 
 #[test]

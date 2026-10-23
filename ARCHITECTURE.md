@@ -771,9 +771,9 @@ The crate is publishable; the procedure is [docs/releasing.md](docs/releasing.md
 The `include` allowlist in `Cargo.toml` is the source of truth for what ships
 (`src/`, the integration tests, `Cargo.toml`, `Cargo.lock`, `README.md`, `LICENSE`); the
 test files are listed one by one, so a new one is added by hand or it does not
-ship. `tests/docs.rs` is left out on purpose: it reads `docs/`, which the package
-does not hold. `docs/`,
-`ARCHITECTURE.md`, `CHANGELOG.md`, `scripts/` and agent/editor directories are
+ship. `tests/docs.rs` is left out on purpose: it reads `docs/`, `AGENTS.md` and
+`.agents/skills/`, which the package does not hold. `docs/`,
+`ARCHITECTURE.md`, `CHANGELOG.md` and agent/editor directories are
 deliberately excluded; README links to them are relative, which GitHub and
 crates.io (via `repository`) resolve against the repo. The allowlist is
 reviewed against the previous tag's package list before every publish.
