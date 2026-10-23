@@ -2807,7 +2807,7 @@ mod tests {
 
     #[test]
     fn only_mods_reads_key_modifiers_outside_tests() {
-        let src = include_str!("app.rs");
+        let src = include_str!("mod.rs");
         let production = &src[..src.find("#[cfg(test)]").expect("test module")];
         let reads = production
             .lines()
@@ -4712,7 +4712,7 @@ mod tests {
 
     #[test]
     fn the_listed_keys_are_named_in_interfaces_md() {
-        let doc = include_str!("../../docs/interfaces.md");
+        let doc = include_str!("../../../docs/interfaces.md");
         for section in keys::HELP {
             for entry in section.entries {
                 for name in keys::names(entry.keys) {

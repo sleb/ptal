@@ -2,9 +2,9 @@
 //! Normal mode and the thread panel, and the rows that lay it out.
 //!
 //! The key handlers in [`super::app`] are the behavior; [`HELP`] is the
-//! documentation of it. A probe test in `app.rs` presses every candidate key
-//! in each mode and fails when a key does something that is not listed, or a
-//! listed key does nothing, so the two cannot drift apart.
+//! documentation of it. A probe test in `tui::app` presses every candidate
+//! key in each mode and fails when a key does something that is not listed,
+//! or a listed key does nothing, so the two cannot drift apart.
 
 use super::wrap;
 
