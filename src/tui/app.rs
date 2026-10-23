@@ -1378,15 +1378,52 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
     }
 }
 
+/// The modifiers of one key, read once so every handler agrees on them.
+///
+/// Terminals report AltGr as ctrl+alt, so a key with both held is text (it
+/// types `[`, `{`, `@`, ...), not a chord: [`ctrl_only`](Self::ctrl_only) is
+/// a real ctrl chord, [`ctrl`](Self::ctrl) is the looser test of modes that
+/// ignore ctrl+alt letters. No handler reads `KeyEvent::modifiers` itself.
+#[derive(Clone, Copy)]
+struct Mods(KeyModifiers);
+
+impl Mods {
+    fn of(key: KeyEvent) -> Self {
+        Self(key.modifiers)
+    }
+
+    /// Ctrl is held, AltGr included.
+    fn ctrl(self) -> bool {
+        self.0.contains(KeyModifiers::CONTROL)
+    }
+
+    /// Ctrl without alt: a real ctrl chord, never AltGr.
+    fn ctrl_only(self) -> bool {
+        self.ctrl() && !self.alt_gr()
+    }
+
+    /// Ctrl or alt is held.
+    fn chord(self) -> bool {
+        self.ctrl() || self.0.contains(KeyModifiers::ALT)
+    }
+
+    /// Ctrl and alt together: how terminals report AltGr.
+    fn alt_gr(self) -> bool {
+        self.0.contains(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    }
+
+    fn shift(self) -> bool {
+        self.0.contains(KeyModifiers::SHIFT)
+    }
+}
+
 /// Apply a key that moves the cursor; `false` if `key` is not one.
 ///
 /// Normal and Visual share it, so the two modes move alike.
 fn movement(app: &mut App, key: KeyEvent) -> bool {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let chord = ctrl || key.modifiers.contains(KeyModifiers::ALT);
-    // The letter aliases are plain keys only; ctrl+j is not `j`. Terminals
-    // report AltGr as ctrl+alt, which still types `[` and `]`.
-    let ctrl_only = ctrl && !key.modifiers.contains(KeyModifiers::ALT);
+    let mods = Mods::of(key);
+    let (ctrl, chord, ctrl_only) = (mods.ctrl(), mods.chord(), mods.ctrl_only());
+    // The letter aliases are plain keys only; ctrl+j is not `j`.
     let code = match key.code {
         KeyCode::Char('j') if !ctrl => KeyCode::Down,
         KeyCode::Char('k') if !ctrl => KeyCode::Up,
@@ -1417,7 +1454,7 @@ fn movement(app: &mut App, key: KeyEvent) -> bool {
 /// `q` or `ctrl+c`: quit in Normal mode. Every sub-mode that is not typing
 /// leaves on these or `esc` instead, so one stray `q` cannot quit.
 fn is_quit(key: KeyEvent) -> bool {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let ctrl = Mods::of(key).ctrl();
     matches!(key.code, KeyCode::Char('c') if ctrl)
         || matches!(key.code, KeyCode::Char('q') if !ctrl)
 }
@@ -1434,7 +1471,7 @@ fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     if movement(app, key) {
         return None;
     }
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let ctrl = Mods::of(key).ctrl();
     match key.code {
         KeyCode::Char('?') if !ctrl => app.open_overlay(Overlay::Help, Back::Normal),
         KeyCode::Char('i') if !ctrl => app.open_overlay(Overlay::Review, Back::Normal),
@@ -1474,7 +1511,7 @@ fn visual_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     if movement(app, key) {
         return None;
     }
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let ctrl = Mods::of(key).ctrl();
     match key.code {
         KeyCode::Char('v' | 'V') if !ctrl => app.mode = Mode::Normal,
         KeyCode::Char('/') if !ctrl => app.start_search(Some(anchor)),
@@ -1500,9 +1537,7 @@ fn search_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         return None;
     };
     let (anchor, origin) = (*anchor, *origin);
-    // Terminals report AltGr as ctrl+alt, so only ctrl without alt is a chord.
-    let ctrl =
-        key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT);
+    let ctrl = Mods::of(key).ctrl_only();
     let back = anchor.map_or(Mode::Normal, |anchor| Mode::Visual { anchor });
     match key.code {
         KeyCode::Esc | KeyCode::Char('c') if key.code == KeyCode::Esc || ctrl => {
@@ -1546,7 +1581,7 @@ fn overlay_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let Mode::Overlay { kind, back, scroll } = app.mode else {
         return None;
     };
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let ctrl = Mods::of(key).ctrl();
     let half = (app.overlay_body_rows() / 2).max(1);
     let to = match key.code {
         KeyCode::Esc | KeyCode::Char('q') if !ctrl => return close(app, back),
@@ -1578,8 +1613,8 @@ fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         app.mode = Mode::Normal;
         return None;
     }
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let mods = Mods::of(key);
+    let (ctrl, shift) = (mods.ctrl(), mods.shift());
     let count = app.threads_on(app.cursor).len().max(1);
     match key.code {
         KeyCode::Char('?') if !ctrl => {
@@ -1632,9 +1667,10 @@ fn saved_body(draft: &str) -> &str {
 /// a close's verdict; `enter` starts a new line; the rest edit the draft.
 /// `esc` or `ctrl+c` returns to where the box came from: at once for a
 /// blank draft, else on a second press, any other key in between keeping
-/// the draft (and cancelling a pending confirmation).
+/// the draft (and cancelling a pending confirmation). Only ctrl without alt
+/// makes a chord: AltGr characters (ctrl+alt) are inserted as text.
 fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let ctrl = Mods::of(key).ctrl_only();
     let save = ctrl && matches!(key.code, KeyCode::Char('s' | 'S'));
     // Only a save needs these; computed before the mode is borrowed.
     let (selection, open_threads) = if save {
@@ -2748,6 +2784,80 @@ mod tests {
         send(&mut a, [ctrl('d'), ctrl('u')]);
 
         assert_eq!(draft(&a), ("", 0));
+    }
+
+    #[test]
+    fn altgr_characters_are_text_in_the_comment_box() {
+        let mut a = input_app();
+
+        send(&mut a, [alt_graph('{'), alt_graph('@'), alt_graph('ł')]);
+
+        assert_eq!(draft(&a), ("{@ł", 3));
+    }
+
+    #[test]
+    fn ctrl_s_saves_and_ctrl_c_cancels_with_and_without_shift() {
+        for mods in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ] {
+            let chord = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), mods));
+            let mut a = input_app();
+            typed(&mut a, "why?");
+            let effect = update(&mut a, chord('s'));
+            assert!(matches!(effect, Some(Effect::Add { .. })), "{effect:?}");
+
+            let mut a = input_app();
+            send(&mut a, [chord('c')]);
+            assert_eq!(a.mode, Mode::Normal);
+        }
+    }
+
+    #[test]
+    fn altgr_s_and_c_are_text_not_save_or_cancel() {
+        let mut a = input_app();
+
+        assert_eq!(update(&mut a, alt_graph('s')), None);
+        send(&mut a, [alt_graph('c')]);
+
+        assert_eq!(draft(&a), ("sc", 2));
+    }
+
+    #[test]
+    fn mods_answer_for_each_modifier_combination() {
+        use KeyModifiers as K;
+        let of = |m| Mods::of(KeyEvent::new(KeyCode::Char('x'), m));
+        // (mods, ctrl, ctrl_only, chord, alt_gr, shift)
+        let table = [
+            (K::NONE, false, false, false, false, false),
+            (K::SHIFT, false, false, false, false, true),
+            (K::CONTROL, true, true, true, false, false),
+            (K::ALT, false, false, true, false, false),
+            (K::CONTROL | K::ALT, true, false, true, true, false),
+            (K::CONTROL | K::SHIFT, true, true, true, false, true),
+        ];
+        for (m, ctrl, ctrl_only, chord, alt_gr, shift) in table {
+            let got = of(m);
+            assert_eq!(
+                (
+                    got.ctrl(),
+                    got.ctrl_only(),
+                    got.chord(),
+                    got.alt_gr(),
+                    got.shift()
+                ),
+                (ctrl, ctrl_only, chord, alt_gr, shift),
+                "{m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_mods_reads_key_modifiers_outside_tests() {
+        let src = include_str!("app.rs");
+        let production = &src[..src.find("#[cfg(test)]").expect("test module")];
+        let reads = production.matches(".modifiers").count();
+        assert_eq!(reads, 1, "handlers must go through Mods::of");
     }
 
     #[test]

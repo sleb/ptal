@@ -642,7 +642,11 @@ Its parts:
   as a header, what the latest log entry was, by whom (and which side), when
   and on which revision, then its whole note, wrapped; it scrolls and
   closes the same way, with `i` in place of `?`. The
-  handlers are not table-driven; a probe test in `tui::app` presses every
+  handlers are not table-driven; every handler reads a key's modifiers
+  through one private `Mods` helper (`ctrl`, `ctrl_only`, `chord`, `alt_gr`,
+  `shift`), never `KeyEvent::modifiers`. Terminals report AltGr as ctrl+alt,
+  so the comment box inserts such characters as text and `ctrl+s`/`ctrl+c`
+  need ctrl without alt; a probe test in `tui::app` presses every
   candidate key in each section's fixture and fails when a key does
   something unlisted or a listed key does nothing.
 - `tui::search`: `find(line, query) -> Vec<Range<usize>>` and
@@ -663,7 +667,7 @@ Its parts:
   marked. The prompt replaces the footer row: `/query` (its tail, after `…`,
   when too wide) plus ` [no match]` or ` [wrapped]` only when that fits whole. Backspace on an empty query
   leaves the prompt. `n`/`N` ignore ctrl/alt chords; the prompt treats
-  ctrl+alt (AltGr) as text.
+  ctrl+alt (AltGr) as text, by the same `Mods` helper as `tui::app`.
 - `tui::render`: `render(&App, &mut Frame)`, pure over state. One file line
   is one or more screen rows (word-wrapped by `tui::wrap`, tabs shown as four
   spaces). A well-formed markdown table shows aligned, in place; one too
