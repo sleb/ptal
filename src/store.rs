@@ -150,11 +150,7 @@ impl Store {
             .dir_for(&canonical(file)?)
             .join(REVISIONS_DIR)
             .join(sha256);
-        match fs::read(&path) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(source) => Err(Error::Io { path, source }),
-        }
+        read_optional(&path)
     }
 
     /// Run `f` as one read-modify-write transaction on the review of `file`.
@@ -175,10 +171,7 @@ impl Store {
     ) -> Result<R> {
         let canonical = canonical(file)?;
         let dir = self.dir_for(&canonical);
-        fs::create_dir_all(&dir).map_err(|source| Error::Io {
-            path: dir.clone(),
-            source,
-        })?;
+        fs::create_dir_all(&dir).map_err(io_err(&dir))?;
         let _lock = Lock::acquire(&dir.join(LOCK_FILE), self.lock_timeout)?;
 
         let review_path = dir.join(REVIEW_FILE);
@@ -217,14 +210,7 @@ impl ReviewReader {
     /// # Errors
     /// [`Error::Io`].
     pub fn bytes(&self) -> Result<Option<Vec<u8>>> {
-        match fs::read(&self.review_path) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(source) => Err(Error::Io {
-                path: self.review_path.clone(),
-                source,
-            }),
-        }
+        read_optional(&self.review_path)
     }
 }
 
@@ -251,10 +237,6 @@ impl Snapshots {
         if self.staged.is_empty() {
             return Ok(());
         }
-        let io_err = |path: &Path| {
-            let path = path.to_path_buf();
-            move |source| Error::Io { path, source }
-        };
         fs::create_dir_all(dir).map_err(io_err(dir))?;
         for (sha, bytes) in self.staged {
             let target = dir.join(&sha);
@@ -262,11 +244,7 @@ impl Snapshots {
                 continue;
             }
             let temp = dir.join(format!("{sha}.tmp"));
-            let mut file = File::create(&temp).map_err(io_err(&temp))?;
-            file.write_all(&bytes).map_err(io_err(&temp))?;
-            file.sync_all().map_err(io_err(&temp))?;
-            drop(file);
-            fs::rename(&temp, &target).map_err(io_err(&target))?;
+            write_atomically(&temp, &target, &bytes)?;
         }
         sync_dir(dir);
         Ok(())
@@ -282,10 +260,53 @@ impl Snapshots {
 /// assert_ne!(content_hash(b"a\n"), content_hash(b"a\r\n"));
 /// ```
 pub fn content_hash(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut hex = String::with_capacity(64);
+    for b in Sha256::digest(bytes) {
+        hex.push(char::from(DIGITS[usize::from(b >> 4)]));
+        hex.push(char::from(DIGITS[usize::from(b & 0xf)]));
+    }
+    hex
+}
+
+/// Map an I/O failure on `path` to [`Error::Io`]; for `map_err`.
+///
+/// Borrows `path`; it is copied only when an error is built.
+fn io_err(path: &Path) -> impl FnOnce(io::Error) -> Error + '_ {
+    move |source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+/// Run a read, turning `NotFound` into `None` and any other failure into
+/// [`Error::Io`] on `path`.
+fn optional<T>(path: &Path, read: impl FnOnce(&Path) -> io::Result<T>) -> Result<Option<T>> {
+    match read(path) {
+        Ok(value) => Ok(Some(value)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(io_err(path)(e)),
+    }
+}
+
+fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
+    optional(path, |p| fs::read(p))
+}
+
+fn read_optional_string(path: &Path) -> Result<Option<String>> {
+    optional(path, |p| fs::read_to_string(p))
+}
+
+/// Write `bytes` to `temp`, fsync, and rename it to
+/// `target`. `File::create` deliberately truncates a stale `temp` left by a
+/// crashed write, so do not switch it to `create_new`. Does not sync the
+/// directory; the caller does that once.
+fn write_atomically(temp: &Path, target: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = File::create(temp).map_err(io_err(temp))?;
+    file.write_all(bytes).map_err(io_err(temp))?;
+    file.sync_all().map_err(io_err(temp))?;
+    drop(file);
+    fs::rename(temp, target).map_err(io_err(target))
 }
 
 /// Persist renames in `dir`; best effort, not every platform allows it.
@@ -303,17 +324,8 @@ fn canonical(file: &Path) -> Result<PathBuf> {
 }
 
 fn read_review(review_path: &Path, canonical: &Path) -> Result<Review> {
-    let text = match fs::read_to_string(review_path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Ok(Review::new(canonical.to_string_lossy()));
-        }
-        Err(source) => {
-            return Err(Error::Io {
-                path: review_path.to_path_buf(),
-                source,
-            });
-        }
+    let Some(text) = read_optional_string(review_path)? else {
+        return Ok(Review::new(canonical.to_string_lossy()));
     };
     let corrupt = |source| Error::Corrupt {
         path: review_path.to_path_buf(),
@@ -336,20 +348,10 @@ fn read_review(review_path: &Path, canonical: &Path) -> Result<Review> {
 }
 
 fn write_atomic(dir: &Path, review: &Review) -> Result<()> {
-    let io_err = |path: &Path| {
-        let path = path.to_path_buf();
-        move |source| Error::Io { path, source }
-    };
-    let temp = dir.join(TEMP_FILE);
-    let target = dir.join(REVIEW_FILE);
     let mut json = serde_json::to_vec_pretty(review).expect("review serializes");
     json.push(b'\n');
 
-    let mut file = File::create(&temp).map_err(io_err(&temp))?;
-    file.write_all(&json).map_err(io_err(&temp))?;
-    file.sync_all().map_err(io_err(&temp))?;
-    drop(file);
-    fs::rename(&temp, &target).map_err(io_err(&target))?;
+    write_atomically(&dir.join(TEMP_FILE), &dir.join(REVIEW_FILE), &json)?;
     sync_dir(dir);
     Ok(())
 }
@@ -359,16 +361,12 @@ struct Lock(File);
 
 impl Lock {
     fn acquire(path: &Path, timeout: Duration) -> Result<Self> {
-        let io_err = |source| Error::Io {
-            path: path.to_path_buf(),
-            source,
-        };
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .open(path)
-            .map_err(io_err)?;
+            .map_err(io_err(path))?;
         let deadline = Instant::now() + timeout;
         loop {
             match file.try_lock() {
@@ -377,7 +375,7 @@ impl Lock {
                     thread::sleep(LOCK_RETRY_INTERVAL);
                 }
                 Err(TryLockError::WouldBlock) => return Err(Error::Locked),
-                Err(TryLockError::Error(e)) => return Err(io_err(e)),
+                Err(TryLockError::Error(e)) => return Err(io_err(path)(e)),
             }
         }
     }
@@ -428,6 +426,84 @@ mod tests {
             file,
             store,
         }
+    }
+
+    // --- io helpers ---
+
+    #[test]
+    fn io_err_carries_the_path_and_the_source() {
+        let err = io_err(Path::new("/some/file"))(io::Error::from(io::ErrorKind::PermissionDenied));
+
+        match err {
+            Error::Io { path, source } => {
+                assert_eq!(path, Path::new("/some/file"));
+                assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("expected Error::Io, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_optional_is_none_for_a_missing_path_and_bytes_for_a_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("f");
+
+        assert!(read_optional(&file).unwrap().is_none());
+        fs::write(&file, b"hi").unwrap();
+        assert_eq!(read_optional(&file).unwrap().as_deref(), Some(&b"hi"[..]));
+    }
+
+    #[test]
+    fn read_optional_of_a_directory_is_an_io_error_with_that_path() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        match read_optional(tmp.path()) {
+            Err(Error::Io { path, .. }) => assert_eq!(path, tmp.path()),
+            other => panic!("expected Error::Io, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_optional_string_of_non_utf8_is_an_io_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("f");
+        fs::write(&file, [0xff, 0xfe]).unwrap();
+
+        assert!(matches!(
+            read_optional_string(&file),
+            Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::InvalidData
+        ));
+        assert!(
+            read_optional_string(&tmp.path().join("missing"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn write_atomically_replaces_target_and_a_stale_temp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (temp, target) = (tmp.path().join("t.tmp"), tmp.path().join("t"));
+        fs::write(&temp, "stale stale stale").unwrap();
+        fs::write(&target, "old").unwrap();
+
+        write_atomically(&temp, &target, b"new").unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert!(!temp.exists());
+    }
+
+    #[test]
+    fn write_atomically_into_a_missing_dir_fails_on_the_temp_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let temp = tmp.path().join("nope/t.tmp");
+        let target = tmp.path().join("nope/t");
+
+        match write_atomically(&temp, &target, b"x") {
+            Err(Error::Io { path, .. }) => assert_eq!(path, temp),
+            other => panic!("expected Error::Io, got {other:?}"),
+        }
+        assert!(!target.exists());
     }
 
     // --- data dir resolution ---
@@ -718,6 +794,22 @@ mod tests {
             content_hash(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn content_hash_pads_each_byte_to_two_digits() {
+        // Search for an input whose digest has a byte below 0x10, so the
+        // zero padding is exercised.
+        let input = (0u32..)
+            .map(|n| n.to_string().into_bytes())
+            .find(|b| Sha256::digest(b).iter().any(|&x| x < 0x10))
+            .unwrap();
+        let hex = content_hash(&input);
+
+        assert_eq!(hex.len(), 64);
+        for (i, b) in Sha256::digest(&input).iter().enumerate() {
+            assert_eq!(&hex[2 * i..2 * i + 2], format!("{b:02x}"));
+        }
     }
 
     #[test]
