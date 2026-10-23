@@ -136,6 +136,7 @@ mod tests {
     use crate::review::{ThreadWrite, View};
     use crate::tui::app::fixtures::*;
     use crate::tui::app::{Event, update};
+    use crate::tui::test_support::*;
     use ratatui::crossterm::event::KeyModifiers;
 
     #[test]
@@ -349,10 +350,6 @@ mod tests {
         }
     }
 
-    fn paste(text: &str) -> Event {
-        Event::Paste(text.into())
-    }
-
     #[test]
     fn a_paste_inserts_at_the_cursor_and_the_box_grows_to_fit() {
         let mut a = app(5, 40);
@@ -408,9 +405,9 @@ mod tests {
         let threads = [chatty("c1", (2, 2), 1)];
         let normal = panel_app(&threads, 20);
         let mut visual = normal.clone();
-        send(&mut visual, [ch('v'), ch('j')]);
+        typed(&mut visual, "vj");
         let mut search = normal.clone();
-        send(&mut search, [ch('/'), ch('l')]);
+        typed(&mut search, "/l");
         let mut panel = normal.clone();
         send(&mut panel, [ch('j'), press(KeyCode::Enter)]);
         let mut help = normal.clone();
@@ -636,10 +633,6 @@ mod tests {
             Mode::Input { target, .. } => target,
             other => panic!("not in Input mode: {other:?}"),
         }
-    }
-
-    fn shift(c: char) -> Event {
-        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT))
     }
 
     #[test]

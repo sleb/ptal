@@ -553,6 +553,7 @@ mod tests {
     use super::*;
     use crate::anchor::ChangeKind;
     use crate::model::{State, Status};
+    use crate::tui::test_support::*;
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     // --- modifiers ---
@@ -622,12 +623,12 @@ mod tests {
         let named = [KeyCode::Down, KeyCode::Up, KeyCode::Home, KeyCode::End];
         let normal = || {
             let mut a = app(20, 10);
-            send(&mut a, [ch('j'), ch('j')]);
+            typed(&mut a, "jj");
             a
         };
         let help = || {
             let mut a = app(5, 4);
-            send(&mut a, [ch('?'), ch('j')]);
+            typed(&mut a, "?j");
             a
         };
         let panel = || {
@@ -687,7 +688,7 @@ mod tests {
 
     // --- the key listing and the handlers agree ---
 
-    fn key_event(name: &str) -> KeyEvent {
+    fn key(name: &str) -> KeyEvent {
         let none = KeyModifiers::NONE;
         match name {
             "enter" => KeyEvent::new(KeyCode::Enter, none),
@@ -810,7 +811,7 @@ mod tests {
             .entries
             .iter()
             .flat_map(|entry| keys::names(entry.keys))
-            .map(key_event)
+            .map(key)
             .collect()
     }
 

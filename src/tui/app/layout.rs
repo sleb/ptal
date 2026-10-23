@@ -222,6 +222,7 @@ mod tests {
     use crate::model::{State, Status};
     use crate::tui::app::fixtures::*;
     use crate::tui::app::{Effect, Event, update};
+    use crate::tui::test_support::*;
     use ratatui::crossterm::event::KeyCode;
     use ratatui::style::{Color, Modifier};
 
@@ -306,7 +307,7 @@ mod tests {
     fn j_scrolls_so_a_wrapped_cursor_line_is_fully_shown() {
         let mut a = wrapped(&[W3, W3, W3, "x"], (14, 9)); // height 7
 
-        send(&mut a, [ch('j'), ch('j')]);
+        typed(&mut a, "jj");
 
         assert_eq!(at(&a), (2, 1), "lines 1 and 2 take 6 of the 7 rows");
         assert!(cursor_line_shown(&a));
@@ -620,7 +621,7 @@ mod tests {
     fn j_moves_over_a_wrapped_table_line_in_one_step_and_enter_comments_on_it() {
         let mut a = wrapped(&DECISION, (24, 10));
 
-        send(&mut a, [ch('j'), ch('j')]);
+        typed(&mut a, "jj");
         assert_eq!(a.cursor, 2);
         send(&mut a, [ch('j')]);
         assert_eq!(a.cursor, 3);
@@ -654,7 +655,7 @@ mod tests {
     fn j_moves_through_a_table_by_file_line_and_enter_comments_on_one() {
         let mut a = wrapped(&TABLE, (40, 10));
 
-        send(&mut a, [ch('j'), ch('j')]);
+        typed(&mut a, "jj");
         assert_eq!(a.cursor, 2);
         send(&mut a, [ch('j'), press(KeyCode::Enter)]);
         typed(&mut a, "why?");
@@ -724,7 +725,7 @@ mod tests {
     #[test]
     fn input_box_shrinks_the_view_and_keeps_the_cursor_visible() {
         let mut a = app(20, 8); // view height 6 in Normal
-        send(&mut a, [ch('j'), ch('j'), ch('j'), ch('j'), ch('j')]);
+        typed(&mut a, "jjjjj");
         assert_eq!(at(&a), (5, 0), "cursor on the last visible row");
 
         send(&mut a, [press(KeyCode::Enter)]);

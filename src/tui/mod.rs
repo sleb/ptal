@@ -21,6 +21,9 @@ pub mod search;
 pub mod table;
 pub mod wrap;
 
+#[cfg(test)]
+mod test_support;
+
 use std::io::{self, Write};
 use std::ops::ControlFlow;
 use std::panic;

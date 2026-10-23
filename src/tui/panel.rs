@@ -123,44 +123,7 @@ fn indented(text: &str, indent: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Anchor, Comment, Thread};
-
-    fn thread(id: &str, quote: &str, status: Status, state: State) -> ThreadView {
-        ThreadView {
-            thread: Thread {
-                id: id.into(),
-                anchor: Anchor {
-                    revision: None,
-                    start_line: 1,
-                    end_line: 1,
-                    quote: quote.into(),
-                },
-                status,
-                comments: vec![],
-            },
-            state,
-        }
-    }
-
-    fn comment(mut view: ThreadView, author: &str, at: &str, body: &str) -> ThreadView {
-        let id = format!("{}-{}", view.thread.id, view.thread.comments.len());
-        view.thread.comments.push(Comment {
-            id,
-            author: author.into(),
-            body: body.into(),
-            created_at: at.into(),
-            revision: None,
-        });
-        view
-    }
-
-    fn resolved() -> Status {
-        Status::Resolved {
-            resolved_by: "claude".into(),
-            resolved_at: "2026-10-12T11:00:00Z".into(),
-            resolved_revision: None,
-        }
-    }
+    use crate::tui::test_support::*;
 
     fn texts(layout: &Layout) -> Vec<&str> {
         layout.lines.iter().map(|l| l.text.as_str()).collect()
@@ -173,7 +136,7 @@ mod tests {
     }
 
     fn one() -> ThreadView {
-        let view = thread("c1", "ship it", Status::Open, State::Current);
+        let view = quoted(view("c1", (1, 1), Status::Open, State::Current), "ship it");
         let view = comment(view, "scott", "2026-10-12T09:30:15Z", "Why now?");
         comment(
             view,
@@ -206,7 +169,7 @@ mod tests {
 
     #[test]
     fn a_multi_line_quote_gets_a_marker_on_every_line() {
-        let view = thread("c1", "one\ntwo", Status::Open, State::Current);
+        let view = quoted(view("c1", (1, 1), Status::Open, State::Current), "one\ntwo");
 
         let layout = layout(&[&view], 0, 40);
 
@@ -216,7 +179,7 @@ mod tests {
     #[test]
     fn a_resolved_thread_says_who_resolved_it_and_is_dim() {
         let view = comment(
-            thread("c2", "q", resolved(), State::Current),
+            quoted(view("c2", (1, 1), resolved(), State::Current), "q"),
             "scott",
             "2026-10-12T09:00:00Z",
             "hi",
@@ -230,8 +193,8 @@ mod tests {
 
     #[test]
     fn an_outdated_thread_is_labeled() {
-        let open = thread("c1", "q", Status::Open, State::Outdated);
-        let done = thread("c2", "q", resolved(), State::Outdated);
+        let open = quoted(view("c1", (1, 1), Status::Open, State::Outdated), "q");
+        let done = quoted(view("c2", (1, 1), resolved(), State::Outdated), "q");
 
         let layout = layout(&[&open, &done], 0, 40);
 
@@ -257,7 +220,7 @@ mod tests {
     #[test]
     fn bodies_wrap_at_the_width_and_keep_blank_lines() {
         let view = comment(
-            thread("c1", "q", Status::Open, State::Current),
+            quoted(view("c1", (1, 1), Status::Open, State::Current), "q"),
             "claude",
             "2026-10-12T09:00:00Z",
             "alpha beta gamma\n\ndelta",
@@ -275,7 +238,7 @@ mod tests {
     #[test]
     fn a_word_longer_than_the_row_is_hard_broken() {
         let view = comment(
-            thread("c1", "q", Status::Open, State::Current),
+            quoted(view("c1", (1, 1), Status::Open, State::Current), "q"),
             "claude",
             "2026-10-12T09:00:00Z",
             "abcdefghij",
@@ -289,7 +252,7 @@ mod tests {
     #[test]
     fn unrecognised_timestamps_are_shown_raw() {
         let view = comment(
-            thread("c1", "q", Status::Open, State::Current),
+            quoted(view("c1", (1, 1), Status::Open, State::Current), "q"),
             "x",
             "yesterday",
             "b",
@@ -302,7 +265,7 @@ mod tests {
 
     fn body(text: &str) -> ThreadView {
         comment(
-            thread("c1", "q", Status::Open, State::Current),
+            quoted(view("c1", (1, 1), Status::Open, State::Current), "q"),
             "claude",
             "2026-10-12T09:00:00Z",
             text,
@@ -349,7 +312,7 @@ mod tests {
             resolved_revision: None,
         };
         let view = comment(
-            thread("c12", "q", status, State::Outdated),
+            quoted(view("c12", (1, 1), status, State::Outdated), "q"),
             "山田太郎山田太郎",
             "2026-10-12T09:00:00Z",
             "b",
@@ -379,7 +342,7 @@ mod tests {
             resolved_revision: None,
         };
         let view = comment(
-            thread("c1", "q", status, State::Current),
+            quoted(view("c1", (1, 1), status, State::Current), "q"),
             "a\nb",
             "2026-10-12T09:00:00Z",
             "x",
@@ -414,7 +377,7 @@ mod tests {
     fn every_panel_row_fits_the_panel() {
         for text in CORPUS {
             let view = comment(
-                thread("c1", text, Status::Open, State::Outdated),
+                quoted(view("c1", (1, 1), Status::Open, State::Outdated), text),
                 text,
                 "2026-10-12T09:00:00Z",
                 text,

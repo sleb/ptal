@@ -113,14 +113,14 @@ fn typing(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn drawn(app: &App) -> Buffer {
+fn draw(app: &App) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(COLS, ROWS)).unwrap();
     terminal.draw(|frame| render(app, frame)).unwrap();
     terminal.backend().buffer().clone()
 }
 
 fn screen(app: &App) -> String {
-    let buffer = drawn(app);
+    let buffer = draw(app);
     buffer
         .content()
         .chunks(usize::from(COLS))
@@ -695,7 +695,7 @@ const MARKDOWN: &str = "# Title\n\n- item with `code`\n\n```\nfn main() {}\n```\
 /// and the fenced body on line 6 (`fn main() {}`, after the 4-column gutter)
 /// is cyan.
 fn looks_highlighted(app: &App) -> (bool, bool) {
-    let buffer = drawn(app);
+    let buffer = draw(app);
     let bold = (4..11).all(|x| buffer[(x, 1)].modifier.contains(Modifier::BOLD));
     let cyan = (4..16).all(|x| buffer[(x, 6)].fg == Color::Cyan);
     (bold, cyan)
@@ -927,7 +927,7 @@ fn a_failed_save_keeps_the_whole_multi_line_draft() {
 }
 
 fn reversed_columns(app: &App) -> Vec<(u16, u16)> {
-    let buffer = drawn(app);
+    let buffer = draw(app);
     let mut cells = Vec::new();
     for y in 0..ROWS {
         for x in 0..COLS {
@@ -1200,7 +1200,7 @@ fn review_json(sb: &Sandbox) -> PathBuf {
 /// The change glyph in the gutter of each file line (column 1, below the
 /// banner).
 fn change_glyphs(app: &App) -> Vec<String> {
-    let buffer = drawn(app);
+    let buffer = draw(app);
     (0..app.lines().len())
         .map(|line| {
             let y = u16::try_from(line).unwrap() + 1;

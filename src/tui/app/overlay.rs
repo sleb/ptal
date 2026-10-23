@@ -152,6 +152,7 @@ mod tests {
     use crate::review::View;
     use crate::tui::app::fixtures::*;
     use crate::tui::app::{Event, update};
+    use crate::tui::test_support::*;
 
     // --- help ---
 
@@ -224,11 +225,11 @@ mod tests {
     #[test]
     fn question_mark_does_not_open_help_in_visual_and_is_text_in_search_and_the_box() {
         let mut a = app(5, 10);
-        send(&mut a, [ch('v'), ch('?')]);
+        typed(&mut a, "v?");
         assert!(matches!(a.mode, Mode::Visual { .. }));
 
         let mut a = app(5, 10);
-        send(&mut a, [ch('/'), ch('?')]);
+        typed(&mut a, "/?");
         assert!(matches!(&a.mode, Mode::Search { query, .. } if query == "?"));
 
         let mut a = input_app();
@@ -242,7 +243,7 @@ mod tests {
         let max = a.help_rows().len() - a.overlay_body_rows();
         assert!(max > 3, "the listing must not fit in 10 rows");
 
-        send(&mut a, [ch('?'), ch('k')]);
+        typed(&mut a, "?k");
         assert_eq!(help_scroll(&a), 0);
         send(&mut a, [ch('j'), press(KeyCode::Down)]);
         assert_eq!(help_scroll(&a), 2);
@@ -334,7 +335,7 @@ mod tests {
         let max = overlay_text(&a).len() - a.overlay_body_rows();
         assert!(max > 3, "the note must not fit");
 
-        send(&mut a, [ch('j'), ch('j')]);
+        typed(&mut a, "jj");
         assert_eq!(help_scroll(&a), 2);
         send(&mut a, [ch('k')]);
         assert_eq!(help_scroll(&a), 1);
