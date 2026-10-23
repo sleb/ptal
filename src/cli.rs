@@ -15,8 +15,8 @@ use serde_json::json;
 use crate::error::Error;
 use crate::model::{Anchor, ReviewState, Side, State, Status, Thread};
 use crate::review::{
-    Clock, HandedOff, ReviewStatus, Reviews, SystemClock, SystemTicker, ThreadView, ThreadWrite,
-    Ticker, View, Waited, Woke,
+    Clock, HandedOff, POLL_INTERVAL, ReviewStatus, Reviews, SystemClock, SystemTicker, ThreadView,
+    ThreadWrite, Ticker, View, WAIT_READ_RETRIES, Waited, Woke,
 };
 use crate::store::Store;
 use crate::tui;
@@ -902,6 +902,20 @@ mod tests {
     use crate::store::Store;
     use std::io;
     use std::path::PathBuf;
+
+    #[test]
+    fn wait_help_states_the_poll_interval() {
+        let ms = POLL_INTERVAL.as_millis();
+        assert!(
+            WAIT_HELP.contains(&format!("re-reads every {ms} ms")),
+            "the wait help must say it polls every {ms} ms"
+        );
+        let secs = (POLL_INTERVAL * WAIT_READ_RETRIES).as_secs_f64().round();
+        assert!(
+            WAIT_HELP.contains(&format!("retried for\nabout {secs} s first")),
+            "the wait help must say a read error is retried for about {secs} s"
+        );
+    }
 
     fn io_err() -> io::Error {
         io::Error::other("boom")

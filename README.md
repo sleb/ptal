@@ -169,7 +169,7 @@ latest hand-off or close: `┃` (green) on lines added or edited since then,
 `}` / `{` jump between them. Opening ptal is not a look, so the markers stay
 until you hand off or close again; nothing is marked before your first one.
 
-The screen keeps itself current: about every 250 ms ptal checks whether the
+The screen keeps itself current: a few times a second ptal checks whether the
 file or its review changed, and shows the agent's replies, resolves, new
 threads, hand-backs and edits to the file without a restart. The cursor
 stays on the text it was on, and a half-typed comment or note is kept. If

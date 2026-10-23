@@ -36,7 +36,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
 | `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state, changes since the human's last look), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review`, `wait`, `against` (writes against the content shown), `stamp` |
 | `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff`, `wait` |
-| `tui` | Built: live refresh (the agent's writes and file edits show within 250 ms, the cursor following its text, drafts kept; writes against content not shown are refused), `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, hand off (`H`), close with a verdict (`C`), reopen the review (`O`), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
+| `tui` | Built: live refresh (the agent's writes and file edits show within a poll interval, the cursor following its text, drafts kept; writes against content not shown are refused), `Normal`/`Visual`/`Search`/`Panel`/`Input`/`Overlay` modes, a review banner (whose turn, the latest note), an `i` review overlay, hand off (`H`), close with a verdict (`C`), reopen the review (`O`), incremental line search with highlighted matches, gutter markers, word-wrapped long lines, aligned markdown tables (long cells wrap in their columns), thread panel, thread navigation, add a comment on a line or a selected line range, reply, resolve, reopen, multi-line comment box (wraps, grows, scrolls), bracketed paste into the comment box, `?` help overlay, `…` marks cut-off one-row text |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor` | Built: `map_range`, `Diff` (with `Diff::changes`), `clamp` (Myers line diff via `similar`) |
 
@@ -287,10 +287,10 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
   ticker's clock. Level-triggered on the state, checked before the first
   sleep, so a wait on a closed review or on the agent's turn returns at once
   and a hand-off between two waits can't be missed. It polls `review.json`
-  every `POLL_INTERVAL` (250 ms) through a `store::ReviewReader` resolved
+  every `POLL_INTERVAL` through a `store::ReviewReader` resolved
   once, after checking the file is readable; it never writes. An `Io`
   error reading `review.json` is retried on the next poll, up to
-  `WAIT_READ_RETRIES` (20, about 5 s) in a row; any other error (a corrupt
+  `WAIT_READ_RETRIES` in a row; any other error (a corrupt
   or newer review) ends the wait at once. A wait that times out without ever
   reading `review.json` fails with the last read's `Io` error rather than
   reporting a made-up state. `Ticker { now, sleep }` is injected like the
@@ -782,7 +782,7 @@ Its parts:
   last one (`None` at first), runs a full `view` and sends
   `Event::Refreshed`. A stamp or view that fails (an editor's save briefly
   removing the file) changes nothing and the next check retries; after
-  `REFRESH_FAILURES_SHOWN` (4, about a second) failures in a row it sends
+  `REFRESH_FAILURES_SHOWN` failures in a row it sends
   `Event::RefreshFailed("can't refresh: …")` once, which sets the footer
   `status`. It never writes. `run` is the loop on a `TerminalSession`: draw, `event::poll`
   until the next check is due (`POLL_INTERVAL` after the last), `step` the
