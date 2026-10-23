@@ -901,12 +901,14 @@ hand-off or close.
   CLI command with its TUI key. Any change to either front end's surface
   updates it in the same change.
 - **Lines are 1-based and inclusive** everywhere in the model and on the wire.
-- **Time and randomness are injected** (clock, id counter) so core logic is
-  testable deterministically.
+- **Time is injected** (the clock, and `wait`'s ticker) so core logic is
+  testable deterministically; ids come from `Review::next_comment_id`, plain
+  state, and nothing is random.
 - **Lints live in `Cargo.toml`'s `[lints]`:** a short curated list of clippy
   lints that caught real issues, not the `pedantic` group.
-- **Forward compatibility.** `schema_version` on every persisted file; refuse
-  newer versions, migrate older.
+- **Forward compatibility.** `schema_version` on every persisted file; newer
+  versions are refused. Older `review.json`s load through serde defaults, and
+  legacy anchors are adopted on the next write; there is no migration step.
 
 ## Testing strategy
 
