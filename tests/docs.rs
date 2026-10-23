@@ -144,12 +144,45 @@ fn interface_cells_are_short() {
     );
 }
 
-/// Every banned phrase in `text`, as `phrase`, or empty.
+/// Every banned phrase in `text`, compared without case, as `phrase`, or
+/// empty. Case-insensitive so "mvp" and "Built:" variants are caught too.
 fn banned_phrases(text: &str, banned: &[&str]) -> Vec<String> {
+    let lower = text.to_lowercase();
     banned
         .iter()
-        .filter(|phrase| text.contains(**phrase))
+        .filter(|phrase| lower.contains(&phrase.to_lowercase()))
         .map(|phrase| format!("{phrase:?}"))
+        .collect()
+}
+
+/// The titles of `text`'s markdown headings, lowercased and without `#`s or
+/// bold markers. A status section is a heading titled "status" at any level.
+fn headings(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|line| line.starts_with('#'))
+        .map(|line| {
+            line.trim_start_matches('#')
+                .trim()
+                .trim_matches('*')
+                .trim()
+                .to_lowercase()
+        })
+        .collect()
+}
+
+/// The commands in `AGENTS.md`'s "Green gate for every step:" line, in order.
+fn gate_commands() -> Vec<String> {
+    let agents = read("AGENTS.md");
+    let line = agents
+        .lines()
+        .find(|line| line.starts_with("Green gate for every step:"))
+        .expect("AGENTS.md has no \"Green gate for every step:\" line");
+    line.split("`, `")
+        .map(|command| {
+            command
+                .trim_matches(|c: char| c == '`' || c == ';')
+                .to_string()
+        })
         .collect()
 }
 
@@ -157,53 +190,78 @@ fn banned_phrases(text: &str, banned: &[&str]) -> Vec<String> {
 fn agents_has_no_mvp_or_status_bookkeeping() {
     let text = read("AGENTS.md");
     let banned = [
-        "MVP",
-        "Once the crate exists",
+        "mvp",
+        "once the crate exists",
         "labeled deferred",
-        "## Status",
-        "Built:",
+        "built:",
+        "built -",
     ];
     let found = banned_phrases(&text, &banned);
     assert!(found.is_empty(), "AGENTS.md still says {found:?}");
+    assert!(
+        !headings(&text).iter().any(|heading| heading == "status"),
+        "AGENTS.md has a status section"
+    );
 }
 
 #[test]
 fn ptal_plan_skill_has_no_status_bookkeeping() {
     let text = read(".agents/skills/ptal-plan/SKILL.md");
     let banned = [
-        "MVP",
-        "ARCHITECTURE status",
-        "README status",
-        "## Status",
-        "Built:",
+        "mvp",
+        "architecture status",
+        "readme status",
+        "built:",
+        "built -",
         "component-local",
-        "Deferred within",
+        "deferred within",
     ];
     let found = banned_phrases(&text, &banned);
     assert!(found.is_empty(), "the ptal-plan skill still says {found:?}");
+    assert!(
+        !headings(&text).iter().any(|heading| heading == "status"),
+        "the ptal-plan skill has a status section"
+    );
 }
 
 #[test]
 fn ptal_plan_skill_defers_agreements_to_agents() {
     let text = read(".agents/skills/ptal-plan/SKILL.md");
+    let agreements = section(&text, "## Working agreements", "## Plan template");
     for expected in ["AGENTS.md", "green gate"] {
         assert!(
-            text.contains(expected),
-            "the skill does not name {expected:?}"
+            agreements.contains(expected),
+            "the skill's Working agreements do not name {expected:?}"
         );
     }
-    let restated = [
-        "cargo fmt --check",
-        "cargo clippy --all-targets",
-        "cargo test",
-        "cargo doc --no-deps",
-        "cargo package --locked",
-    ];
-    let found = banned_phrases(&text, &restated);
+    // The section points at the gate; it does not list the commands. Elsewhere
+    // in the skill a plan step may still say "run `cargo test <name>`".
     assert!(
-        found.is_empty(),
-        "the skill restates AGENTS.md's gate as {found:?}"
+        !agreements.contains("cargo"),
+        "the skill restates gate commands in Working agreements: {agreements}"
     );
+    // "five-command" is a claim about AGENTS.md's gate, so it must match it.
+    if text.contains("five-command") {
+        let commands = gate_commands();
+        assert_eq!(
+            commands.len(),
+            5,
+            "the skill says five-command, AGENTS.md's gate has {}: {commands:?}",
+            commands.len()
+        );
+    }
+}
+
+/// The `repository` URL in `Cargo.toml`; the crate docs derive the README link
+/// from it so a repository move updates one place.
+fn repository() -> String {
+    let manifest = read("Cargo.toml");
+    manifest
+        .lines()
+        .find(|line| line.trim_start().starts_with("repository ="))
+        .and_then(|line| line.split('"').nth(1))
+        .expect("Cargo.toml has no quoted repository URL")
+        .to_string()
 }
 
 #[test]
@@ -215,16 +273,14 @@ fn crate_docs_say_binary_first_unstable_and_link_readme() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(!docs.is_empty(), "src/lib.rs has no crate-level docs");
-    for expected in ["binary-first", "unstable", README_URL] {
+    let readme = format!("{}/blob/main/README.md", repository());
+    for expected in ["binary-first", "unstable", readme.as_str()] {
         assert!(
             docs.contains(expected),
             "the crate docs do not name {expected:?}"
         );
     }
 }
-
-/// The README's canonical URL; the crate docs link to it from docs.rs.
-const README_URL: &str = "https://github.com/sleb/ptal/blob/main/README.md";
 
 #[test]
 fn long_cells_are_found_by_row_and_column() {
