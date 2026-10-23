@@ -6,6 +6,20 @@ workflow publishes that section as the GitHub Release notes. See
 
 ## Unreleased
 
+## 0.3.1 - 2026-10-23
+
+Fixes and internal cleanup; no CLI JSON or store format changes.
+
+- TUI: a long path gives way so the footer's counts show. AltGr characters are
+  the plain key in every mode, and text in the comment box.
+- CLI: multi-line comments are indented and non-UTF-8 paths print lossily.
+  `wait` with a timeout before any read fails with the read's error. Stdout
+  failures are reported as I/O errors, and conflicting flags are rejected by
+  clap.
+- Internals: one definition each for the waiting rule, write kinds, blank text
+  and line numbers; store I/O helpers deduplicated; `tui::app` split up.
+- Docs: shorter tables, drift tests for the interface map, and corrections.
+
 ## 0.3.0 - 2026-10-21
 
 Turns release: the human and the agent take turns on a review, threads follow
