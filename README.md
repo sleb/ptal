@@ -216,7 +216,8 @@ ptal comments --help           # one command's output shape, errors and examples
 The loop `ptal --help` walks through:
 
 0. Once per review, open it for the human: in a terminal multiplexer, a
-   pane beside the agent running `exec ptal '<absolute file>'`; otherwise ask the human to run `ptal <file>`.
+   pane beside the agent running `exec ptal '<absolute file>'`; otherwise
+   ask the human to run `ptal <file>`.
 1. `ptal wait <file>`: on `"turn"`, read the human's note; on `"closed"`, act
    on the verdict (`approved`: take the next step; `dropped`: stop) and stop;
    on `"timeout"`, wait again.

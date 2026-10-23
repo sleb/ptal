@@ -850,21 +850,4 @@ mod tests {
     fn every_bound_panel_key_is_listed_and_every_listed_one_is_bound() {
         assert_listing_matches("Thread panel", &panel_fixture);
     }
-
-    #[test]
-    fn the_listed_keys_are_named_in_interfaces_md() {
-        let doc = include_str!("../../../docs/interfaces.md");
-        for section in keys::HELP {
-            for entry in section.entries {
-                for name in keys::names(entry.keys) {
-                    let quoted = format!("`{name}`");
-                    assert!(
-                        doc.contains(&quoted),
-                        "{name} ({}) is not in docs/interfaces.md",
-                        entry.keys
-                    );
-                }
-            }
-        }
-    }
 }

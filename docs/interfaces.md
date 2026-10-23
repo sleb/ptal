@@ -87,7 +87,7 @@ the draft.
 Editing: `←`/`→` move by grapheme cluster, `↑`/`↓` by screen row (keeping the
 column), `Home`/`End` to the line's start / end; `backspace`/`delete` remove
 (and join lines); `enter` starts a new line. Characters typed with AltGr insert
-as text, so `[ ] { } \| @ ~ \`` work on AltGr layouts (see "Keys typed with
+as text, so `[ ] { } \| @ ~ \` and the backtick work on AltGr layouts (see "Keys typed with
 AltGr"). Pasting inserts the text at the cursor in one step: line breaks kept,
 tabs kept (shown as four spaces), other control characters dropped, so a paste
 never saves, cancels or leaves the box; outside the comment box a paste does
@@ -141,7 +141,8 @@ Works during either turn.
 `ptal wait` blocks until it is the agent's turn or the review is closed, then
 prints `{"file", "reason", "review"}`. `reason` is `turn`, `closed` (with the
 `verdict`) or `timeout` (still the human's turn); all exit `0`. `review.latest`
-is the hand-off or close that ended it. It returns at once if already the
+is the hand-off or close that ended it for `turn` and `closed`; on `timeout`
+it is `null` for a fresh review. It returns at once if already the
 agent's turn or closed; `--timeout 0` checks once; a wait that never read the
 review fails with that read's error (`io`, exit `1`). On a TTY: the
 `turn: agent` / `closed: approved` header and the note, or

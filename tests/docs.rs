@@ -1,5 +1,6 @@
 //! Drift tests between the docs and the code they describe: every key in the
-//! help overlay's listing is in README and `docs/interfaces.md`, and no cell
+//! help overlay's listing is named somewhere in README's Keys section and in
+//! `docs/interfaces.md` (not checked per mode), and no cell
 //! of the interface map is too long to read.
 //!
 //! These read `README.md` and `docs/` at run time, so the file is not part of
@@ -114,6 +115,13 @@ fn long_cells(text: &str, max: usize) -> Vec<String> {
         if cells.iter().all(|c| c.starts_with("---")) {
             continue;
         }
+        assert_eq!(
+            cells.len(),
+            headers.len(),
+            "table row split into {} cells, header has {}: {line}",
+            cells.len(),
+            headers.len()
+        );
         for (cell, header) in cells.iter().zip(&headers) {
             let words = cell.split_whitespace().count();
             if words > max {
@@ -125,11 +133,11 @@ fn long_cells(text: &str, max: usize) -> Vec<String> {
 }
 
 #[test]
-fn interface_cells_are_at_most_40_words() {
+fn interface_cells_are_short() {
     let long = long_cells(&read("docs/interfaces.md"), MAX_CELL_WORDS);
     assert!(
         long.is_empty(),
-        "move detail under the tables:\n{}",
+        "cells over {MAX_CELL_WORDS} words; move detail under the tables:\n{}",
         long.join("\n")
     );
 }

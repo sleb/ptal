@@ -908,8 +908,9 @@ mod tests {
             "the wait help must say it polls every {ms} ms"
         );
         let secs = (POLL_INTERVAL * WAIT_READ_RETRIES).as_secs_f64().round();
+        let flat = WAIT_HELP.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
-            WAIT_HELP.contains(&format!("retried for\nabout {secs} s first")),
+            flat.contains(&format!("retried for about {secs} s first")),
             "the wait help must say a read error is retried for about {secs} s"
         );
     }
@@ -1865,7 +1866,12 @@ c2  open  outdated  lines 3-4
             help.find(needle)
                 .unwrap_or_else(|| panic!("help is missing {needle:?}:\n{help}"))
         };
-        assert!(!help.contains("herdr"), "the help names a multiplexer");
+        for multiplexer in ["herdr", "tmux", "zellij", "wezterm", "screen"] {
+            assert!(
+                !help.contains(multiplexer),
+                "the help names a multiplexer: {multiplexer}"
+            );
+        }
         let wait_step = at("1. ptal wait <file>");
         for open in [
             "once per review",

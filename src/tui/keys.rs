@@ -4,8 +4,9 @@
 //! The key handlers in [`super::app`] are the behavior; [`HELP`] is the
 //! documentation of it. A probe test in `tui::app` presses every candidate
 //! key in each mode and fails when a key does something that is not listed,
-//! or a listed key does nothing, so the two cannot drift apart. `tests/docs.rs` ties the listing to
-//! README's keys and `docs/interfaces.md` the same way.
+//! or a listed key does nothing, so the two cannot drift apart.
+//! `tests/docs.rs` ties the listing to README's keys and `docs/interfaces.md`
+//! the same way.
 
 use super::wrap;
 
