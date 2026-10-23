@@ -41,6 +41,9 @@ pub enum Failure {
     /// The terminal failed while the TUI was running.
     #[error("terminal error: {0}")]
     Terminal(#[source] io::Error),
+    /// Writing the result to stdout failed (a closed pipe is not a failure).
+    #[error("cannot write to stdout: {0}")]
+    Stdout(#[source] io::Error),
     /// The core refused or failed.
     #[error(transparent)]
     Core(#[from] Error),
@@ -54,6 +57,7 @@ impl Failure {
             Failure::MissingAuthor => ("missing_author", EXIT_CALLER),
             Failure::NotATerminal => ("not_a_terminal", EXIT_RUNTIME),
             Failure::Terminal(_) => ("terminal", EXIT_RUNTIME),
+            Failure::Stdout(_) => ("io", EXIT_RUNTIME),
             Failure::Core(error) => match error {
                 Error::EmptyAuthor => ("missing_author", EXIT_CALLER),
                 Error::NotFound(_) => ("not_found", EXIT_CALLER),
@@ -652,15 +656,16 @@ where
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(e) if e.use_stderr() => {
-            let text = if env.stderr_is_tty && !json_flag {
-                e.to_string()
-            } else {
-                error_line(&Failure::Usage(e.to_string().trim().to_string()))
-            };
-            return finish(err, &text, EXIT_CALLER);
+            let failure = Failure::Usage(e.to_string().trim().to_string());
+            return report(&failure, env, json_flag, err, Some(e.to_string()));
         }
         // `--help` and `--version`.
-        Err(e) => return finish(out, &e.to_string(), 0),
+        Err(e) => {
+            return match finish(out, &e.to_string()) {
+                Ok(()) => 0,
+                Err(source) => report(&Failure::Stdout(source), env, json_flag, err, None),
+            };
+        }
     };
 
     let json = cli.json;
@@ -673,15 +678,30 @@ where
     };
     match result {
         Ok(()) => 0,
-        Err(failure) => {
-            let (_, code) = failure.classify();
-            let text = if env.stderr_is_tty && !json {
-                format!("error: {}\n", failure.to_string())
-            } else {
-                error_line(&failure)
-            };
-            finish(err, &text, code)
-        }
+        Err(failure) => report(&failure, env, json, err, None),
+    }
+}
+
+/// Write `failure` to `err` (readable on a terminal unless `json`, else the
+/// JSON envelope) and return its exit status. `readable` overrides the
+/// terminal text. A stderr that cannot be written leaves nowhere to report,
+/// so the status is just a runtime error.
+fn report<C: Clock>(
+    failure: &Failure,
+    env: &Env<C>,
+    json: bool,
+    err: &mut dyn Write,
+    readable: Option<String>,
+) -> u8 {
+    let (_, code) = failure.classify();
+    let text = match (env.stderr_is_tty && !json, readable) {
+        (true, Some(text)) => text,
+        (true, None) => format!("error: {failure}\n"),
+        (false, _) => error_line(failure),
+    };
+    match finish(err, &text) {
+        Ok(()) => code,
+        Err(_) => EXIT_RUNTIME,
     }
 }
 
@@ -713,12 +733,7 @@ fn run_command<C: Clock>(
     } else {
         output.to_text()
     };
-    match finish(out, &text, 0) {
-        0 => Ok(()),
-        _ => Err(Failure::Terminal(io::Error::other(
-            "cannot write to stdout",
-        ))),
-    }
+    finish(out, &text).map_err(Failure::Stdout)
 }
 
 /// Open the interactive view. Everything that can be refused is refused
@@ -830,13 +845,12 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
     }
 }
 
-/// Write `text` to `w` and return `code`. A closed pipe ends quietly; any
-/// other write failure is a runtime error.
-fn finish(w: &mut dyn Write, text: &str, code: u8) -> u8 {
+/// Write `text` to `w`. A closed pipe ends quietly; any other write failure
+/// is returned.
+fn finish(w: &mut dyn Write, text: &str) -> io::Result<()> {
     match w.write_all(text.as_bytes()).and_then(|()| w.flush()) {
-        Ok(()) => code,
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => code,
-        Err(_) => EXIT_RUNTIME,
+        Err(e) if e.kind() != io::ErrorKind::BrokenPipe => Err(e),
+        _ => Ok(()),
     }
 }
 
@@ -897,6 +911,7 @@ mod tests {
             (Failure::MissingAuthor, "missing_author", 2),
             (Failure::NotATerminal, "not_a_terminal", 1),
             (Failure::Terminal(io_err()), "terminal", 1),
+            (Failure::Stdout(io_err()), "io", 1),
             (Failure::Core(Error::EmptyAuthor), "missing_author", 2),
             (Failure::Core(Error::NotFound("c9".into())), "not_found", 2),
             (
@@ -986,6 +1001,10 @@ mod tests {
         assert_eq!(
             Failure::Terminal(io_err()).to_string(),
             "terminal error: boom"
+        );
+        assert_eq!(
+            Failure::Stdout(io_err()).to_string(),
+            "cannot write to stdout: boom"
         );
         assert_eq!(core.to_string(), "thread c9 not found");
         assert!(std::error::Error::source(&Failure::Terminal(io_err())).is_some());
@@ -2232,6 +2251,60 @@ c2  open  outdated  lines 3-4
         assert_eq!(review["latest"]["side"], "human");
         let back = fx.run(&["handoff", "FILE", "--as", "claude", "--side", "agent"]);
         assert_eq!(back.json()["review"]["latest"]["side"], "agent");
+    }
+
+    /// A stream whose writes fail with `kind`.
+    struct FailingWriter(io::ErrorKind);
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(self.0.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(self.0.into())
+        }
+    }
+
+    #[test]
+    fn a_failed_stdout_write_is_io_exit_1_for_output_and_help() {
+        let fx = fixture_with_two_threads();
+        let path = fx.file.to_str().unwrap();
+        for args in [&["comments", path][..], &["--help"], &["--version"]] {
+            let argv = std::iter::once("ptal").chain(args.iter().copied());
+            let mut err = Vec::new();
+            let code = run(
+                argv,
+                &fx.env(None, false),
+                &mut FailingWriter(io::ErrorKind::Other),
+                &mut err,
+            );
+
+            assert_eq!(code, 1, "{args:?}");
+            let v: serde_json::Value = serde_json::from_slice(&err).unwrap();
+            assert_eq!(v["error"]["code"], "io", "{args:?}");
+            let message = v["error"]["message"].as_str().unwrap();
+            assert!(message.starts_with("cannot write to stdout"), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_closed_stdout_pipe_ends_quietly_with_the_commands_own_status() {
+        let fx = fixture_with_two_threads();
+        let path = fx.file.to_str().unwrap();
+        for (args, expected) in [(&["comments", path][..], 0), (&["--help"], 0)] {
+            let argv = std::iter::once("ptal").chain(args.iter().copied());
+            let mut err = Vec::new();
+            let code = run(
+                argv,
+                &fx.env(None, false),
+                &mut FailingWriter(io::ErrorKind::BrokenPipe),
+                &mut err,
+            );
+
+            assert_eq!(code, expected, "{args:?}");
+            assert!(err.is_empty(), "{args:?}");
+        }
     }
 
     #[test]

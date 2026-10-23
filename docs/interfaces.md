@@ -80,7 +80,8 @@ review, and `already_closed` is closing a closed one.
 `not_a_terminal` is `ptal <file>` run without a terminal on stdin and
 stdout (an agent running it by mistake gets this JSON error instead of a hung
 raw-mode process). `terminal` is an I/O failure of the terminal itself while
-the TUI runs.
+the TUI runs. A failed write of the result to stdout (including `--help` and
+`--version`) is `io`, exit `1`; a closed pipe is not a failure.
 
 ## Bare `ptal <file>` and subcommand names
 
