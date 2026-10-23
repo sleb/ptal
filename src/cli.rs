@@ -234,10 +234,6 @@ The turn loop:
      give it an absolute path, shell-quoted.
      In a terminal multiplexer, open a pane beside you running
      `exec ptal '<absolute file>'`; the pane closes when the human quits.
-     In herdr:
-       herdr pane split --current --direction right --cwd \"$PWD\" --focus
-       herdr pane run <pane_id> \"exec ptal '<absolute file>'\"
-     with <pane_id> from the split's .result.pane.pane_id.
      Outside a multiplexer, ask the human to run `ptal <file>` in a terminal.
   1. ptal wait <file>                 block until your turn or a close
      \"turn\":    your move; the human's note is in review.latest.note
@@ -1869,12 +1865,12 @@ c2  open  outdated  lines 3-4
             help.find(needle)
                 .unwrap_or_else(|| panic!("help is missing {needle:?}:\n{help}"))
         };
+        assert!(!help.contains("herdr"), "the help names a multiplexer");
         let wait_step = at("1. ptal wait <file>");
         for open in [
             "once per review",
-            "herdr pane split --current --direction right --cwd \"$PWD\" --focus",
-            "herdr pane run <pane_id> \"exec ptal '<absolute file>'\"",
-            ".result.pane.pane_id",
+            "open a pane beside you running",
+            "`exec ptal '<absolute file>'`",
             "ask the human to run `ptal <file>`",
         ] {
             assert!(at(open) < wait_step, "{open} comes after the wait step");

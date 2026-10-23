@@ -452,7 +452,7 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   split: every `Failure::classify` code is in the top-level table, every
   subcommand is named there, and every subcommand's help says what it prints
   and has an example. It states facts about the tool (what a command does, what a field
-  means), not policy: when to resolve, what to ask, how to hand over to the
+  means), not policy, and names no particular multiplexer: when to resolve, what to ask, how to hand over to the
   human belong to the user's own skill or prompt, which ptal does not ship.
 
 *Deferred:* `ptal schema`; output shapes are the `model`
