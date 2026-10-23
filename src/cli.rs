@@ -507,7 +507,9 @@ enum Verb {
 }
 
 impl Output {
-    fn to_json(&self, file: &Path) -> String {
+    /// `file` is the canonical path, lossily converted so a non-UTF-8 name
+    /// prints with U+FFFD instead of failing.
+    fn to_json(&self, file: &str) -> String {
         let value = match self {
             Output::Threads(view) => json!({
                 "file": file,
@@ -578,22 +580,41 @@ fn state_line(review: &ReviewStatus) -> String {
     }
 }
 
-/// Readable state header: `turn: <side>` or `closed: <verdict>`, then each
-/// line of the latest note under its author.
+/// `  author: text`, with each later line of `text` indented to sit under the
+/// first character of the body (counted in `char`s, so wide or combining
+/// author names may misalign). Trailing blank lines are dropped and
+/// whitespace-only lines print empty.
+fn indent_body(author: &str, text: &str) -> String {
+    let mut lines = text.trim_end().lines();
+    let mut out = format!("  {author}: {}\n", lines.next().unwrap_or(""));
+    let pad = " ".repeat(2 + author.chars().count() + 2);
+    for line in lines {
+        if !line.trim().is_empty() {
+            out.push_str(&pad);
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Readable state header: `turn: <side>` or `closed: <verdict>`, then the
+/// latest note under its author.
 fn render_status(review: &ReviewStatus) -> String {
     let mut text = match review.state {
         ReviewState::Turn(side) => format!("turn: {}\n", side.as_str()),
         ReviewState::Closed(_) => format!("{}\n", state_line(review)),
     };
-    if let Some(entry) = &review.latest {
-        for line in entry.note.iter().flat_map(|note| note.lines()) {
-            text.push_str(&format!("  {}: {line}\n", entry.author));
-        }
+    if let Some(entry) = &review.latest
+        && let Some(note) = &entry.note
+    {
+        text.push_str(&indent_body(&entry.author, note));
     }
     text
 }
 
-/// Readable listing: a header per thread, the quote, then the comments.
+/// Readable listing: a header per thread, the quote, then the comments, each
+/// continuation line hanging under its body.
 fn render_text(threads: &[ThreadView]) -> String {
     if threads.is_empty() {
         return "no threads\n".to_string();
@@ -623,7 +644,7 @@ fn render_text(threads: &[ThreadView]) -> String {
                 block.push_str(&format!("  > {line}\n"));
             }
             for comment in comments {
-                block.push_str(&format!("  {}: {}\n", comment.author, comment.body));
+                block.push_str(&indent_body(&comment.author, &comment.body));
             }
             block
         })
@@ -701,7 +722,7 @@ fn run_command<C: Clock>(
         })
     })?;
     let text = if json || !env.stdout_is_tty {
-        output.to_json(&canonical)
+        output.to_json(&canonical.to_string_lossy())
     } else {
         output.to_text()
     };
@@ -2276,9 +2297,97 @@ c2  open  outdated  lines 3-4
 
         assert_eq!(
             agent.stdout,
-            "turn: agent\n  scott: Look at c1\n  scott: and c2\n\nno threads\n"
+            "turn: agent\n  scott: Look at c1\n         and c2\n\nno threads\n"
         );
         assert_eq!(closed.stdout, "closed: dropped\n\nno threads\n");
+    }
+
+    #[test]
+    fn comments_on_a_tty_indents_every_line_of_a_multi_line_comment() {
+        let fx = fixture("one\ntwo\n");
+        fx.run(&[
+            "add",
+            "FILE",
+            "--lines",
+            "1",
+            "one\ntwo\nthree",
+            "--as",
+            "scott",
+        ]);
+        fx.run(&["add", "FILE", "--lines", "2", "a\n\nb", "--as", "claude"]);
+        fx.human_hands_off(Some("Look at c1\nand c2"));
+
+        let out = fx.run_with(&["comments", "FILE"], &fx.env(None, true));
+
+        assert_eq!(
+            out.stdout,
+            "turn: agent\n  scott: Look at c1\n         and c2\n\n\
+             c1  open  current  lines 1-1\n  > one\n  scott: one\n         two\n         three\n\n\
+             c2  open  current  lines 2-2\n  > two\n  claude: a\n\n          b\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_file_name_prints_lossily_instead_of_panicking() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let fx = fixture("one\n");
+        let odd = fx.file.with_file_name(OsStr::from_bytes(b"plan-\xff.md"));
+        if fs::write(&odd, "one\n").is_err() {
+            eprintln!("skipped: the filesystem rejects non-UTF-8 names");
+            return;
+        }
+        let env = fx.env(None, false);
+        let run_on = |args: &[&str], file: &Path| {
+            let mut argv: Vec<OsString> = vec!["ptal".into()];
+            argv.extend(args.iter().map(|a| {
+                if *a == "FILE" {
+                    file.into()
+                } else {
+                    OsString::from(a)
+                }
+            }));
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = run(argv, &env, &mut out, &mut err);
+            (
+                code,
+                String::from_utf8(out).unwrap(),
+                String::from_utf8(err).unwrap(),
+            )
+        };
+
+        for args in [
+            &["comments", "FILE"][..],
+            &["add", "FILE", "--lines", "1", "Hi", "--as", "scott"],
+            &["handoff", "FILE", "--as", "scott", "--side", "human"],
+            &["wait", "FILE", "--timeout", "0"],
+        ] {
+            let (code, stdout, stderr) = run_on(args, &odd);
+            assert_eq!(code, 0, "{args:?}: {stderr}");
+            let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+            assert!(
+                json["file"].as_str().unwrap().ends_with("plan-\u{FFFD}.md"),
+                "{args:?}"
+            );
+        }
+
+        let missing = odd.with_file_name(OsStr::from_bytes(b"gone-\xff.md"));
+        let (code, stdout, stderr) = run_on(&["comments", "FILE"], &missing);
+        assert_eq!((code, stdout.as_str()), (1, ""));
+        let json: serde_json::Value = serde_json::from_str(&stderr).unwrap();
+        assert_eq!(json["error"]["code"], "file_unreadable");
+    }
+
+    #[test]
+    fn indent_body_keeps_an_empty_body_and_trims_blank_edges() {
+        assert_eq!(indent_body("scott", ""), "  scott: \n");
+        assert_eq!(indent_body("scott", "a\n\n"), "  scott: a\n");
+        assert_eq!(
+            indent_body("scott", "a\n   \nb"),
+            "  scott: a\n\n         b\n"
+        );
     }
 
     #[test]
@@ -2525,7 +2634,7 @@ c2  open  outdated  lines 3-4
         assert_eq!(timeout.stdout, "timeout: still the human's turn\n");
         assert_eq!(
             turn.stdout,
-            "turn: agent\n  scott: Look at c1\n  scott: and c2\n"
+            "turn: agent\n  scott: Look at c1\n         and c2\n"
         );
         assert_eq!(closed.stdout, "closed: dropped\n");
     }
