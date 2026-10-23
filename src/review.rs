@@ -201,9 +201,37 @@ impl Serialize for ReviewStatus {
 pub struct HandedOff {
     /// The review's state after the hand-off.
     pub review: ReviewStatus,
-    /// Ids of open threads whose last comment isn't by the author handing
-    /// off: still waiting on them (exact name match), as of the hand-off.
+    /// Ids of the threads that [`Thread::is_waiting_on`] the author handing
+    /// off, as of the hand-off.
     pub waiting: Vec<String>,
+}
+
+/// Which of the four thread writes a front end made: [`Reviews::add_thread`],
+/// [`Reviews::reply`], [`Reviews::resolve`] or [`Reviews::reopen`]. The CLI
+/// and the TUI report it; it is never persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadWrite {
+    /// A new thread was added.
+    Added,
+    /// A comment was appended to a thread.
+    Replied,
+    /// A thread was resolved.
+    Resolved,
+    /// A thread was reopened.
+    Reopened,
+}
+
+impl ThreadWrite {
+    /// The write in past tense: `added`, `replied`, `resolved` or
+    /// `reopened`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThreadWrite::Added => "added",
+            ThreadWrite::Replied => "replied",
+            ThreadWrite::Resolved => "resolved",
+            ThreadWrite::Reopened => "reopened",
+        }
+    }
 }
 
 /// A fingerprint of a reviewed file and its review: see [`Reviews::stamp`].
@@ -337,9 +365,7 @@ impl<C: Clock> Reviews<C> {
         author: &str,
     ) -> Result<Thread> {
         require_author(author)?;
-        if body.trim().is_empty() {
-            return Err(Error::EmptyBody);
-        }
+        require_body(body)?;
         let content = Content::read(file)?.seen(seen)?;
         let lines = content.lines();
         let quote =
@@ -603,7 +629,7 @@ impl<C: Clock> Reviews<C> {
         note: Option<&str>,
     ) -> Result<Thread> {
         require_author(author)?;
-        let note = note.filter(|n| !n.trim().is_empty());
+        let note = non_blank(note);
         let content = Content::read(file)?;
         let now = self.clock.now();
 
@@ -621,7 +647,7 @@ impl<C: Clock> Reviews<C> {
                 resolved_revision: Some(revision),
             };
             thread.comments.extend(note_comment);
-            self.mapped(file, review, index, &content)
+            Ok(self.mapped(file, review, index, &content))
         })
     }
 
@@ -664,7 +690,7 @@ impl<C: Clock> Reviews<C> {
         note: Option<&str>,
     ) -> Result<Thread> {
         require_author(author)?;
-        let note = note.filter(|n| !n.trim().is_empty());
+        let note = non_blank(note);
         let content = Content::read(file)?;
         let now = self.clock.now();
 
@@ -680,7 +706,7 @@ impl<C: Clock> Reviews<C> {
             let thread = &mut review.threads[index];
             thread.status = Status::Open;
             thread.comments.extend(note_comment);
-            self.mapped(file, review, index, &content)
+            Ok(self.mapped(file, review, index, &content))
         })
     }
 
@@ -716,9 +742,7 @@ impl<C: Clock> Reviews<C> {
     /// ```
     pub fn reply(&self, file: &Path, id: &str, body: &str, author: &str) -> Result<Thread> {
         require_author(author)?;
-        if body.trim().is_empty() {
-            return Err(Error::EmptyBody);
-        }
+        require_body(body)?;
         let content = Content::read(file)?;
         let created_at = self.clock.now();
 
@@ -729,7 +753,7 @@ impl<C: Clock> Reviews<C> {
             let thread = &mut review.threads[index];
             thread.comments.push(comment);
             thread.status = Status::Open;
-            self.mapped(file, review, index, &content)
+            Ok(self.mapped(file, review, index, &content))
         })
     }
 
@@ -801,8 +825,7 @@ impl<C: Clock> Reviews<C> {
             let waiting = review
                 .threads
                 .iter()
-                .filter(|t| t.status == Status::Open)
-                .filter(|t| t.comments.last().is_some_and(|c| c.author != author))
+                .filter(|t| t.is_waiting_on(author))
                 .map(|t| t.id.clone())
                 .collect();
             Ok(HandedOff {
@@ -932,16 +955,10 @@ impl<C: Clock> Reviews<C> {
 
     /// Thread `index` of `review` with its lines mapped to `content`, for
     /// output; the stored anchor is unchanged.
-    fn mapped(
-        &self,
-        file: &Path,
-        review: &Review,
-        index: usize,
-        content: &Content,
-    ) -> Result<Thread> {
+    fn mapped(&self, file: &Path, review: &Review, index: usize, content: &Content) -> Thread {
         let mut thread = review.threads[index].clone();
         Mapper::new(&self.store, file, review, content).map(&mut thread.anchor);
-        Ok(thread)
+        thread
     }
 }
 
@@ -985,7 +1002,7 @@ impl Signature<'_> {
             created_at: self.created_at,
             revision,
             next_id: review.next_id,
-            note: self.note.filter(|n| !n.trim().is_empty()).map(String::from),
+            note: non_blank(self.note).map(String::from),
         };
         review.log.push(entry);
     }
@@ -1138,6 +1155,20 @@ fn require_author(author: &str) -> Result<()> {
     }
 }
 
+/// A comment body must not be blank: `EmptyBody` if it is.
+fn require_body(body: &str) -> Result<()> {
+    if body.trim().is_empty() {
+        Err(Error::EmptyBody)
+    } else {
+        Ok(())
+    }
+}
+
+/// A blank note is no note.
+fn non_blank(note: Option<&str>) -> Option<&str> {
+    note.filter(|n| !n.trim().is_empty())
+}
+
 /// Lines `start..=end` (1-based) of `lines` joined by `\n`, or `None` if the
 /// range is empty, starts before line 1, or runs past the end.
 fn quote_of(lines: &[&str], start: u32, end: u32) -> Option<String> {
@@ -1215,6 +1246,18 @@ mod tests {
     }
 
     // --- lines ---
+
+    #[test]
+    fn a_thread_write_names_itself_in_past_tense() {
+        let names = [
+            ThreadWrite::Added,
+            ThreadWrite::Replied,
+            ThreadWrite::Resolved,
+            ThreadWrite::Reopened,
+        ]
+        .map(ThreadWrite::as_str);
+        assert_eq!(names, ["added", "replied", "resolved", "reopened"]);
+    }
 
     #[test]
     fn view_lines_split_like_str_lines() {

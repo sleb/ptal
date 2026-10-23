@@ -135,6 +135,18 @@ pub struct Thread {
     pub comments: Vec<Comment>,
 }
 
+impl Thread {
+    /// Whether the thread is waiting on `author`: it is open and its last
+    /// comment is someone else's (exact name match). A thread with no
+    /// comments waits on no one.
+    ///
+    /// This is the one waiting rule; `Reviews::hand_off` and the TUI's
+    /// thread markers both ask it.
+    pub fn is_waiting_on(&self, author: &str) -> bool {
+        self.status == Status::Open && self.comments.last().is_some_and(|c| c.author != author)
+    }
+}
+
 /// Whether a thread is still awaiting action.
 ///
 /// On the wire this is `"status": "open" | "resolved"`, with `resolved_by`,
@@ -677,5 +689,68 @@ mod tests {
     fn the_other_side_of_each_side() {
         assert_eq!(Side::Human.other(), Side::Agent);
         assert_eq!(Side::Agent.other(), Side::Human);
+    }
+
+    /// A thread on line 1 whose comments are by `authors`, in order.
+    fn thread_by(status: Status, authors: &[&str]) -> Thread {
+        Thread {
+            id: "c1".into(),
+            anchor: Anchor {
+                revision: None,
+                start_line: 1,
+                end_line: 1,
+                quote: "one".into(),
+            },
+            status,
+            comments: authors
+                .iter()
+                .enumerate()
+                .map(|(i, author)| Comment {
+                    id: format!("c{}", i + 1),
+                    author: (*author).into(),
+                    body: "text".into(),
+                    created_at: "2026-10-12T10:00:00Z".into(),
+                    revision: None,
+                })
+                .collect(),
+        }
+    }
+
+    fn resolved() -> Status {
+        Status::Resolved {
+            resolved_by: "claude".into(),
+            resolved_at: "2026-10-12T11:00:00Z".into(),
+            resolved_revision: None,
+        }
+    }
+
+    #[test]
+    fn an_open_thread_whose_last_comment_is_theirs_is_waiting_on_you() {
+        let thread = thread_by(Status::Open, &["scott", "claude"]);
+        assert!(thread.is_waiting_on("scott"));
+    }
+
+    #[test]
+    fn an_open_thread_whose_last_comment_is_yours_is_not_waiting_on_you() {
+        let thread = thread_by(Status::Open, &["claude", "scott"]);
+        assert!(!thread.is_waiting_on("scott"));
+    }
+
+    #[test]
+    fn a_resolved_thread_waits_on_no_one() {
+        let thread = thread_by(resolved(), &["scott", "claude"]);
+        assert!(!thread.is_waiting_on("scott"));
+    }
+
+    #[test]
+    fn a_thread_with_no_comments_waits_on_no_one() {
+        let thread = thread_by(Status::Open, &[]);
+        assert!(!thread.is_waiting_on("scott"));
+    }
+
+    #[test]
+    fn waiting_matches_the_author_name_exactly() {
+        let thread = thread_by(Status::Open, &["scott"]);
+        assert!(thread.is_waiting_on("Scott"));
     }
 }

@@ -7,9 +7,9 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::anchor::{Change, ChangeKind, Diff, LineRange};
+use crate::anchor::{Change, ChangeKind, Diff, LineRange, line_number};
 use crate::model::{Entry, Event as LogEvent, ReviewState, Side, State, Status, Verdict};
-use crate::review::{ReviewStatus, ThreadView};
+use crate::review::{ReviewStatus, ThreadView, ThreadWrite};
 
 use super::draft::Draft;
 use super::highlight::{self, Styling};
@@ -193,7 +193,8 @@ pub enum Event {
     Saved {
         /// The thread written to: the new thread for an add.
         id: String,
-        done: Done,
+        /// Which write; it picks the footer message.
+        done: ThreadWrite,
         reread: Reread,
     },
     /// The driver wrote a hand-off, close or reopen, then re-read the file;
@@ -229,30 +230,6 @@ pub struct Reread {
     pub review: ReviewStatus,
     /// What changed since the human's last look ([`crate::review::View::changes`]).
     pub changes: Vec<Change>,
-}
-
-/// Which write an [`Event::Saved`] reports; it picks the footer message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Done {
-    /// A new thread was added.
-    Added,
-    /// A comment was appended to a thread.
-    Replied,
-    /// A thread was resolved.
-    Resolved,
-    /// A thread was reopened.
-    Reopened,
-}
-
-impl Done {
-    fn verb(self) -> &'static str {
-        match self {
-            Done::Added => "added",
-            Done::Replied => "replied",
-            Done::Resolved => "resolved",
-            Done::Reopened => "reopened",
-        }
-    }
 }
 
 /// Something `update` wants the driver to do.
@@ -504,7 +481,7 @@ impl App {
         let new: Vec<&str> = new.iter().map(String::as_str).collect();
         let diff = Diff::new(&old, &new);
         let map = |line: usize| {
-            let n = u32::try_from(line + 1).unwrap_or(u32::MAX);
+            let n = line_number(line);
             let mapped = diff.map(LineRange { start: n, end: n });
             usize::try_from(mapped.range.start).map_or(0, |n| n.saturating_sub(1))
         };
@@ -748,16 +725,10 @@ impl App {
     }
 
     fn marker_of(&self, view: &ThreadView) -> Marker {
-        let open = view.thread.status == Status::Open;
-        let theirs = view
-            .thread
-            .comments
-            .last()
-            .is_some_and(|comment| comment.author != self.author);
-        match (open, theirs) {
-            (true, true) => Marker::Waiting,
-            (true, false) => Marker::Open,
-            (false, _) => Marker::Resolved,
+        match view.thread.status {
+            Status::Open if view.thread.is_waiting_on(&self.author) => Marker::Waiting,
+            Status::Open => Marker::Open,
+            Status::Resolved { .. } => Marker::Resolved,
         }
     }
 
@@ -1329,7 +1300,7 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             if from_panel {
                 app.back_to_panel(&id);
             }
-            app.status = Some(format!("{} {id}", done.verb()));
+            app.status = Some(format!("{} {id}", done.as_str()));
             None
         }
         Event::ReviewSaved { message, reread } => {
@@ -1752,14 +1723,11 @@ fn save_box(
             id: id.clone(),
             body,
         },
-        Target::NewThread => {
-            let one_based = |line: usize| u32::try_from(line + 1).unwrap_or(u32::MAX);
-            Effect::Add {
-                start: one_based(first),
-                end: one_based(last),
-                body,
-            }
-        }
+        Target::NewThread => Effect::Add {
+            start: line_number(first),
+            end: line_number(last),
+            body,
+        },
         Target::HandOff => Effect::HandOff { note },
         Target::Close {
             verdict,
@@ -2581,7 +2549,7 @@ mod tests {
             &mut a,
             Event::Saved {
                 id: "c3".into(),
-                done: Done::Added,
+                done: ThreadWrite::Added,
                 reread: text,
             },
         );
@@ -3206,7 +3174,7 @@ mod tests {
             &mut a,
             Event::Saved {
                 id: "c1".into(),
-                done: Done::Added,
+                done: ThreadWrite::Added,
                 reread: Reread { threads, ..text },
             },
         );
@@ -3505,7 +3473,7 @@ mod tests {
             &mut a,
             [Event::Saved {
                 id: "c9".into(),
-                done: Done::Added,
+                done: ThreadWrite::Added,
                 reread: text,
             }],
         );
@@ -3567,7 +3535,7 @@ mod tests {
             &mut a,
             Event::Saved {
                 id: "c9".into(),
-                done: Done::Added,
+                done: ThreadWrite::Added,
                 reread: Reread { threads, ..text },
             },
         );
@@ -3839,7 +3807,7 @@ mod tests {
             &mut a,
             Event::Saved {
                 id: "c2".into(),
-                done: Done::Replied,
+                done: ThreadWrite::Replied,
                 reread: Reread { threads, ..text },
             },
         );
@@ -3937,8 +3905,8 @@ mod tests {
     #[test]
     fn saved_resolved_and_reopened_stay_on_that_thread_in_the_panel() {
         for (done, message) in [
-            (Done::Resolved, "resolved c2"),
-            (Done::Reopened, "reopened c2"),
+            (ThreadWrite::Resolved, "resolved c2"),
+            (ThreadWrite::Reopened, "reopened c2"),
         ] {
             let mut a = open_and_resolved_panel();
             send(&mut a, [press(KeyCode::Tab)]);
@@ -4160,7 +4128,7 @@ mod tests {
             &mut a,
             Event::Saved {
                 id: "c4".into(),
-                done: Done::Added,
+                done: ThreadWrite::Added,
                 reread: Reread { threads, ..text },
             },
         );
@@ -5126,7 +5094,7 @@ mod tests {
             &mut a,
             Event::Saved {
                 id: "c1".into(),
-                done: Done::Added,
+                done: ThreadWrite::Added,
                 reread: Reread {
                     changes: vec![change(3, 3, ChangeKind::Removed)],
                     ..text
@@ -5507,7 +5475,7 @@ mod tests {
             &mut a,
             Event::Saved {
                 id: "c1".into(),
-                done: Done::Added,
+                done: ThreadWrite::Added,
                 reread,
             },
         );

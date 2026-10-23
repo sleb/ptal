@@ -14,8 +14,8 @@ use serde_json::json;
 use crate::error::Error;
 use crate::model::{Anchor, ReviewState, Side, State, Status, Thread};
 use crate::review::{
-    Clock, HandedOff, ReviewStatus, Reviews, SystemClock, SystemTicker, ThreadView, Ticker, View,
-    Waited, Woke,
+    Clock, HandedOff, ReviewStatus, Reviews, SystemClock, SystemTicker, ThreadView, ThreadWrite,
+    Ticker, View, Waited, Woke,
 };
 use crate::store::Store;
 use crate::tui;
@@ -489,21 +489,12 @@ pub fn resolve_author(flag: Option<&str>, env: Option<&str>) -> Result<String, F
 enum Output {
     Threads(View),
     /// A write's result: the updated thread and what was done to it.
-    Thread(Thread, Verb),
+    Thread(Thread, ThreadWrite),
     HandedOff(HandedOff),
     /// A reopened review.
     Reopened(ReviewStatus),
     /// Why a wait returned.
     Waited(Waited),
-}
-
-/// What a write command did, for the readable rendering.
-#[derive(Debug, Clone, Copy)]
-enum Verb {
-    Added,
-    Resolved,
-    Replied,
-    Reopened,
 }
 
 impl Output {
@@ -541,20 +532,24 @@ impl Output {
                     render_text(&view.threads)
                 )
             }
-            Output::Thread(thread, Verb::Added) => {
-                let Anchor {
-                    start_line,
-                    end_line,
-                    ..
-                } = thread.anchor;
-                format!("{} added (lines {start_line}-{end_line})\n", thread.id)
+            Output::Thread(thread, write) => {
+                let detail = match write {
+                    ThreadWrite::Added => {
+                        let Anchor {
+                            start_line,
+                            end_line,
+                            ..
+                        } = thread.anchor;
+                        format!(" (lines {start_line}-{end_line})")
+                    }
+                    ThreadWrite::Replied => {
+                        let reply = thread.comments.last().map_or("", |c| c.id.as_str());
+                        format!(" ({reply})")
+                    }
+                    ThreadWrite::Resolved | ThreadWrite::Reopened => String::new(),
+                };
+                format!("{} {}{detail}\n", thread.id, write.as_str())
             }
-            Output::Thread(thread, Verb::Resolved) => format!("{} resolved\n", thread.id),
-            Output::Thread(thread, Verb::Replied) => {
-                let reply = thread.comments.last().map_or("", |c| c.id.as_str());
-                format!("{} replied ({reply})\n", thread.id)
-            }
-            Output::Thread(thread, Verb::Reopened) => format!("{} reopened\n", thread.id),
             Output::HandedOff(HandedOff { review, waiting }) => {
                 let mut line = format!("handed off: {}", state_line(review));
                 if !waiting.is_empty() {
@@ -772,7 +767,7 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
         } => {
             let author = author(flag)?;
             let thread = reviews.add_thread(file, *start, *end, body, &author)?;
-            Ok(Output::Thread(thread, Verb::Added))
+            Ok(Output::Thread(thread, ThreadWrite::Added))
         }
         Command::Resolve {
             file,
@@ -782,7 +777,7 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
         } => {
             let author = author(flag)?;
             let thread = reviews.resolve(file, id, &author, note.as_deref())?;
-            Ok(Output::Thread(thread, Verb::Resolved))
+            Ok(Output::Thread(thread, ThreadWrite::Resolved))
         }
         Command::Reply {
             file,
@@ -792,7 +787,7 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
         } => {
             let author = author(flag)?;
             let thread = reviews.reply(file, id, body, &author)?;
-            Ok(Output::Thread(thread, Verb::Replied))
+            Ok(Output::Thread(thread, ThreadWrite::Replied))
         }
         Command::Reopen {
             file,
@@ -808,7 +803,7 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
             }
             let author = author(flag)?;
             let thread = reviews.reopen(file, id, &author, note.as_deref())?;
-            Ok(Output::Thread(thread, Verb::Reopened))
+            Ok(Output::Thread(thread, ThreadWrite::Reopened))
         }
         Command::Reopen {
             file,
