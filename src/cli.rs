@@ -2322,6 +2322,24 @@ c2  open  outdated  lines 3-4
     }
 
     #[test]
+    fn a_failed_stderr_write_exits_1_whatever_the_failure() {
+        let fx = fixture("one\n");
+        for args in [&["add", "FILE", "--lines", "x"][..], &["comments", "nope"]] {
+            let argv = std::iter::once("ptal").chain(args.iter().copied());
+            let mut out = Vec::new();
+            let code = run(
+                argv,
+                &fx.env(None, false),
+                &mut out,
+                &mut FailingWriter(io::ErrorKind::Other),
+            );
+
+            assert_eq!(code, 1, "{args:?}");
+            assert!(out.is_empty(), "{args:?}");
+        }
+    }
+
+    #[test]
     fn a_bad_side_or_a_side_on_a_thread_reopen_is_usage() {
         let fx = fixture_with_two_threads();
         fx.run(&["resolve", "FILE", "c1", "--as", "claude"]);
