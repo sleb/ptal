@@ -231,7 +231,7 @@ impl Diff {
 /// The 1-based line number of 0-based index `i`, saturating at
 /// `u32::MAX`: the one index-to-line conversion, the TUI's too.
 pub(crate) fn line_number(i: usize) -> u32 {
-    u32::try_from(i + 1).unwrap_or(u32::MAX)
+    u32::try_from(i).map_or(u32::MAX, |n| n.saturating_add(1))
 }
 
 #[cfg(test)]
@@ -243,6 +243,7 @@ mod tests {
         assert_eq!(line_number(0), 1);
         assert_eq!(line_number(41), 42);
         assert_eq!(line_number(u32::MAX as usize), u32::MAX);
+        assert_eq!(line_number(usize::MAX), u32::MAX);
     }
 
     fn range(start: u32, end: u32) -> LineRange {
