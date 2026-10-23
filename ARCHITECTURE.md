@@ -144,11 +144,13 @@ clamp(range, len) -> LineRange               // into 1..=max(len, 1), no diff
 ```
 
 `LineRange { start, end }` is 1-based and inclusive; `state` is the model's
-`State`. `line_number(i)` is the one 0-based index → 1-based line
-conversion (saturating at `u32::MAX`), used by the TUI too. It takes lines, not text, so the caller splits them (`review` uses
+`State`. It takes lines, not text, so the caller splits them (`review` uses
 `str::lines`). The diff is `similar`'s Myers over whole lines; `map_range`
 is `Diff::new(old, new).map(range)`. Checking a range costs one pass over
 the diff ops, not one per line.
+
+`line_number(i)` is the one 0-based index → 1-based line conversion
+(saturating at `u32::MAX` for any `usize`), used by the TUI too.
 
 - `Current` iff every anchored line is in an unchanged run of the diff **and**
   the mapped lines are contiguous: a line inserted inside the range makes it
