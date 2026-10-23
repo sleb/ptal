@@ -14,7 +14,13 @@ impl App {
     /// Move to the nearest covered line strictly after (or before) the
     /// cursor; stay put when there is none.
     fn jump_to_covered(&mut self, forward: bool) {
-        let covered = (0..self.lines.len()).filter(|&line| self.marker(line).is_some());
+        // Only the side being searched: a marker scans every thread.
+        let side = if forward {
+            self.cursor + 1..self.lines.len()
+        } else {
+            0..self.cursor
+        };
+        let covered = side.filter(|&line| self.marker(line).is_some());
         if let Some(line) = nearest(covered, self.cursor, forward) {
             self.move_to(line);
         }
