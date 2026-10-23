@@ -405,9 +405,9 @@ mod tests {
         let threads = [chatty("c1", (2, 2), 1)];
         let normal = panel_app(&threads, 20);
         let mut visual = normal.clone();
-        send(&mut visual, [ch('v'), ch('j')]);
+        typed(&mut visual, "vj");
         let mut search = normal.clone();
-        send(&mut search, [ch('/'), ch('l')]);
+        typed(&mut search, "/l");
         let mut panel = normal.clone();
         send(&mut panel, [ch('j'), press(KeyCode::Enter)]);
         let mut help = normal.clone();

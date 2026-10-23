@@ -326,8 +326,7 @@ mod tests {
     #[test]
     fn the_panel_shrinks_the_view_keeps_the_cursor_visible_and_closing_restores() {
         let mut a = panel_app(&[chatty("c1", (6, 6), 1)], 12); // height 10
-        send(&mut a, [ch('G'), ch('g')]);
-        send(&mut a, [ch('j'), ch('j'), ch('j'), ch('j'), ch('j')]);
+        typed(&mut a, "Ggjjjjj");
         assert_eq!(a.cursor, 5);
 
         send(&mut a, [press(KeyCode::Enter)]);
@@ -520,7 +519,7 @@ mod tests {
     #[test]
     fn r_is_unbound_in_normal_and_text_in_input() {
         let mut normal = panel_app(&[chatty("c1", (2, 2), 1)], 12);
-        send(&mut normal, [ch('j'), ch('r')]);
+        typed(&mut normal, "jr");
         assert_eq!(normal.mode, Mode::Normal);
 
         let mut a = in_panel_input();

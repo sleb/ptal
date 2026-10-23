@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn a_typo_returns_to_the_origin_and_an_uppercase_char_makes_it_exact() {
         let mut a = searching(&PLAN, 10);
-        send(&mut a, [ch('j'), ch('/')]);
+        typed(&mut a, "j/");
         type_query(&mut a, "plan");
         assert_eq!(a.cursor, 2);
         type_query(&mut a, "x");
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn a_match_reached_by_wrapping_says_so_in_the_prompt() {
         let mut a = searching(&PLAN, 10);
-        send(&mut a, [ch('G'), ch('/')]);
+        typed(&mut a, "G/");
         type_query(&mut a, "alpha");
         assert_eq!(a.cursor, 0);
         assert_eq!(a.search_note(), " [wrapped]");
@@ -244,7 +244,7 @@ mod tests {
     fn esc_and_ctrl_c_restore_the_cursor_and_view_and_set_no_search() {
         for cancel in [press(KeyCode::Esc), ctrl('c')] {
             let mut a = searching(&PLAN, 4);
-            send(&mut a, [ch('j'), ch('/')]);
+            typed(&mut a, "j/");
             let origin = at(&a);
             type_query(&mut a, "omega");
             assert_eq!(a.cursor, 5);
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn search_extends_a_visual_selection_and_esc_returns_to_it() {
         let mut a = searching(&PLAN, 10);
-        send(&mut a, [ch('v'), ch('/')]);
+        typed(&mut a, "v/");
         type_query(&mut a, "plan");
         assert_eq!(a.selection(), (0, 2));
         send(&mut a, [press(KeyCode::Enter)]);

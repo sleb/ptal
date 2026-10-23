@@ -623,12 +623,12 @@ mod tests {
         let named = [KeyCode::Down, KeyCode::Up, KeyCode::Home, KeyCode::End];
         let normal = || {
             let mut a = app(20, 10);
-            send(&mut a, [ch('j'), ch('j')]);
+            typed(&mut a, "jj");
             a
         };
         let help = || {
             let mut a = app(5, 4);
-            send(&mut a, [ch('?'), ch('j')]);
+            typed(&mut a, "?j");
             a
         };
         let panel = || {

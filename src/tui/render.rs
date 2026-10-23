@@ -687,8 +687,7 @@ mod tests {
             ],
         )];
         let mut app = opened_panel(&threads);
-        send(&mut app, [ch('j')]);
-        send(&mut app, [ch('j')]);
+        typed(&mut app, "jj");
 
         let text = screen(&draw(&app, W, 16));
 
@@ -810,8 +809,7 @@ mod tests {
             &[("claude", "hi")],
         )];
         let mut app = app_with(numbered(12), &threads, 16);
-        send(&mut app, [ch('j')]);
-        send(&mut app, [ch('j')]);
+        typed(&mut app, "jj");
         send(&mut app, [press(KeyCode::Enter)]);
 
         let terminal = draw(&app, W, 16);
@@ -1032,8 +1030,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:sâ
     #[test]
     fn input_mode_draws_a_titled_box_over_the_footer_with_the_file_above() {
         let mut app = app_with(numbered(12), &[], 8);
-        send(&mut app, [ch('j')]);
-        send(&mut app, [ch('j')]);
+        typed(&mut app, "jj");
         send(&mut app, [press(KeyCode::Enter)]);
         typed(&mut app, "why?");
 
@@ -1643,8 +1640,7 @@ plan.md  L1/2  enteâ€¦"
     fn a_table_rows_glyph_and_the_cursor_highlight_cover_that_row_alone() {
         let threads = [view("c1", (4, 4), Status::Open, State::Current)];
         let mut app = narrow(&TABLE, &threads, (40, 7));
-        send(&mut app, [ch('j')]);
-        send(&mut app, [ch('j')]);
+        typed(&mut app, "jj");
 
         let terminal = draw(&app, 40, 7);
 

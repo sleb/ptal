@@ -716,7 +716,7 @@ mod tests {
     fn a_shrink_mid_selection_maps_and_clamps_the_anchor() {
         let mut a = app(10, 20);
         send(&mut a, (0..6).map(|_| ch('j')));
-        send(&mut a, [ch('v'), ch('j'), ch('j')]);
+        typed(&mut a, "vjj");
         assert_eq!(a.selection(), (6, 8));
 
         refresh(&mut a, numbered(4), vec![]);

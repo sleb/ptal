@@ -209,7 +209,7 @@ mod tests {
 
         send(&mut a, [ch('k')]);
         assert_eq!(a.cursor, 0);
-        send(&mut a, [ch('j'), ch('j'), ch('j'), ch('j')]);
+        typed(&mut a, "jjjj");
         assert_eq!(a.cursor, 2);
         send(&mut a, [ch('k')]);
         assert_eq!(a.cursor, 1);
@@ -385,7 +385,7 @@ mod tests {
     fn jumping_scrolls_the_view_to_the_cursor() {
         let mut a = jump_app();
 
-        send(&mut a, [ch(']'), ch(']'), ch(']'), ch(']')]);
+        typed(&mut a, "]]]]");
 
         assert_eq!(a.cursor, 9);
         assert!(a.top <= a.cursor && a.cursor < a.top + a.height());
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn brackets_do_nothing_without_threads_and_are_text_in_input() {
         let mut none = app(5, 10);
-        send(&mut none, [ch(']'), ch('[')]);
+        typed(&mut none, "][");
         assert_eq!(none.cursor, 0);
 
         let mut a = input_app();
@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn outside_visual_the_selection_is_the_cursor_line() {
         let mut a = app(10, 12);
-        send(&mut a, [ch('j'), ch('j')]);
+        typed(&mut a, "jj");
 
         assert_eq!(a.selection(), (2, 2));
     }
@@ -424,12 +424,12 @@ mod tests {
     #[test]
     fn j_and_k_extend_the_selection_either_way_and_across_the_anchor() {
         let mut down = visual_at(10, 12, 3);
-        send(&mut down, [ch('j'), ch('j')]);
+        typed(&mut down, "jj");
         assert_eq!(down.selection(), (3, 5));
         assert_eq!(down.cursor, 5, "the cursor is the moving end");
 
         let mut up = visual_at(10, 12, 3);
-        send(&mut up, [ch('k'), ch('k')]);
+        typed(&mut up, "kk");
         assert_eq!(up.selection(), (1, 3));
 
         send(&mut up, (0..4).map(|_| press(KeyCode::Down)));
@@ -464,18 +464,18 @@ mod tests {
         let lines = (1..=10).map(|i| format!("line {i}")).collect();
         let threads = [view("c1", (7, 8), Status::Open, State::Current)];
         let mut a = App::open(showing(lines, &threads), "scott", (40, 12));
-        send(&mut a, [ch('j'), ch('v')]);
+        typed(&mut a, "jv");
 
         send(&mut a, [ch(']')]);
         assert_eq!(a.selection(), (1, 6));
-        send(&mut a, [ch('G'), ch('[')]);
+        typed(&mut a, "G[");
         assert_eq!(a.selection(), (1, 7));
     }
 
     #[test]
     fn capital_v_selects_exactly_as_v_does() {
         let mut a = app(10, 12);
-        send(&mut a, [ch('j'), ch('V'), ch('j')]);
+        typed(&mut a, "jVj");
 
         assert_eq!(a.mode, Mode::Visual { anchor: 1 });
         assert_eq!(a.selection(), (1, 2));
@@ -663,7 +663,7 @@ mod tests {
     #[test]
     fn braces_do_nothing_without_changes() {
         let mut a = app(5, 10);
-        send(&mut a, [ch('j'), ch('}'), ch('{')]);
+        typed(&mut a, "j}{");
         assert_eq!(a.cursor, 1);
     }
 
@@ -692,7 +692,7 @@ mod tests {
     fn a_brace_in_visual_extends_the_selection() {
         let mut a = change_app();
 
-        send(&mut a, [ch('v'), ch('}')]);
+        typed(&mut a, "v}");
 
         assert_eq!(a.selection(), (0, 2));
     }
