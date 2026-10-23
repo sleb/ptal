@@ -524,13 +524,23 @@ mod tests {
 
     #[test]
     fn only_mods_reads_key_modifiers_outside_tests() {
-        let src = include_str!("mod.rs");
-        let production = &src[..src.find("#[cfg(test)]").expect("test module")];
-        let reads = production
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .filter(|line| line.contains(".modifiers"))
-            .count();
+        // Every file of the module, read from the directory so a new
+        // submodule cannot escape the scan; each is cut at its tests.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tui/app");
+        let mut reads = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap();
+            let production = src.find("#[cfg(test)]").map_or(&src[..], |at| &src[..at]);
+            reads += production
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .filter(|line| line.contains(".modifiers"))
+                .count();
+        }
         assert_eq!(reads, 1, "handlers must go through Mods::of");
     }
 
