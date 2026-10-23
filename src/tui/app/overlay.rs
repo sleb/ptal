@@ -61,17 +61,15 @@ pub(super) fn state_name(state: ReviewState) -> String {
 /// whole note, each line wrapped.
 pub(super) fn review_rows(review: &ReviewStatus, width: usize) -> Vec<keys::Row> {
     let width = width.max(1);
-    let row = |text: String, heading| keys::Row { text, heading };
     let mut out = vec![
-        row(state_name(review.state), true),
-        row(String::new(), false),
+        keys::Row {
+            text: state_name(review.state),
+            heading: true,
+        },
+        blank_row(),
     ];
     let Some(entry) = &review.latest else {
-        out.extend(
-            wrap::plain_rows("no hand-off yet", width)
-                .into_iter()
-                .map(|t| row(t, false)),
-        );
+        push_wrapped(&mut out, "no hand-off yet", width);
         return out;
     };
     let what = match entry.event {
@@ -79,28 +77,37 @@ pub(super) fn review_rows(review: &ReviewStatus, width: usize) -> Vec<keys::Row>
         LogEvent::Close { verdict } => format!("closed as {}", verdict.as_str()),
         LogEvent::Reopen => "reopened".to_string(),
     };
-    let about = [
-        format!("{what} by {} ({})", entry.author, entry.side.as_str()),
-        format!("at {} on {}", entry.created_at, entry.revision),
-    ];
-    for line in about {
-        out.extend(
-            wrap::plain_rows(&line, width)
-                .into_iter()
-                .map(|t| row(t, false)),
-        );
-    }
+    let by = format!("{what} by {} ({})", entry.author, entry.side.as_str());
+    push_wrapped(&mut out, &by, width);
+    let at = format!("at {} on {}", entry.created_at, entry.revision);
+    push_wrapped(&mut out, &at, width);
     if let Some(note) = &entry.note {
-        out.push(row(String::new(), false));
+        out.push(blank_row());
         for line in note.lines() {
-            out.extend(
-                wrap::plain_rows(line, width)
-                    .into_iter()
-                    .map(|t| row(t, false)),
-            );
+            push_wrapped(&mut out, line, width);
         }
     }
     out
+}
+
+/// An empty row between the parts of the listing.
+fn blank_row() -> keys::Row {
+    keys::Row {
+        text: String::new(),
+        heading: false,
+    }
+}
+
+/// Push `line` wrapped to `width`, a row for each wrapped row.
+fn push_wrapped(out: &mut Vec<keys::Row>, line: &str, width: usize) {
+    out.extend(
+        wrap::plain_rows(line, width)
+            .into_iter()
+            .map(|text| keys::Row {
+                text,
+                heading: false,
+            }),
+    );
 }
 
 /// Leave an overlay for `back`.
