@@ -15,8 +15,8 @@ use serde_json::json;
 use crate::error::Error;
 use crate::model::{Anchor, ReviewState, Side, State, Status, Thread};
 use crate::review::{
-    Clock, HandedOff, POLL_INTERVAL, ReviewStatus, Reviews, SystemClock, SystemTicker, ThreadView,
-    ThreadWrite, Ticker, View, WAIT_READ_RETRIES, Waited, Woke,
+    Clock, HandedOff, ReviewStatus, Reviews, SystemClock, SystemTicker, ThreadView, ThreadWrite,
+    Ticker, View, Waited, Woke,
 };
 use crate::store::Store;
 use crate::tui;
@@ -899,6 +899,7 @@ pub fn main() -> ExitCode {
 mod tests {
     use super::*;
     use crate::model::{Side, Verdict};
+    use crate::review::{POLL_INTERVAL, WAIT_READ_RETRIES};
     use crate::store::Store;
     use std::io;
     use std::path::PathBuf;
