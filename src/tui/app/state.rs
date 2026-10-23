@@ -2,6 +2,8 @@
 //! screen stays in place, and what the screen asks of it (the cursor, the
 //! selection, the threads and markers, the changes, the banner).
 
+use std::fmt::Write as _;
+
 use crate::anchor::{ChangeKind, Diff, LineRange, line_number};
 use crate::model::{Entry, ReviewState, Side, State, Status};
 use crate::review::{ReviewStatus, ThreadView, View};
@@ -182,10 +184,10 @@ impl App {
             self.cursor = first.saturating_sub(1).min(self.last_line());
             index = on_cursor(self);
         }
-        if let (Some(index), Mode::Panel { selected, .. })
-        | (
+        if let (
             Some(index),
-            Mode::Input {
+            Mode::Panel { selected, .. }
+            | Mode::Input {
                 back: Back::Panel { selected, .. },
                 ..
             },
@@ -241,7 +243,7 @@ impl App {
             let mut lines = note.lines();
             let first = lines.next().unwrap_or_default();
             let more = if lines.next().is_some() { "…" } else { "" };
-            text.push_str(&format!(" · {author}: {first}{more}"));
+            let _ = write!(text, " · {author}: {first}{more}");
         }
         let hint = match self.review.state {
             ReviewState::Turn(Side::Human) => "H:hand off C:close",
@@ -790,7 +792,7 @@ mod tests {
         let mut a = App::open(showing(numbered(5), &threads), "scott", (80, 20));
         send(&mut a, [ch('C'), press(KeyCode::Tab)]);
         assert_eq!(update(&mut a, ctrl('s')), None, "asks to confirm");
-        refresh(&mut a, numbered(5), threads.clone());
+        refresh(&mut a, numbered(5), threads);
 
         assert!(matches!(
             a.mode,
@@ -830,7 +832,7 @@ mod tests {
         refresh(&mut a, numbered(5), vec![c1.clone(), c2, c3]);
         assert_eq!(selected_id(&a).as_deref(), Some("c3"));
 
-        refresh(&mut a, numbered(5), vec![c1.clone()]);
+        refresh(&mut a, numbered(5), vec![c1]);
         assert_eq!(selected_id(&a).as_deref(), Some("c1"), "clamped");
 
         refresh(&mut a, numbered(5), vec![]);

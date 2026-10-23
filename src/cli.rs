@@ -4,6 +4,7 @@
 //! module only decides what bytes go to which stream and which exit code.
 
 use std::ffi::{OsStr, OsString};
+use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -549,7 +550,7 @@ impl Output {
             Output::HandedOff(HandedOff { review, waiting }) => {
                 let mut line = format!("handed off: {}", state_line(review));
                 if !waiting.is_empty() {
-                    line.push_str(&format!(" (waiting on you: {})", waiting.join(", ")));
+                    let _ = write!(line, " (waiting on you: {})", waiting.join(", "));
                 }
                 line + "\n"
             }
@@ -632,7 +633,7 @@ fn render_text(threads: &[ThreadView]) -> String {
                 anchor.start_line, anchor.end_line
             );
             for line in anchor.quote.lines() {
-                block.push_str(&format!("  > {line}\n"));
+                let _ = writeln!(block, "  > {line}");
             }
             for comment in comments {
                 block.push_str(&indent_body(&comment.author, &comment.body));

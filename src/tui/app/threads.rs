@@ -96,7 +96,7 @@ pub(super) fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     let count = app.threads_on(app.cursor).len().max(1);
     match key.code {
         KeyCode::Char('?') if !ctrl => {
-            app.open_overlay(Overlay::Help, OverlayBack::Panel { selected, scroll })
+            app.open_overlay(Overlay::Help, OverlayBack::Panel { selected, scroll });
         }
         KeyCode::Char('a') if !ctrl => {
             app.mode = Mode::input(Back::Panel { selected, scroll }, Target::NewThread);

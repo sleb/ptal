@@ -124,7 +124,11 @@ fn screen(app: &App) -> String {
     buffer
         .content()
         .chunks(usize::from(COLS))
-        .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+        .map(|row| {
+            row.iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }

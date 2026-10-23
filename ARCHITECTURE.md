@@ -902,6 +902,8 @@ hand-off or close.
 - **Lines are 1-based and inclusive** everywhere in the model and on the wire.
 - **Time and randomness are injected** (clock, id counter) so core logic is
   testable deterministically.
+- **Lints live in `Cargo.toml`'s `[lints]`:** a short curated list of clippy
+  lints that caught real issues, not the `pedantic` group.
 - **Forward compatibility.** `schema_version` on every persisted file; refuse
   newer versions, migrate older.
 
