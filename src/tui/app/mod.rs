@@ -553,6 +553,7 @@ mod tests {
     use super::*;
     use crate::anchor::ChangeKind;
     use crate::model::{State, Status};
+    use crate::tui::test_support::*;
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     // --- modifiers ---

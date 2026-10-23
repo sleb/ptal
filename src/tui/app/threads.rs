@@ -141,6 +141,7 @@ mod tests {
     use crate::review::{ThreadWrite, View};
     use crate::tui::app::fixtures::*;
     use crate::tui::app::{Event, update};
+    use crate::tui::test_support::*;
     use ratatui::crossterm::event::KeyModifiers;
 
     // --- thread panel ---

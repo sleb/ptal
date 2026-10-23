@@ -373,6 +373,7 @@ mod tests {
     use crate::review::ThreadWrite;
     use crate::tui::app::fixtures::*;
     use crate::tui::app::{Effect, Event, Overlay, update};
+    use crate::tui::test_support::*;
     use ratatui::crossterm::event::KeyCode;
 
     #[test]

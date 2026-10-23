@@ -162,6 +162,7 @@ mod tests {
     use super::*;
     use crate::tui::app::Event;
     use crate::tui::app::fixtures::*;
+    use crate::tui::test_support::*;
     use ratatui::crossterm::event::{KeyEventKind, KeyModifiers};
 
     fn searching(lines: &[&str], rows: u16) -> App {

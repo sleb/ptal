@@ -136,6 +136,7 @@ mod tests {
     use crate::review::{ThreadWrite, View};
     use crate::tui::app::fixtures::*;
     use crate::tui::app::{Event, update};
+    use crate::tui::test_support::*;
     use ratatui::crossterm::event::KeyModifiers;
 
     #[test]
@@ -347,10 +348,6 @@ mod tests {
             );
             assert!(draft(&a).0.starts_with('x'), "{key:?}");
         }
-    }
-
-    fn paste(text: &str) -> Event {
-        Event::Paste(text.into())
     }
 
     #[test]
@@ -636,10 +633,6 @@ mod tests {
             Mode::Input { target, .. } => target,
             other => panic!("not in Input mode: {other:?}"),
         }
-    }
-
-    fn shift(c: char) -> Event {
-        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT))
     }
 
     #[test]

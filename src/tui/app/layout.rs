@@ -222,6 +222,7 @@ mod tests {
     use crate::model::{State, Status};
     use crate::tui::app::fixtures::*;
     use crate::tui::app::{Effect, Event, update};
+    use crate::tui::test_support::*;
     use ratatui::crossterm::event::KeyCode;
     use ratatui::style::{Color, Modifier};
 
