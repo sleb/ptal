@@ -15,9 +15,41 @@ it is persist across rounds and revisions.
 
 ## Install
 
+### crates.io
+
 ```sh
-cargo install ptal
+cargo install ptal --locked
 ```
+
+`--locked` builds with the dependency versions ptal was tested with.
+
+### Prebuilt binaries
+
+Each [GitHub Release](https://github.com/sleb/ptal/releases) has a
+`ptal-<version>-<target>.tar.gz` archive per target, and a `SHA256SUMS` file
+covering them:
+
+| Target | Platform |
+|---|---|
+| `aarch64-apple-darwin` | macOS, Apple silicon |
+| `x86_64-apple-darwin` | macOS, Intel |
+| `x86_64-unknown-linux-gnu` | Linux, x86-64 |
+| `aarch64-unknown-linux-gnu` | Linux, arm64 |
+
+Download the archive for your target and `SHA256SUMS` into one directory,
+then verify, extract and put `ptal` on your `PATH`:
+
+```sh
+shasum -a 256 -c SHA256SUMS --ignore-missing   # expect: OK for your archive
+tar -xzf ptal-X.Y.Z-<target>.tar.gz
+install ptal-X.Y.Z-<target>/ptal ~/.local/bin/
+```
+
+The Linux binaries link the glibc of the build machine and may not run on
+older distributions; use crates.io there. There is no Windows build.
+
+To build from a checkout, see [Building](#building). What changed between
+versions is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Usage
 
@@ -224,10 +256,48 @@ thread is waiting on you when its last comment's author is not your `--as`
 name (exact match). Use one stable name per agent (set `PTAL_AUTHOR`), and
 don't reuse the human's `$USER`.
 
+**`not_a_terminal`: the interactive view needs a terminal; agents should use `ptal comments`.**
+An agent ran `ptal <file>`, which opens the TUI. Agents use the commands under
+[For agents](#for-agents); the human runs `ptal <file>` in a terminal.
+
+**`locked`: review is locked by another process.** Another ptal, the TUI or a
+command, held the review's lock for more than 5 seconds. Retry. If nothing is
+running, find and end the stuck ptal process; the lock is released when its
+process exits.
+
+**`file_changed`: the file changed: look again.** The file was edited after
+the screen or the agent last read it, so the write was refused. Read again
+(`ptal comments`, or let the TUI refresh) and repeat the write.
+
+**`missing_author`: no author: pass --as <name> or set PTAL_AUTHOR.** The TUI
+signs comments with `$USER` and exits with this when it is unset. Run
+`export USER=<name>`, or `export PTAL_AUTHOR=<name>`.
+
+**My comments vanished after I renamed or moved the file.** A review belongs
+to the file's path, so the renamed file started a new, empty review. The old
+one is still on disk; see [Where data lives](#where-data-lives).
+
 ## Where data lives
 
 `$XDG_DATA_HOME/ptal/` (default `~/.local/share/ptal/`, on macOS too). Override
 with `PTAL_DATA_DIR`. Nothing is written next to the reviewed file.
+
+Each reviewed file gets its own directory there, `<slug>-<hash8>/`: `<slug>`
+is the file's name, and `<hash8>` is a hash of its canonical absolute path.
+Inside:
+
+- `review.json`: the comments, replies, turns and the review's full path.
+- `review.lock`: guards writes; safe to ignore.
+- `revisions/`: a copy of each version of the file that a comment was made
+  against.
+
+The canonical path is the file's identity, so a symlink and its target share
+one review. A rename or move gives the file a new path and so a new, empty
+review. A copy is a new file too.
+
+ptal never deletes a review, so throwaway ones pile up. To remove one, delete
+its directory: `grep -l plan.md <data dir>/*/review.json` finds it, then
+`rm -r <data dir>/<slug>-<hash8>`. To remove them all, `rm -r <data dir>`.
 
 ## Building
 
