@@ -52,6 +52,8 @@ ptal plan.md            # open the TUI
 
 ### Keys
 
+Keys typed with AltGr work as the same key pressed plain; `ctrl+` keys need ctrl without alt.
+
 **Available**, by mode:
 
 Normal mode:

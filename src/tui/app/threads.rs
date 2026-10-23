@@ -625,6 +625,35 @@ mod tests {
     }
 
     #[test]
+    fn altgr_characters_act_as_the_plain_key_in_the_panel() {
+        let mut a = open_and_resolved_panel();
+        let before = a.mode.clone();
+        assert_eq!(update(&mut a, alt_graph('c')), None);
+        assert_eq!(a.mode, before, "not ctrl+c");
+
+        assert_eq!(
+            update(&mut a, alt_graph('x')),
+            Some(Effect::Resolve { id: "c1".into() })
+        );
+        send(&mut a, [alt_graph('r')]);
+        assert!(matches!(a.mode, Mode::Input { .. }), "{:?}", a.mode);
+
+        let mut a = open_and_resolved_panel();
+        send(&mut a, [press(KeyCode::Tab)]);
+        assert_eq!(
+            update(&mut a, alt_graph('o')),
+            Some(Effect::Reopen { id: "c2".into() })
+        );
+
+        let mut a = open_and_resolved_panel();
+        send(&mut a, [alt_graph('a')]);
+        assert!(matches!(a.mode, Mode::Input { .. }), "{:?}", a.mode);
+        let mut a = open_and_resolved_panel();
+        send(&mut a, [alt_graph('?')]);
+        assert!(matches!(a.mode, Mode::Overlay { .. }), "{:?}", a.mode);
+    }
+
+    #[test]
     fn x_resolves_the_selected_open_thread_without_changing_mode() {
         let mut a = open_and_resolved_panel();
         let before = a.mode.clone();

@@ -671,10 +671,11 @@ Its parts:
   side), when and on which revision, then its whole note, wrapped; it scrolls
   and closes the same way, with `i` in place of `?`. The handlers are not
   table-driven; every handler reads a key's modifiers through one private
-  `Mods` helper (`ctrl`, `ctrl_only`, `chord`, `alt_gr`, `shift`), never
-  `KeyEvent::modifiers`. Terminals report AltGr as ctrl+alt, so the comment
-  box inserts such characters as text and `ctrl+s`/`ctrl+c` need ctrl without
-  alt; a probe test in `tui::app` presses every candidate key in each
+  `Mods` helper (`ctrl`, `chord`, `shift`), never `KeyEvent::modifiers`.
+  Terminals report AltGr as ctrl+alt, so `Mods::of` reads a character typed
+  with ctrl+alt as that character with no modifiers: every mode treats it as
+  the plain key and no ctrl chord fires from it. Named keys keep ctrl+alt; a
+  probe test in `tui::app` presses every candidate key in each
   section's fixture and fails when a key does something unlisted or a listed
   key does nothing.
 - `tui::search`: `find(line, query) -> Vec<Range<usize>>` and
@@ -694,8 +695,8 @@ Its parts:
   it; a match split across two wrapped table rows is neither found nor
   marked. The prompt replaces the footer row: `/query` (its tail, after `…`,
   when too wide) plus ` [no match]` or ` [wrapped]` only when that fits whole. Backspace on an empty query
-  leaves the prompt. `n`/`N` ignore ctrl/alt chords; the prompt treats
-  ctrl+alt (AltGr) as text, by the same `Mods` helper as `tui::app`.
+  leaves the prompt. `n`/`N` ignore ctrl/alt chords (an AltGr-typed `n` repeats); the prompt
+  takes AltGr characters as text by the same `Mods` rule as `tui::app`.
 - `tui::render`: `render(&App, &mut Frame)`, pure over state. One file line
   is one or more screen rows (word-wrapped by `tui::wrap`, tabs shown as four
   spaces). A well-formed markdown table shows aligned, in place; one too
