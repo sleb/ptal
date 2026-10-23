@@ -745,9 +745,9 @@ fn launch_tui<C: Clock>(file: &Path, env: &Env<C>) -> Result<(), Failure> {
         .reviews
         .as_ref()
         .ok_or(Failure::Core(Error::NoDataDir))?;
-    let loaded = tui::load(reviews, file)?;
+    let view = tui::load(reviews, file)?;
     let size = tui::terminal_size().map_err(Failure::Terminal)?;
-    let app = loaded.into_app(file, author, size, env.color);
+    let app = tui::open(view, file, author, size, env.color);
     tui::run(app, reviews, file, author).map_err(Failure::Terminal)
 }
 

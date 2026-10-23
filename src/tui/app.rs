@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 
 use crate::anchor::{Change, ChangeKind, Diff, LineRange, line_number};
 use crate::model::{Entry, Event as LogEvent, ReviewState, Side, State, Status, Verdict};
-use crate::review::{ReviewStatus, ThreadView, ThreadWrite};
+use crate::review::{ReviewStatus, ThreadView, ThreadWrite, View};
 
 use super::draft::Draft;
 use super::highlight::{self, Styling};
@@ -195,17 +195,18 @@ pub enum Event {
         id: String,
         /// Which write; it picks the footer message.
         done: ThreadWrite,
-        reread: Reread,
+        /// The file as re-read after the write.
+        view: View,
     },
-    /// The driver wrote a hand-off, close or reopen, then re-read the file;
-    /// `message` is the footer's.
-    ReviewSaved { message: String, reread: Reread },
+    /// The driver wrote a hand-off, close or reopen, then re-read the file
+    /// into `view`; `message` is the footer's.
+    ReviewSaved { message: String, view: View },
     /// The driver could not perform the write. A pending draft is kept.
     SaveFailed(String),
     /// The driver noticed the file or the review changed on disk (the other
     /// side's writes) and re-read it. Nothing is written; the mode, a draft
     /// and the footer are kept.
-    Refreshed(Reread),
+    Refreshed(View),
     /// The driver's checks for the other side's writes have kept failing;
     /// the message goes in the footer like a failed save's.
     RefreshFailed(String),
@@ -213,23 +214,6 @@ pub enum Event {
     /// [`Mode::Input`] it goes into the draft in one step
     /// ([`Draft::paste`]); everywhere else it is ignored.
     Paste(String),
-}
-
-/// What the driver re-reads from disk, after a write or when the other
-/// side's writes are noticed, for the screen: one [`crate::review::View`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Reread {
-    /// The file's lines, as the threads are mapped to.
-    pub lines: Vec<String>,
-    /// The hash of the content read ([`crate::review::View::sha256`]):
-    /// what the screen now shows.
-    pub sha256: String,
-    /// Every thread of the file, resolved ones included.
-    pub threads: Vec<ThreadView>,
-    /// The review's state.
-    pub review: ReviewStatus,
-    /// What changed since the human's last look ([`crate::review::View::changes`]).
-    pub changes: Vec<Change>,
 }
 
 /// Something `update` wants the driver to do.
@@ -275,7 +259,7 @@ pub struct App {
     /// Whether the file view is highlighted, so a re-read can restyle.
     highlight: bool,
     /// The hash of the content the screen shows, for writes that depend on
-    /// it ([`crate::review::Reviews::against`]). Empty until a re-read.
+    /// it ([`crate::review::Reviews::against`]): the view's `sha256`.
     seen: String,
     pub(super) cursor: usize,
     pub(super) top: usize,
@@ -353,26 +337,22 @@ const BOX_BORDER_COLS: usize = 2;
 const GUTTER_EXTRA: usize = 3;
 
 impl App {
-    /// A view over `lines` on a terminal `cols` x `rows` cells, with gutter
-    /// markers for `threads` (every thread, resolved ones too). `author` is
-    /// who comments are written as, and whose last word is not "waiting".
+    /// The screen over `view` (its lines, every thread, resolved ones
+    /// too, the review, the changes since the last look, and the content
+    /// hash, [`App::seen`]) on a terminal `cols` x `rows` cells, the cursor
+    /// at the top. `author` is who comments are written as, and whose last
+    /// word is not "waiting".
     ///
-    /// The content hash ([`App::seen`]) is empty until a [`Reread`] is
-    /// applied, so the driver's first guarded write from such an app is
-    /// refused and refreshes it. The TUI is always built through
-    /// [`super::Loaded::into_app`], which applies the view it read.
-    pub fn open(
-        lines: Vec<String>,
-        threads: &[ThreadView],
-        author: &str,
-        (cols, rows): (u16, u16),
-    ) -> Self {
+    /// The view goes in through the same re-read a refresh applies, from
+    /// no text, so a fresh app and a refreshed one take the same state
+    /// from a [`View`].
+    pub fn open(view: View, author: &str, (cols, rows): (u16, u16)) -> Self {
         let mut app = App {
             tables: Vec::new(),
             stylings: Vec::new(),
             highlight: false,
             seen: String::new(),
-            lines,
+            lines: Vec::new(),
             cursor: 0,
             top: 0,
             cols: usize::from(cols),
@@ -385,9 +365,10 @@ impl App {
             review: ReviewStatus::default(),
             file: String::new(),
             author: author.to_string(),
-            threads: threads.to_vec(),
+            threads: Vec::new(),
             changes: Vec::new(),
         };
+        app.reread(view);
         app.relayout();
         app.clamp_view();
         app
@@ -400,35 +381,12 @@ impl App {
         self
     }
 
-    /// Show `review` as the review's state.
-    #[must_use]
-    pub fn with_review(mut self, review: ReviewStatus) -> Self {
-        self.set_review(review);
-        self
-    }
-
-    /// Show the file, threads, review and changes `reread` from disk, as
-    /// on a refresh.
-    #[must_use]
-    pub fn with_reread(mut self, reread: Reread) -> Self {
-        self.reread(reread);
-        self.clamp_view();
-        self
-    }
-
-    /// Mark `changes` (since the human's last look) in the gutter.
-    #[must_use]
-    pub fn with_changes(mut self, changes: Vec<Change>) -> Self {
-        self.changes = changes;
-        self
-    }
-
     fn set_review(&mut self, review: ReviewStatus) {
         self.review_rows = review_rows(&review, self.cols);
         self.review = review;
     }
 
-    /// Show the file, its threads and the review as `reread` from disk,
+    /// Show the file, its threads and the review as re-read into `view`,
     /// staying in place: the cursor, `top`, a selection's anchor and the
     /// search prompt's origin follow their text through an
     /// [`anchor::Diff`](Diff) of the old lines to the new (then the view
@@ -437,13 +395,14 @@ impl App {
     /// its count of open threads may be stale.
     fn reread(
         &mut self,
-        Reread {
+        View {
+            revision: _,
             lines,
             sha256,
             threads,
             review,
             changes,
-        }: Reread,
+        }: View,
     ) {
         let selected = self.selected_thread_id();
         if lines != self.lines {
@@ -1286,8 +1245,8 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.relayout();
             None
         }
-        Event::Saved { id, done, reread } => {
-            app.reread(reread);
+        Event::Saved { id, done, view } => {
+            app.reread(view);
             let from_panel = matches!(
                 app.mode,
                 Mode::Panel { .. }
@@ -1303,8 +1262,8 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.status = Some(format!("{} {id}", done.as_str()));
             None
         }
-        Event::ReviewSaved { message, reread } => {
-            app.reread(reread);
+        Event::ReviewSaved { message, view } => {
+            app.reread(view);
             app.mode = Mode::Normal;
             app.status = Some(message);
             None
@@ -1313,8 +1272,8 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.status = Some(message);
             None
         }
-        Event::Refreshed(reread) => {
-            app.reread(reread);
+        Event::Refreshed(view) => {
+            app.reread(view);
             None
         }
         Event::RefreshFailed(message) => {
@@ -1768,7 +1727,7 @@ mod tests {
     /// `n` lines on a terminal of `rows` rows (one is the footer).
     fn app(n: usize, rows: u16) -> App {
         let lines = (1..=n).map(|i| format!("line {i}")).collect();
-        App::open(lines, &[], "scott", (80, rows))
+        App::open(showing(lines, &[]), "scott", (80, rows))
     }
 
     fn send(app: &mut App, events: impl IntoIterator<Item = Event>) {
@@ -1868,11 +1827,37 @@ mod tests {
         assert_eq!((a.cols, a.rows), (33, 7));
     }
 
+    #[test]
+    fn opening_from_a_view_shows_its_text_threads_review_changes_and_hash() {
+        let thread = said_by(
+            view("c1", (2, 2), Status::Open, State::Current),
+            &["claude"],
+        );
+        let a = App::open(
+            View {
+                sha256: "seen".into(),
+                threads: vec![thread],
+                review: handed_off("over to you"),
+                changes: vec![change(1, 1, ChangeKind::Changed)],
+                ..showing(vec!["one".into(), "two".into()], &[])
+            },
+            "scott",
+            (80, 10),
+        );
+
+        assert_eq!(a.lines(), ["one", "two"]);
+        assert_eq!((a.cursor, a.top), (0, 0));
+        assert_eq!(a.marker(1), Some(Marker::Waiting));
+        assert_eq!(a.review(), &handed_off("over to you"));
+        assert_eq!(a.change(0), Some(ChangeKind::Changed));
+        assert_eq!(a.seen(), "seen");
+    }
+
     // --- wrapped rows ---
 
     fn wrapped(lines: &[&str], (cols, rows): (u16, u16)) -> App {
         let lines = lines.iter().map(ToString::to_string).collect();
-        App::open(lines, &[], "scott", (cols, rows))
+        App::open(showing(lines, &[]), "scott", (cols, rows))
     }
 
     /// The screen rows as (line, first, text), styles dropped.
@@ -1966,7 +1951,7 @@ mod tests {
     fn a_bracket_jump_past_wrapped_lines_shows_the_target() {
         let lines = [W3, W3, W3, "x", "y"].map(String::from).to_vec();
         let threads = [view("c1", (4, 4), Status::Open, State::Current)];
-        let mut a = App::open(lines, &threads, "scott", (14, 9)); // height 7
+        let mut a = App::open(showing(lines, &threads), "scott", (14, 9)); // height 7
 
         send(&mut a, [ch(']')]);
 
@@ -1978,7 +1963,7 @@ mod tests {
     fn opening_the_panel_below_wrapped_lines_keeps_the_cursor_line_shown() {
         let lines = [W3, W3, W3, W3, "t"].map(String::from).to_vec();
         let threads = [chatty("c1", (5, 5), 1)];
-        let mut a = App::open(lines, &threads, "scott", (14, 17)); // height 15
+        let mut a = App::open(showing(lines, &threads), "scott", (14, 17)); // height 15
         send(&mut a, [ch('G')]);
         assert_eq!(at(&a), (4, 0));
 
@@ -2406,7 +2391,7 @@ mod tests {
 
     #[test]
     fn an_empty_file_ignores_moves_without_panicking() {
-        let mut a = App::open(Vec::new(), &[], "scott", (80, 10));
+        let mut a = App::open(showing(Vec::new(), &[]), "scott", (80, 10));
 
         send(
             &mut a,
@@ -2449,7 +2434,7 @@ mod tests {
 
     #[test]
     fn enter_on_an_empty_file_is_a_no_op() {
-        let mut a = App::open(Vec::new(), &[], "scott", (80, 10));
+        let mut a = App::open(showing(Vec::new(), &[]), "scott", (80, 10));
 
         assert_eq!(update(&mut a, press(KeyCode::Enter)), None);
         assert_eq!(a.mode, Mode::Normal);
@@ -2550,7 +2535,7 @@ mod tests {
             Event::Saved {
                 id: "c3".into(),
                 done: ThreadWrite::Added,
-                reread: text,
+                view: text,
             },
         );
 
@@ -2951,7 +2936,7 @@ mod tests {
     #[test]
     fn up_and_down_move_between_the_drafts_rows_at_the_box_width() {
         // 13 columns: an 11-cell inner box, rows wrapped at 10.
-        let mut a = App::open(vec!["x".into()], &[], "scott", (13, 20));
+        let mut a = App::open(showing(vec!["x".into()], &[]), "scott", (13, 20));
         send(&mut a, [press(KeyCode::Enter)]);
         typed(&mut a, "aaaa bbbb cccc");
 
@@ -3018,7 +3003,7 @@ mod tests {
 
     fn open_view(threads: &[ThreadView], n: usize) -> App {
         let lines = (1..=n).map(|i| i.to_string()).collect();
-        App::open(lines, threads, "scott", (80, 10)).labeled("plan.md")
+        App::open(showing(lines, threads), "scott", (80, 10)).labeled("plan.md")
     }
 
     fn markers(a: &App) -> Vec<Option<Marker>> {
@@ -3130,7 +3115,11 @@ mod tests {
     fn a_range_past_the_end_of_the_file_cannot_index_out_of_range() {
         let threads = [view("c1", (2, 99), Status::Open, State::Current)];
 
-        let a = App::open(vec!["a".into(), "b".into()], &threads, "scott", (80, 10));
+        let a = App::open(
+            showing(vec!["a".into(), "b".into()], &threads),
+            "scott",
+            (80, 10),
+        );
 
         assert_eq!(a.marker(1), Some(Marker::Open));
         assert_eq!(a.marker(2), None);
@@ -3175,7 +3164,7 @@ mod tests {
             Event::Saved {
                 id: "c1".into(),
                 done: ThreadWrite::Added,
-                reread: Reread { threads, ..text },
+                view: View { threads, ..text },
             },
         );
 
@@ -3194,7 +3183,7 @@ mod tests {
             view("c3", (10, 10), Status::Open, State::Outdated),
         ];
         let lines = (1..=12).map(|i| i.to_string()).collect();
-        App::open(lines, &threads, "scott", (80, 6))
+        App::open(showing(lines, &threads), "scott", (80, 6))
     }
 
     #[test]
@@ -3248,7 +3237,7 @@ mod tests {
 
     fn panel_app(threads: &[ThreadView], rows: u16) -> App {
         let lines = (1..=10).map(|i| format!("line {i}")).collect();
-        App::open(lines, threads, "scott", (40, rows))
+        App::open(showing(lines, threads), "scott", (40, rows))
     }
 
     fn panel(a: &App) -> (usize, usize) {
@@ -3474,7 +3463,7 @@ mod tests {
             [Event::Saved {
                 id: "c9".into(),
                 done: ThreadWrite::Added,
-                reread: text,
+                view: text,
             }],
         );
 
@@ -3536,7 +3525,7 @@ mod tests {
             Event::Saved {
                 id: "c9".into(),
                 done: ThreadWrite::Added,
-                reread: Reread { threads, ..text },
+                view: View { threads, ..text },
             },
         );
 
@@ -3808,7 +3797,7 @@ mod tests {
             Event::Saved {
                 id: "c2".into(),
                 done: ThreadWrite::Replied,
-                reread: Reread { threads, ..text },
+                view: View { threads, ..text },
             },
         );
 
@@ -3918,7 +3907,7 @@ mod tests {
                 Event::Saved {
                     id: "c2".into(),
                     done,
-                    reread: Reread { threads, ..text },
+                    view: View { threads, ..text },
                 },
             );
 
@@ -4007,7 +3996,7 @@ mod tests {
     fn brackets_move_the_end_to_the_next_and_previous_threaded_line() {
         let lines = (1..=10).map(|i| format!("line {i}")).collect();
         let threads = [view("c1", (7, 8), Status::Open, State::Current)];
-        let mut a = App::open(lines, &threads, "scott", (40, 12));
+        let mut a = App::open(showing(lines, &threads), "scott", (40, 12));
         send(&mut a, [ch('j'), ch('v')]);
 
         send(&mut a, [ch(']')]);
@@ -4054,7 +4043,7 @@ mod tests {
 
     #[test]
     fn v_on_an_empty_file_stays_normal() {
-        let mut a = App::open(vec![], &[], "scott", (40, 10));
+        let mut a = App::open(showing(vec![], &[]), "scott", (40, 10));
 
         send(&mut a, [ch('v')]);
 
@@ -4129,7 +4118,7 @@ mod tests {
             Event::Saved {
                 id: "c4".into(),
                 done: ThreadWrite::Added,
-                reread: Reread { threads, ..text },
+                view: View { threads, ..text },
             },
         );
 
@@ -4159,7 +4148,7 @@ mod tests {
 
     fn searching(lines: &[&str], rows: u16) -> App {
         let lines = lines.iter().map(ToString::to_string).collect();
-        App::open(lines, &[], "scott", (40, rows))
+        App::open(showing(lines, &[]), "scott", (40, rows))
     }
 
     fn type_query(a: &mut App, text: &str) {
@@ -4644,10 +4633,17 @@ mod tests {
             ),
         ];
         let lines = (1..=40).map(|i| format!("line {i}")).collect();
-        let mut a = App::open(lines, &threads, "scott", (80, 10)).with_changes(vec![
-            change(2, 2, ChangeKind::Changed),
-            change(30, 31, ChangeKind::Changed),
-        ]);
+        let mut a = App::open(
+            View {
+                changes: vec![
+                    change(2, 2, ChangeKind::Changed),
+                    change(30, 31, ChangeKind::Changed),
+                ],
+                ..showing(lines, &threads)
+            },
+            "scott",
+            (80, 10),
+        );
         send(
             &mut a,
             [ch('/'), ch('2'), ch('9'), press(KeyCode::Enter), ch('g')],
@@ -4769,7 +4765,14 @@ mod tests {
     fn i_opens_the_review_with_its_whole_note_and_its_closing_keys_go_back() {
         let note = "Over to you.\nSee c1 and c3.\nThanks";
         for close in [ch('i'), press(KeyCode::Esc), ch('q'), ctrl('c')] {
-            let mut a = app(20, 10).with_review(handed_off(note));
+            let mut a = App::open(
+                View {
+                    review: handed_off(note),
+                    ..showing(numbered(20), &[])
+                },
+                "scott",
+                (80, 10),
+            );
             send(&mut a, [ch('j')]);
             let before = snapshot(&a);
 
@@ -4805,7 +4808,14 @@ mod tests {
             .map(|n| format!("line {n}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let mut a = app(5, 8).with_review(handed_off(&note));
+        let mut a = App::open(
+            View {
+                review: handed_off(&note),
+                ..showing(numbered(5), &[])
+            },
+            "scott",
+            (80, 8),
+        );
         send(&mut a, [ch('i')]);
         let max = overlay_text(&a).len() - a.overlay_body_rows();
         assert!(max > 3, "the note must not fit");
@@ -4922,8 +4932,7 @@ mod tests {
             &["claude"],
         )];
         App::open(
-            vec!["one".into(), "two".into()],
-            &threads,
+            showing(vec!["one".into(), "two".into()], &threads),
             "scott",
             (80, 10),
         )
@@ -5004,7 +5013,7 @@ mod tests {
             &mut a,
             Event::ReviewSaved {
                 message: "handed off".into(),
-                reread: Reread {
+                view: View {
                     review: handed_off("ok"),
                     ..text
                 },
@@ -5051,10 +5060,17 @@ mod tests {
 
     #[test]
     fn changes_mark_their_lines_and_count_as_hunks() {
-        let a = app(5, 10).with_changes(vec![
-            change(2, 3, ChangeKind::Changed),
-            change(5, 5, ChangeKind::Removed),
-        ]);
+        let a = App::open(
+            View {
+                changes: vec![
+                    change(2, 3, ChangeKind::Changed),
+                    change(5, 5, ChangeKind::Removed),
+                ],
+                ..showing(numbered(5), &[])
+            },
+            "scott",
+            (80, 10),
+        );
 
         let (c, r) = (Some(ChangeKind::Changed), Some(ChangeKind::Removed));
         assert_eq!(change_marks(&a), [None, c, c, None, r], "0-based");
@@ -5071,14 +5087,21 @@ mod tests {
 
     #[test]
     fn a_review_write_replaces_the_changes_with_the_re_read_ones() {
-        let mut a = app(3, 10).with_changes(vec![change(1, 1, ChangeKind::Changed)]);
+        let mut a = App::open(
+            View {
+                changes: vec![change(1, 1, ChangeKind::Changed)],
+                ..showing(numbered(3), &[])
+            },
+            "scott",
+            (80, 10),
+        );
 
         let text = same_text(&a);
         update(
             &mut a,
             Event::ReviewSaved {
                 message: "handed off".into(),
-                reread: text,
+                view: text,
             },
         );
 
@@ -5087,7 +5110,14 @@ mod tests {
 
     #[test]
     fn a_thread_write_replaces_the_changes_with_the_re_read_ones() {
-        let mut a = app(3, 10).with_changes(vec![change(1, 1, ChangeKind::Changed)]);
+        let mut a = App::open(
+            View {
+                changes: vec![change(1, 1, ChangeKind::Changed)],
+                ..showing(numbered(3), &[])
+            },
+            "scott",
+            (80, 10),
+        );
 
         let text = same_text(&a);
         update(
@@ -5095,7 +5125,7 @@ mod tests {
             Event::Saved {
                 id: "c1".into(),
                 done: ThreadWrite::Added,
-                reread: Reread {
+                view: View {
                     changes: vec![change(3, 3, ChangeKind::Removed)],
                     ..text
                 },
@@ -5107,11 +5137,18 @@ mod tests {
 
     fn change_app() -> App {
         let lines = (1..=12).map(|i| i.to_string()).collect();
-        App::open(lines, &[], "scott", (80, 6)).with_changes(vec![
-            change(3, 4, ChangeKind::Changed),
-            change(7, 7, ChangeKind::Removed),
-            change(10, 11, ChangeKind::Changed),
-        ])
+        App::open(
+            View {
+                changes: vec![
+                    change(3, 4, ChangeKind::Changed),
+                    change(7, 7, ChangeKind::Removed),
+                    change(10, 11, ChangeKind::Changed),
+                ],
+                ..showing(lines, &[])
+            },
+            "scott",
+            (80, 6),
+        )
     }
 
     #[test]
@@ -5156,11 +5193,14 @@ mod tests {
         let lines = (1..=12)
             .map(|i| if i < 10 { long.clone() } else { i.to_string() })
             .collect();
-        let mut a = App::open(lines, &[], "scott", (20, 8)).with_changes(vec![change(
-            11,
-            11,
-            ChangeKind::Changed,
-        )]);
+        let mut a = App::open(
+            View {
+                changes: vec![change(11, 11, ChangeKind::Changed)],
+                ..showing(lines, &[])
+            },
+            "scott",
+            (20, 8),
+        );
 
         send(&mut a, [ch('}')]);
 
@@ -5180,11 +5220,19 @@ mod tests {
     // --- live refresh: applying a re-read ---
 
     /// A re-read whose text is what `a` shows.
-    fn same_text(a: &App) -> Reread {
-        Reread {
-            lines: a.lines.clone(),
+    fn same_text(a: &App) -> View {
+        View {
             sha256: a.seen.clone(),
-            ..Reread::default()
+            ..showing(a.lines.clone(), &[])
+        }
+    }
+
+    /// A view of `lines` and `threads`, with no review or changes.
+    fn showing(lines: Vec<String>, threads: &[ThreadView]) -> View {
+        View {
+            lines,
+            threads: threads.to_vec(),
+            ..View::default()
         }
     }
 
@@ -5193,19 +5241,19 @@ mod tests {
     }
 
     /// A re-read showing `lines` and `threads`, the review unchanged.
-    fn reread_of(a: &App, lines: Vec<String>, threads: Vec<ThreadView>) -> Reread {
-        Reread {
+    fn view_of(a: &App, lines: Vec<String>, threads: Vec<ThreadView>) -> View {
+        View {
             sha256: format!("sha of {}", lines.join("|")),
             lines,
             threads,
             review: a.review().clone(),
-            changes: Vec::new(),
+            ..View::default()
         }
     }
 
     fn refresh(a: &mut App, lines: Vec<String>, threads: Vec<ThreadView>) {
-        let reread = reread_of(a, lines, threads);
-        update(a, Event::Refreshed(reread));
+        let view = view_of(a, lines, threads);
+        update(a, Event::Refreshed(view));
     }
 
     /// The view clamp's invariant: the whole cursor line is on screen.
@@ -5292,7 +5340,7 @@ mod tests {
             &[ch('C'), press(KeyCode::Tab)],
             &[ch('j'), press(KeyCode::Enter)],
         ] {
-            let mut a = App::open(numbered(5), &threads, "scott", (80, 20));
+            let mut a = App::open(showing(numbered(5), &threads), "scott", (80, 20));
             send(&mut a, open.iter().cloned());
             typed(&mut a, "draft");
             let before = a.mode.clone();
@@ -5306,7 +5354,7 @@ mod tests {
     #[test]
     fn a_refresh_keeps_a_discard_ask_and_clears_a_close_confirm() {
         let threads = vec![view("c1", (1, 1), Status::Open, State::Current)];
-        let mut a = App::open(numbered(5), &threads, "scott", (80, 20));
+        let mut a = App::open(showing(numbered(5), &threads), "scott", (80, 20));
         send(&mut a, [ch('j'), press(KeyCode::Enter)]);
         typed(&mut a, "x");
         update(&mut a, press(KeyCode::Esc));
@@ -5319,7 +5367,7 @@ mod tests {
             }
         ));
 
-        let mut a = App::open(numbered(5), &threads, "scott", (80, 20));
+        let mut a = App::open(showing(numbered(5), &threads), "scott", (80, 20));
         send(&mut a, [ch('C'), press(KeyCode::Tab)]);
         assert_eq!(update(&mut a, ctrl('s')), None, "asks to confirm");
         refresh(&mut a, numbered(5), threads.clone());
@@ -5350,7 +5398,11 @@ mod tests {
     fn the_panel_keeps_its_thread_by_id_across_a_refresh() {
         let c1 = view("c1", (1, 1), Status::Open, State::Current);
         let c3 = view("c3", (1, 1), Status::Open, State::Current);
-        let mut a = App::open(numbered(5), &[c1.clone(), c3.clone()], "scott", (80, 20));
+        let mut a = App::open(
+            showing(numbered(5), &[c1.clone(), c3.clone()]),
+            "scott",
+            (80, 20),
+        );
         send(&mut a, [press(KeyCode::Enter), press(KeyCode::Tab)]);
         assert_eq!(selected_id(&a).as_deref(), Some("c3"));
 
@@ -5369,7 +5421,11 @@ mod tests {
     fn a_reply_box_from_the_panel_returns_to_its_thread_after_a_refresh() {
         let c1 = view("c1", (1, 1), Status::Open, State::Current);
         let c3 = view("c3", (1, 1), Status::Open, State::Current);
-        let mut a = App::open(numbered(5), &[c1.clone(), c3.clone()], "scott", (80, 20));
+        let mut a = App::open(
+            showing(numbered(5), &[c1.clone(), c3.clone()]),
+            "scott",
+            (80, 20),
+        );
         send(
             &mut a,
             [press(KeyCode::Enter), press(KeyCode::Tab), ch('r')],
@@ -5387,7 +5443,7 @@ mod tests {
     fn the_panel_follows_its_thread_to_the_line_it_moved_to() {
         let c1 = view("c1", (1, 1), Status::Open, State::Current);
         let c2 = view("c2", (1, 1), Status::Open, State::Current);
-        let mut a = App::open(numbered(5), &[c1.clone(), c2], "scott", (80, 20));
+        let mut a = App::open(showing(numbered(5), &[c1.clone(), c2]), "scott", (80, 20));
         send(&mut a, [press(KeyCode::Enter), press(KeyCode::Tab)]);
 
         let moved = view("c2", (3, 3), Status::Open, State::Outdated);
@@ -5399,21 +5455,22 @@ mod tests {
 
     #[test]
     fn a_refresh_shows_the_new_state_changes_and_layout() {
-        let mut a = App::open(vec!["# Title".into()], &[], "scott", (80, 20)).highlighted(true);
+        let mut a =
+            App::open(showing(vec!["# Title".into()], &[]), "scott", (80, 20)).highlighted(true);
         update(&mut a, ch('i'));
         let lines: Vec<String> = ["# Title", "", "| a | b |", "|---|---|", "| 1 | 2 |"]
             .map(String::from)
             .to_vec();
-        let reread = Reread {
+        let view = View {
             review: handed_off("Your go"),
             changes: vec![Change {
                 range: LineRange { start: 3, end: 5 },
                 kind: ChangeKind::Changed,
             }],
-            ..reread_of(&a, lines, vec![])
+            ..view_of(&a, lines, vec![])
         };
 
-        update(&mut a, Event::Refreshed(reread));
+        update(&mut a, Event::Refreshed(view));
 
         assert!(a.banner().0.contains("Your go"), "{:?}", a.banner());
         assert!(
@@ -5453,12 +5510,16 @@ mod tests {
     #[test]
     fn a_refresh_records_the_content_seen() {
         let mut a = app(3, 10);
-        let reread = reread_of(&a, numbered(4), vec![]);
-        let sha = reread.sha256.clone();
 
-        update(&mut a, Event::Refreshed(reread));
+        update(
+            &mut a,
+            Event::Refreshed(View {
+                sha256: "seen".into(),
+                ..showing(numbered(4), &[])
+            }),
+        );
 
-        assert_eq!(a.seen(), sha);
+        assert_eq!(a.seen(), "seen");
     }
 
     #[test]
@@ -5469,26 +5530,26 @@ mod tests {
         update(&mut a, ctrl('s'));
         let mut lines = numbered(5);
         lines.insert(0, "new".into());
-        let reread = reread_of(&a, lines.clone(), vec![]);
+        let view = view_of(&a, lines.clone(), vec![]);
 
         update(
             &mut a,
             Event::Saved {
                 id: "c1".into(),
                 done: ThreadWrite::Added,
-                reread,
+                view,
             },
         );
         assert_eq!(a.lines(), lines);
         assert_eq!(a.lines()[a.cursor()], "line 3");
 
         lines.insert(0, "newer".into());
-        let reread = reread_of(&a, lines.clone(), vec![]);
+        let view = view_of(&a, lines.clone(), vec![]);
         update(
             &mut a,
             Event::ReviewSaved {
                 message: "handed off".into(),
-                reread,
+                view,
             },
         );
         assert_eq!(a.lines(), lines);

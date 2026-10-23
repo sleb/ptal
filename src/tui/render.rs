@@ -485,7 +485,7 @@ mod tests {
     use crate::model::{
         Anchor, Entry, Event as LogEvent, ReviewState, Side, State, Status, Thread, Verdict,
     };
-    use crate::review::{ReviewStatus, ThreadView};
+    use crate::review::{ReviewStatus, ThreadView, View};
     use crate::tui::app::{Event, update};
     use crate::tui::keys;
     use ratatui::Terminal;
@@ -497,12 +497,21 @@ mod tests {
     /// The screen row of the file view's first row, below the banner.
     const TOP: u16 = 1;
 
+    /// A view of `lines` and `threads`, with no review or changes.
+    fn showing(lines: Vec<String>, threads: &[ThreadView]) -> View {
+        View {
+            lines,
+            threads: threads.to_vec(),
+            ..View::default()
+        }
+    }
+
     fn lines(n: usize) -> Vec<String> {
         (1..=n).map(|i| format!("line {i}")).collect()
     }
 
     fn app_with(lines: Vec<String>, threads: &[ThreadView], rows: u16) -> App {
-        App::open(lines, threads, "scott", (W, rows)).labeled("plan.md")
+        App::open(showing(lines, threads), "scott", (W, rows)).labeled("plan.md")
     }
 
     fn draw(app: &App, width: u16, rows: u16) -> Terminal<TestBackend> {
@@ -950,10 +959,18 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:seaâ
             open_thread("c1", (2, 2), State::Current),
             open_thread("c2", (5, 5), State::Outdated),
         ];
-        let app = app_with(lines(12), &threads, 8).with_changes(vec![
-            change(2, 3, ChangeKind::Changed),
-            change(5, 5, ChangeKind::Removed),
-        ]);
+        let app = App::open(
+            View {
+                changes: vec![
+                    change(2, 3, ChangeKind::Changed),
+                    change(5, 5, ChangeKind::Removed),
+                ],
+                ..showing(lines(12), &threads)
+            },
+            "scott",
+            (W, 8),
+        )
+        .labeled("plan.md");
 
         let screen = screen(&draw(&app, W, 8));
 
@@ -975,10 +992,18 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:sâ
 
     #[test]
     fn change_glyphs_differ_in_color_and_keep_the_cursor_background() {
-        let app = app_with(lines(4), &[], 8).with_changes(vec![
-            change(1, 1, ChangeKind::Changed),
-            change(3, 3, ChangeKind::Removed),
-        ]);
+        let app = App::open(
+            View {
+                changes: vec![
+                    change(1, 1, ChangeKind::Changed),
+                    change(3, 3, ChangeKind::Removed),
+                ],
+                ..showing(lines(4), &[])
+            },
+            "scott",
+            (W, 8),
+        )
+        .labeled("plan.md");
 
         let terminal = draw(&app, W, 8);
 
@@ -994,9 +1019,15 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:sâ
     #[test]
     fn a_wrapped_changed_line_is_marked_on_its_first_row_only() {
         let lines = vec!["aaaa bbbb cccc dddd".to_string(), "x".to_string()];
-        let app = App::open(lines, &[], "scott", (14, 6))
-            .labeled("plan.md")
-            .with_changes(vec![change(1, 1, ChangeKind::Changed)]);
+        let app = App::open(
+            View {
+                changes: vec![change(1, 1, ChangeKind::Changed)],
+                ..showing(lines, &[])
+            },
+            "scott",
+            (14, 6),
+        )
+        .labeled("plan.md");
 
         let screen = screen(&draw(&app, 14, 6));
 
@@ -1006,7 +1037,15 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:sâ
 
     #[test]
     fn one_change_is_counted_in_the_singular() {
-        let app = app_with(lines(3), &[], 8).with_changes(vec![change(2, 2, ChangeKind::Changed)]);
+        let app = App::open(
+            View {
+                changes: vec![change(2, 2, ChangeKind::Changed)],
+                ..showing(lines(3), &[])
+            },
+            "scott",
+            (W, 8),
+        )
+        .labeled("plan.md");
 
         let screen = screen(&draw(&app, W, 8));
 
@@ -1017,12 +1056,13 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:sâ
     fn change_glyphs_on_a_terminal_too_narrow_for_them_do_not_panic() {
         for width in [1, 2] {
             let app = App::open(
-                lines(3),
-                &[open_thread("c1", (1, 1), State::Current)],
+                View {
+                    changes: vec![change(1, 1, ChangeKind::Changed)],
+                    ..showing(lines(3), &[open_thread("c1", (1, 1), State::Current)])
+                },
                 "scott",
                 (width, 6),
-            )
-            .with_changes(vec![change(1, 1, ChangeKind::Changed)]);
+            );
 
             let screen = screen(&draw(&app, width, 6));
 
@@ -1613,7 +1653,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:sâ
     /// An app on a terminal `cols` wide, so wrapping matches the drawing.
     fn narrow(lines: &[&str], threads: &[ThreadView], (cols, rows): (u16, u16)) -> App {
         let lines = lines.iter().map(ToString::to_string).collect();
-        App::open(lines, threads, "scott", (cols, rows)).labeled("plan.md")
+        App::open(showing(lines, threads), "scott", (cols, rows)).labeled("plan.md")
     }
 
     const LONG: &str = "a\tbravo charlie delta echo foxtrot";
@@ -1830,7 +1870,7 @@ plan.md  L1/5  enter:thread/câ€¦"
 
     fn highlighted(lines: &[&str]) -> App {
         let lines = lines.iter().map(ToString::to_string).collect();
-        App::open(lines, &[], "scott", (W, 6)).highlighted(true)
+        App::open(showing(lines, &[]), "scott", (W, 6)).highlighted(true)
     }
 
     #[test]
@@ -2188,7 +2228,7 @@ plan.md  L1/5  enter:thread/câ€¦"
     #[test]
     fn a_long_author_cuts_the_box_title_with_an_ellipsis_before_the_corner() {
         let author = "x".repeat(60);
-        let mut app = App::open(lines(3), &[], &author, (W, 8)).labeled("plan.md");
+        let mut app = App::open(showing(lines(3), &[]), &author, (W, 8)).labeled("plan.md");
         key(&mut app, KeyCode::Enter);
 
         let rows = box_rows(&draw(&app, W, 8), 3);
@@ -2421,9 +2461,15 @@ plan.md  L1/5  enter:thread/câ€¦"
     }
 
     fn banner(review: ReviewStatus, width: u16) -> String {
-        let app = App::open(lines(3), &[], "scott", (width, 6))
-            .labeled("plan.md")
-            .with_review(review);
+        let app = App::open(
+            View {
+                review,
+                ..showing(lines(3), &[])
+            },
+            "scott",
+            (width, 6),
+        )
+        .labeled("plan.md");
         screen(&draw(&app, width, 6))
             .lines()
             .next()

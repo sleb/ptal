@@ -473,7 +473,11 @@ Its parts:
   human's last look (`View.changes`, one `anchor::Change` per hunk; `change(line)`
   is a line's `ChangeKind`), footer `status`, the active
   `search` query, the `help` and review overlay listings laid out for
-  `cols`, the `file` label), `Mode = Normal | Visual { anchor } |
+  `cols`, the `file` label), built only by `App::open(view, author, (cols,
+  rows))` from one `review::View` (its lines, `sha256` as `seen`, threads,
+  review and changes; `revision` is ignored), applied by the same re-read
+  as an `Event::Refreshed` from no text, the cursor at the top,
+  `Mode = Normal | Visual { anchor } |
   Search { query, anchor, origin, hit } |
   Panel { selected, scroll } | Input { draft, discard_asked, back, target } |
   Overlay { kind, back, scroll }` (`kind` is `Overlay::Help | Review`;
@@ -514,19 +518,18 @@ Its parts:
   text, so layout, the clamp and every key behave the same highlighted or
   not. `render` draws from it, and the view clamp in `update` counts the
   same rows; `lines()` stays the raw file.
-  `Event` is `Key | Resize | Saved { id, done, reread } |
-  ReviewSaved { message, reread } | SaveFailed | Refreshed(reread) |
-  RefreshFailed(message) | Paste(text)` (the terminal's bracketed paste), where `reread` is the
-  `Reread { lines, sha256, threads, review, changes }` (one `View`) the
-  driver read back after the write, or after noticing the other side's
-  writes for `Refreshed`. All three apply it the same way: when the lines
+  `Event` is `Key | Resize | Saved { id, done, view } |
+  ReviewSaved { message, view } | SaveFailed | Refreshed(view) |
+  RefreshFailed(message) | Paste(text)` (the terminal's bracketed paste), where `view` is the
+  one `review::View` the driver read back after the write, or after
+  noticing the other side's writes for `Refreshed`; the app takes its
+  lines, `sha256`, threads, review and changes and ignores `revision`. All three apply it the same way: when the lines
   changed, the cursor, `top`, a Visual (or a box from Visual) `anchor` and
   the search prompt's `anchor`, `origin` and `hit` are mapped through an
   `anchor::Diff` from the old lines to the new (inserted lines above you
   leave you on the same text; an edited line goes to the best guess), then
   clamped, so an anchor past a shrunk file is clamped with the cursor;
-  mapping from no lines (the app is built from an empty view, then
-  `with_reread`) starts at the top. Tables and styling are recomputed. The
+  mapping from no lines (opening, or an empty file) starts at the top. Tables and styling are recomputed. The
   panel, and the panel a reply box returns to (`Back::Panel`), keep their
   selected thread by id: at its new index on the cursor line, or, when the
   thread now starts elsewhere, by moving the cursor to its first line; a
@@ -740,11 +743,11 @@ Its parts:
   prompt, which wins over the hint. Border text (error or hint) that does
   not fit between the corners is `wrap::cut`, so it ends in `…` and a wide
   character that would cross the corner is left out whole.
-- `tui` (module root): the driver. `load` takes the lines, their hash, all
-  threads, the review's state and the changes since the last look from one
-  `Reviews::view` (`Reread: From<View>`), so they come from the same read of
-  the file; `Loaded::into_app` builds an empty `App` and applies that
-  `Reread` (`with_reread`), and highlights the file only when it is
+- `tui` (module root): the driver. `load` returns the one `Reviews::view`
+  (the lines, their hash, all threads, the review's state and the changes
+  since the last look), so they come from the same read of the file, and
+  before the terminal is touched; `open` builds the `App` from that `View`
+  (`App::open`), labels it with the file, and highlights it only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
   `color_wanted(NO_COLOR)`, read once at startup); `step(app, event, reviews, file, author)` is the only
   place effects are performed (`Add` → `Reviews::against(app.seen()).add_thread`, `Reply` →

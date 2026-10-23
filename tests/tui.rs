@@ -11,7 +11,7 @@ use ptal::review::{Reviews, SystemClock};
 use ptal::store::Store;
 use ptal::tui::app::{App, Back, Event, Mode, Target};
 use ptal::tui::render::render;
-use ptal::tui::{Watch, load, refresh, step};
+use ptal::tui::{Watch, load, open, refresh, step};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -67,9 +67,8 @@ impl Sandbox {
     }
 
     fn open_with(&self, color: bool) -> App {
-        load(&self.reviews, &self.file)
-            .unwrap()
-            .into_app(&self.file, "scott", (COLS, ROWS), color)
+        let view = load(&self.reviews, &self.file).unwrap();
+        open(view, &self.file, "scott", (COLS, ROWS), color)
     }
 
     /// Feed `keys` through `step`; `Break` stops the script early.

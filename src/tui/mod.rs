@@ -41,55 +41,33 @@ use crate::error::{Error, Result};
 use crate::model::{Side, Thread};
 use crate::review::{Clock, POLL_INTERVAL, ReviewStatus, Reviews, Stamp, ThreadWrite, View};
 
-use app::{App, Effect, Event, Reread, update};
+use app::{App, Effect, Event, update};
 use render::render;
 
-/// A file, its threads, the review's state and its changes since the last
-/// look, read but not yet sized for a terminal.
-///
-/// Loading is split from [`Loaded::into_app`] so that a missing file is
-/// reported before the terminal is queried or touched.
-pub struct Loaded {
-    view: Reread,
-}
-
 /// Read `file`, all its threads (resolved ones included), the review's
-/// state and what changed since the human's last look.
+/// state and what changed since the human's last look, as one [`View`].
+///
+/// Loading is split from [`open`] so that a missing file is reported before
+/// the terminal is queried or touched.
 ///
 /// # Errors
 /// [`crate::Error::FileUnreadable`] plus any store error.
-pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<Loaded> {
+pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<View> {
     // One read: the lines shown are the ones the threads are mapped to.
-    Ok(Loaded {
-        view: reviews.view(file, true)?.into(),
-    })
+    reviews.view(file, true)
 }
 
-impl From<View> for Reread {
-    fn from(view: View) -> Self {
-        Reread {
-            lines: view.lines,
-            sha256: view.sha256,
-            threads: view.threads,
-            review: view.review,
-            changes: view.changes,
-        }
-    }
+/// A fresh [`App`] over `view` of `file` on a terminal of `size` (cols,
+/// rows), its markdown structure highlighted when `file` is markdown
+/// ([`highlight::is_markdown`]) and `color` is wanted.
+#[must_use]
+pub fn open(view: View, file: &Path, author: &str, size: (u16, u16), color: bool) -> App {
+    App::open(view, author, size)
+        .labeled(file.display().to_string())
+        .highlighted(color && highlight::is_markdown(file))
 }
 
-impl Loaded {
-    /// A fresh [`App`] over this file on a terminal of `size` (cols, rows),
-    /// its markdown structure highlighted when `file` is markdown
-    /// ([`highlight::is_markdown`]) and `color` is wanted.
-    pub fn into_app(self, file: &Path, author: &str, size: (u16, u16), color: bool) -> App {
-        App::open(Vec::new(), &[], author, size)
-            .labeled(file.display().to_string())
-            .highlighted(color && highlight::is_markdown(file))
-            .with_reread(self.view)
-    }
-}
-
-/// Terminal (columns, rows), for sizing [`Loaded::into_app`] before the
+/// Terminal (columns, rows), for sizing [`open`] before the
 /// session starts.
 ///
 /// # Errors
@@ -173,7 +151,7 @@ pub fn install_restore_hook(restore: impl Fn() + Send + Sync + 'static) {
 
 /// Run the interactive session on the real terminal until the user quits.
 ///
-/// `app` comes from [`load`] and [`Loaded::into_app`]. All of ptal's writes go through `reviews`.
+/// `app` comes from [`load`] and [`open`]. All of ptal's writes go through `reviews`.
 ///
 /// # Errors
 /// The terminal could not be set up, drawn to, or read from.
@@ -263,7 +241,7 @@ pub fn refresh<C: Clock>(
         }
         Ok(Some((stamp, view))) => {
             watch.failures = 0;
-            update(app, Event::Refreshed(view.into()));
+            update(app, Event::Refreshed(view));
             watch.stamp = Some(stamp);
             true
         }
@@ -355,21 +333,13 @@ pub fn step<C: Clock>(
 /// the screen loses its markers rather than offering a retry that would
 /// duplicate the comment, and keeps the `current` review state rather than
 /// showing a fresh review's.
-fn reread<C: Clock>(
-    reviews: &Reviews<C>,
-    file: &Path,
-    app: &App,
-    current: &ReviewStatus,
-) -> Reread {
-    match reviews.view(file, true) {
-        Ok(view) => view.into(),
-        Err(_) => Reread {
-            lines: app.lines().to_vec(),
-            sha256: app.seen().to_string(),
-            review: current.clone(),
-            ..Reread::default()
-        },
-    }
+fn reread<C: Clock>(reviews: &Reviews<C>, file: &Path, app: &App, current: &ReviewStatus) -> View {
+    reviews.view(file, true).unwrap_or_else(|_| View {
+        lines: app.lines().to_vec(),
+        sha256: app.seen().to_string(),
+        review: current.clone(),
+        ..View::default()
+    })
 }
 
 /// Turn the result of a write into the event that tells `app` about it,
@@ -385,7 +355,7 @@ fn answer<C: Clock>(
         Ok(thread) => Event::Saved {
             id: thread.id,
             done,
-            reread: reread(reviews, file, app, app.review()),
+            view: reread(reviews, file, app, app.review()),
         },
         Err(error) => return failed(app, reviews, file, &error),
     };
@@ -405,7 +375,7 @@ fn failed<C: Clock>(
     if let Error::FileChanged = error
         && let Ok(view) = reviews.view(file, true)
     {
-        update(app, Event::Refreshed(view.into()));
+        update(app, Event::Refreshed(view));
     }
     update(app, Event::SaveFailed(error.to_string()));
     ControlFlow::Continue(())
@@ -424,7 +394,7 @@ fn answer_review<C: Clock>(
     let event = match written {
         Ok((message, written)) => Event::ReviewSaved {
             message,
-            reread: reread(reviews, file, app, &written),
+            view: reread(reviews, file, app, &written),
         },
         Err(error) => return failed(app, reviews, file, &error),
     };
@@ -442,13 +412,11 @@ mod tests {
 
     /// Whether `path`, opened with `color`, shows its `# Title` bold.
     fn heading_is_bold(path: &str, color: bool) -> bool {
-        let loaded = Loaded {
-            view: Reread {
-                lines: vec!["# Title".into()],
-                ..Reread::default()
-            },
+        let view = View {
+            lines: vec!["# Title".into()],
+            ..View::default()
         };
-        let app = loaded.into_app(Path::new(path), "scott", (40, 5), color);
+        let app = open(view, Path::new(path), "scott", (40, 5), color);
         let row = &app.screen_rows()[0].text;
         row.spans.iter().all(|span| {
             row.style
@@ -565,18 +533,22 @@ mod tests {
             state: crate::model::ReviewState::Turn(Side::Agent),
             latest: None,
         };
-        let app = App::open(vec!["one".into()], &[], "scott", (40, 5)).with_reread(Reread {
-            lines: vec!["one".into()],
-            sha256: "shown".into(),
-            ..Reread::default()
-        });
+        let app = App::open(
+            View {
+                lines: vec!["one".into()],
+                sha256: "shown".into(),
+                ..View::default()
+            },
+            "scott",
+            (40, 5),
+        );
 
-        let reread = reread(&reviews, &tmp.path().join("gone.md"), &app, &current);
+        let view = reread(&reviews, &tmp.path().join("gone.md"), &app, &current);
 
-        assert!(reread.threads.is_empty());
-        assert_eq!(reread.review, current);
+        assert!(view.threads.is_empty());
+        assert_eq!(view.review, current);
         assert_eq!(
-            (reread.lines, reread.sha256.as_str()),
+            (view.lines, view.sha256.as_str()),
             (vec!["one".to_string()], "shown")
         );
     }
