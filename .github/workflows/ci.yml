@@ -35,7 +35,7 @@ jobs:
       - run: cargo package --locked
       - name: Tarball holds no dev-only files
         run: |
-          if cargo package --list --locked | grep -E '^(\.agents|\.claude|\.crit|scripts|skills-lock\.json)'; then
+          if cargo package --list --locked | grep -E '^(\.agents|\.claude|\.crit|scripts|skills-lock\.json|tests/docs\.rs)'; then
             echo "forbidden paths in the package" >&2
             exit 1
           fi

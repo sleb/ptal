@@ -32,7 +32,7 @@ plans, specs-in-progress, notes. It is inspired by
 
 - One file per review. No code-review mode, no multi-file tabs.
 - No built-in multiplexer integration: ptal never creates panes. Its help
-  tells your agent how to open `ptal plan.md` in a pane beside it, or you run
+  tells your agent to open `ptal plan.md` in a pane beside it, or you run
   it yourself in any terminal.
 - Agent-agnostic. The contract is JSON on stdout, not a plugin.
 - Threads are flat conversations that can be resolved and reopened (nested replies are deferred).
@@ -169,7 +169,7 @@ latest hand-off or close: `┃` (green) on lines added or edited since then,
 `}` / `{` jump between them. Opening ptal is not a look, so the markers stay
 until you hand off or close again; nothing is marked before your first one.
 
-The screen keeps itself current: about every 250 ms ptal checks whether the
+The screen keeps itself current: a few times a second ptal checks whether the
 file or its review changed, and shows the agent's replies, resolves, new
 threads, hand-backs and edits to the file without a restart. The cursor
 stays on the text it was on, and a half-typed comment or note is kept. If
@@ -216,8 +216,8 @@ ptal comments --help           # one command's output shape, errors and examples
 The loop `ptal --help` walks through:
 
 0. Once per review, open it for the human: in a terminal multiplexer, a
-   pane beside the agent running `exec ptal '<absolute file>'` (herdr's
-   commands are in the help); otherwise ask the human to run `ptal <file>`.
+   pane beside the agent running `exec ptal '<absolute file>'`; otherwise
+   ask the human to run `ptal <file>`.
 1. `ptal wait <file>`: on `"turn"`, read the human's note; on `"closed"`, act
    on the verdict (`approved`: take the next step; `dropped`: stop) and stop;
    on `"timeout"`, wait again.

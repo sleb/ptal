@@ -234,10 +234,6 @@ The turn loop:
      give it an absolute path, shell-quoted.
      In a terminal multiplexer, open a pane beside you running
      `exec ptal '<absolute file>'`; the pane closes when the human quits.
-     In herdr:
-       herdr pane split --current --direction right --cwd \"$PWD\" --focus
-       herdr pane run <pane_id> \"exec ptal '<absolute file>'\"
-     with <pane_id> from the split's .result.pane.pane_id.
      Outside a multiplexer, ask the human to run `ptal <file>` in a terminal.
   1. ptal wait <file>                 block until your turn or a close
      \"turn\":    your move; the human's note is in review.latest.note
@@ -899,9 +895,25 @@ pub fn main() -> ExitCode {
 mod tests {
     use super::*;
     use crate::model::{Side, Verdict};
+    use crate::review::{POLL_INTERVAL, WAIT_READ_RETRIES};
     use crate::store::Store;
     use std::io;
     use std::path::PathBuf;
+
+    #[test]
+    fn wait_help_states_the_poll_interval() {
+        let ms = POLL_INTERVAL.as_millis();
+        assert!(
+            WAIT_HELP.contains(&format!("re-reads every {ms} ms")),
+            "the wait help must say it polls every {ms} ms"
+        );
+        let secs = (POLL_INTERVAL * WAIT_READ_RETRIES).as_secs_f64().round();
+        let flat = WAIT_HELP.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains(&format!("retried for about {secs} s first")),
+            "the wait help must say a read error is retried for about {secs} s"
+        );
+    }
 
     fn io_err() -> io::Error {
         io::Error::other("boom")
@@ -1854,12 +1866,17 @@ c2  open  outdated  lines 3-4
             help.find(needle)
                 .unwrap_or_else(|| panic!("help is missing {needle:?}:\n{help}"))
         };
+        for multiplexer in ["herdr", "tmux", "zellij", "wezterm", "screen"] {
+            assert!(
+                !help.contains(multiplexer),
+                "the help names a multiplexer: {multiplexer}"
+            );
+        }
         let wait_step = at("1. ptal wait <file>");
         for open in [
             "once per review",
-            "herdr pane split --current --direction right --cwd \"$PWD\" --focus",
-            "herdr pane run <pane_id> \"exec ptal '<absolute file>'\"",
-            ".result.pane.pane_id",
+            "open a pane beside you running",
+            "`exec ptal '<absolute file>'`",
             "ask the human to run `ptal <file>`",
         ] {
             assert!(at(open) < wait_step, "{open} comes after the wait step");

@@ -1,4 +1,26 @@
-//! Drawing: a pure function of [`App`] onto a ratatui frame.
+//! Drawing: a pure function of [`App`] onto a ratatui frame. All logic is in
+//! `update`; this module only lays out what the state says.
+//!
+//! - **Rows.** One file line is one or more screen rows (wrapped by
+//!   [`wrap`], tabs as four spaces); a laid-out table shows in place. The
+//!   number, glyphs and highlight belong to the line, shown on its first
+//!   row; the cursor highlight covers every row of every selected line.
+//! - **Gutter.** Thread marker (`●` open, `◆` waiting on you, `○`
+//!   resolved), change marker (`┃` added or edited, `-` removed), line
+//!   number, `│`. Markers are patched over the row's style, so they keep
+//!   the cursor background.
+//! - **Banner.** The top row in every mode but an overlay: whose turn it is
+//!   or the verdict, the latest note's first line, and the keys for what
+//!   can be done now (dropped when the row is too narrow).
+//! - **Footer.** The path or the last status message, the line position,
+//!   counts of outdated threads and changes, the active search and key
+//!   hints. Each part gives way before the path and counts do; the whole
+//!   row is cut with `wrap::cut` and ends in `…`.
+//! - **Panel and box.** The thread panel is a bordered box above the footer;
+//!   the comment box replaces the footer. Its bottom border shows, in order
+//!   of priority, a failed save's error, the discard prompt, the
+//!   close-confirmation, or the key hint, each cut to fit between the
+//!   corners.
 
 use std::borrow::Cow;
 
