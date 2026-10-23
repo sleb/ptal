@@ -528,20 +528,24 @@ impl Output {
                     render_text(&view.threads)
                 )
             }
-            Output::Thread(thread, ThreadWrite::Added) => {
-                let Anchor {
-                    start_line,
-                    end_line,
-                    ..
-                } = thread.anchor;
-                format!("{} added (lines {start_line}-{end_line})\n", thread.id)
+            Output::Thread(thread, write) => {
+                let detail = match write {
+                    ThreadWrite::Added => {
+                        let Anchor {
+                            start_line,
+                            end_line,
+                            ..
+                        } = thread.anchor;
+                        format!(" (lines {start_line}-{end_line})")
+                    }
+                    ThreadWrite::Replied => {
+                        let reply = thread.comments.last().map_or("", |c| c.id.as_str());
+                        format!(" ({reply})")
+                    }
+                    ThreadWrite::Resolved | ThreadWrite::Reopened => String::new(),
+                };
+                format!("{} {}{detail}\n", thread.id, write.as_str())
             }
-            Output::Thread(thread, ThreadWrite::Resolved) => format!("{} resolved\n", thread.id),
-            Output::Thread(thread, ThreadWrite::Replied) => {
-                let reply = thread.comments.last().map_or("", |c| c.id.as_str());
-                format!("{} replied ({reply})\n", thread.id)
-            }
-            Output::Thread(thread, ThreadWrite::Reopened) => format!("{} reopened\n", thread.id),
             Output::HandedOff(HandedOff { review, waiting }) => {
                 let mut line = format!("handed off: {}", state_line(review));
                 if !waiting.is_empty() {
