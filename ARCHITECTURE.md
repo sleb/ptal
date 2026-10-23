@@ -514,12 +514,12 @@ Its parts:
   text, so layout, the clamp and every key behave the same highlighted or
   not. `render` draws from it, and the view clamp in `update` counts the
   same rows; `lines()` stays the raw file.
-  `Event` is `Key | Resize | Saved { id, done, reread } |
-  ReviewSaved { message, reread } | SaveFailed | Refreshed(reread) |
-  RefreshFailed(message) | Paste(text)` (the terminal's bracketed paste), where `reread` is the
-  `Reread { lines, sha256, threads, review, changes }` (one `View`) the
-  driver read back after the write, or after noticing the other side's
-  writes for `Refreshed`. All three apply it the same way: when the lines
+  `Event` is `Key | Resize | Saved { id, done, view } |
+  ReviewSaved { message, view } | SaveFailed | Refreshed(view) |
+  RefreshFailed(message) | Paste(text)` (the terminal's bracketed paste), where `view` is the
+  one `review::View` the driver read back after the write, or after
+  noticing the other side's writes for `Refreshed`; the app takes its
+  lines, `sha256`, threads, review and changes and ignores `revision`. All three apply it the same way: when the lines
   changed, the cursor, `top`, a Visual (or a box from Visual) `anchor` and
   the search prompt's `anchor`, `origin` and `hit` are mapped through an
   `anchor::Diff` from the old lines to the new (inserted lines above you

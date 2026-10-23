@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 
 use crate::anchor::{Change, ChangeKind, Diff, LineRange, line_number};
 use crate::model::{Entry, Event as LogEvent, ReviewState, Side, State, Status, Verdict};
-use crate::review::{ReviewStatus, ThreadView, ThreadWrite};
+use crate::review::{ReviewStatus, ThreadView, ThreadWrite, View};
 
 use super::draft::Draft;
 use super::highlight::{self, Styling};
@@ -195,17 +195,18 @@ pub enum Event {
         id: String,
         /// Which write; it picks the footer message.
         done: ThreadWrite,
-        reread: Reread,
+        /// The file as re-read after the write.
+        view: View,
     },
-    /// The driver wrote a hand-off, close or reopen, then re-read the file;
-    /// `message` is the footer's.
-    ReviewSaved { message: String, reread: Reread },
+    /// The driver wrote a hand-off, close or reopen, then re-read the file
+    /// into `view`; `message` is the footer's.
+    ReviewSaved { message: String, view: View },
     /// The driver could not perform the write. A pending draft is kept.
     SaveFailed(String),
     /// The driver noticed the file or the review changed on disk (the other
     /// side's writes) and re-read it. Nothing is written; the mode, a draft
     /// and the footer are kept.
-    Refreshed(Reread),
+    Refreshed(View),
     /// The driver's checks for the other side's writes have kept failing;
     /// the message goes in the footer like a failed save's.
     RefreshFailed(String),
@@ -213,23 +214,6 @@ pub enum Event {
     /// [`Mode::Input`] it goes into the draft in one step
     /// ([`Draft::paste`]); everywhere else it is ignored.
     Paste(String),
-}
-
-/// What the driver re-reads from disk, after a write or when the other
-/// side's writes are noticed, for the screen: one [`crate::review::View`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Reread {
-    /// The file's lines, as the threads are mapped to.
-    pub lines: Vec<String>,
-    /// The hash of the content read ([`crate::review::View::sha256`]):
-    /// what the screen now shows.
-    pub sha256: String,
-    /// Every thread of the file, resolved ones included.
-    pub threads: Vec<ThreadView>,
-    /// The review's state.
-    pub review: ReviewStatus,
-    /// What changed since the human's last look ([`crate::review::View::changes`]).
-    pub changes: Vec<Change>,
 }
 
 /// Something `update` wants the driver to do.
@@ -357,7 +341,7 @@ impl App {
     /// markers for `threads` (every thread, resolved ones too). `author` is
     /// who comments are written as, and whose last word is not "waiting".
     ///
-    /// The content hash ([`App::seen`]) is empty until a [`Reread`] is
+    /// The content hash ([`App::seen`]) is empty until a [`View`] is
     /// applied, so the driver's first guarded write from such an app is
     /// refused and refreshes it. The TUI is always built through
     /// [`super::Loaded::into_app`], which applies the view it read.
@@ -407,11 +391,11 @@ impl App {
         self
     }
 
-    /// Show the file, threads, review and changes `reread` from disk, as
-    /// on a refresh.
+    /// Show the file, threads, review and changes of `view`, as on a
+    /// refresh.
     #[must_use]
-    pub fn with_reread(mut self, reread: Reread) -> Self {
-        self.reread(reread);
+    pub fn with_reread(mut self, view: View) -> Self {
+        self.reread(view);
         self.clamp_view();
         self
     }
@@ -428,7 +412,7 @@ impl App {
         self.review = review;
     }
 
-    /// Show the file, its threads and the review as `reread` from disk,
+    /// Show the file, its threads and the review as re-read into `view`,
     /// staying in place: the cursor, `top`, a selection's anchor and the
     /// search prompt's origin follow their text through an
     /// [`anchor::Diff`](Diff) of the old lines to the new (then the view
@@ -437,13 +421,14 @@ impl App {
     /// its count of open threads may be stale.
     fn reread(
         &mut self,
-        Reread {
+        View {
+            revision: _,
             lines,
             sha256,
             threads,
             review,
             changes,
-        }: Reread,
+        }: View,
     ) {
         let selected = self.selected_thread_id();
         if lines != self.lines {
@@ -1286,8 +1271,8 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.relayout();
             None
         }
-        Event::Saved { id, done, reread } => {
-            app.reread(reread);
+        Event::Saved { id, done, view } => {
+            app.reread(view);
             let from_panel = matches!(
                 app.mode,
                 Mode::Panel { .. }
@@ -1303,8 +1288,8 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.status = Some(format!("{} {id}", done.as_str()));
             None
         }
-        Event::ReviewSaved { message, reread } => {
-            app.reread(reread);
+        Event::ReviewSaved { message, view } => {
+            app.reread(view);
             app.mode = Mode::Normal;
             app.status = Some(message);
             None
@@ -1313,8 +1298,8 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
             app.status = Some(message);
             None
         }
-        Event::Refreshed(reread) => {
-            app.reread(reread);
+        Event::Refreshed(view) => {
+            app.reread(view);
             None
         }
         Event::RefreshFailed(message) => {
@@ -2550,7 +2535,7 @@ mod tests {
             Event::Saved {
                 id: "c3".into(),
                 done: ThreadWrite::Added,
-                reread: text,
+                view: text,
             },
         );
 
@@ -3175,7 +3160,7 @@ mod tests {
             Event::Saved {
                 id: "c1".into(),
                 done: ThreadWrite::Added,
-                reread: Reread { threads, ..text },
+                view: View { threads, ..text },
             },
         );
 
@@ -3474,7 +3459,7 @@ mod tests {
             [Event::Saved {
                 id: "c9".into(),
                 done: ThreadWrite::Added,
-                reread: text,
+                view: text,
             }],
         );
 
@@ -3536,7 +3521,7 @@ mod tests {
             Event::Saved {
                 id: "c9".into(),
                 done: ThreadWrite::Added,
-                reread: Reread { threads, ..text },
+                view: View { threads, ..text },
             },
         );
 
@@ -3808,7 +3793,7 @@ mod tests {
             Event::Saved {
                 id: "c2".into(),
                 done: ThreadWrite::Replied,
-                reread: Reread { threads, ..text },
+                view: View { threads, ..text },
             },
         );
 
@@ -3918,7 +3903,7 @@ mod tests {
                 Event::Saved {
                     id: "c2".into(),
                     done,
-                    reread: Reread { threads, ..text },
+                    view: View { threads, ..text },
                 },
             );
 
@@ -4129,7 +4114,7 @@ mod tests {
             Event::Saved {
                 id: "c4".into(),
                 done: ThreadWrite::Added,
-                reread: Reread { threads, ..text },
+                view: View { threads, ..text },
             },
         );
 
@@ -5004,7 +4989,7 @@ mod tests {
             &mut a,
             Event::ReviewSaved {
                 message: "handed off".into(),
-                reread: Reread {
+                view: View {
                     review: handed_off("ok"),
                     ..text
                 },
@@ -5078,7 +5063,7 @@ mod tests {
             &mut a,
             Event::ReviewSaved {
                 message: "handed off".into(),
-                reread: text,
+                view: text,
             },
         );
 
@@ -5095,7 +5080,7 @@ mod tests {
             Event::Saved {
                 id: "c1".into(),
                 done: ThreadWrite::Added,
-                reread: Reread {
+                view: View {
                     changes: vec![change(3, 3, ChangeKind::Removed)],
                     ..text
                 },
@@ -5180,11 +5165,11 @@ mod tests {
     // --- live refresh: applying a re-read ---
 
     /// A re-read whose text is what `a` shows.
-    fn same_text(a: &App) -> Reread {
-        Reread {
+    fn same_text(a: &App) -> View {
+        View {
             lines: a.lines.clone(),
             sha256: a.seen.clone(),
-            ..Reread::default()
+            ..View::default()
         }
     }
 
@@ -5193,19 +5178,19 @@ mod tests {
     }
 
     /// A re-read showing `lines` and `threads`, the review unchanged.
-    fn reread_of(a: &App, lines: Vec<String>, threads: Vec<ThreadView>) -> Reread {
-        Reread {
+    fn view_of(a: &App, lines: Vec<String>, threads: Vec<ThreadView>) -> View {
+        View {
             sha256: format!("sha of {}", lines.join("|")),
             lines,
             threads,
             review: a.review().clone(),
-            changes: Vec::new(),
+            ..View::default()
         }
     }
 
     fn refresh(a: &mut App, lines: Vec<String>, threads: Vec<ThreadView>) {
-        let reread = reread_of(a, lines, threads);
-        update(a, Event::Refreshed(reread));
+        let view = view_of(a, lines, threads);
+        update(a, Event::Refreshed(view));
     }
 
     /// The view clamp's invariant: the whole cursor line is on screen.
@@ -5404,16 +5389,16 @@ mod tests {
         let lines: Vec<String> = ["# Title", "", "| a | b |", "|---|---|", "| 1 | 2 |"]
             .map(String::from)
             .to_vec();
-        let reread = Reread {
+        let view = View {
             review: handed_off("Your go"),
             changes: vec![Change {
                 range: LineRange { start: 3, end: 5 },
                 kind: ChangeKind::Changed,
             }],
-            ..reread_of(&a, lines, vec![])
+            ..view_of(&a, lines, vec![])
         };
 
-        update(&mut a, Event::Refreshed(reread));
+        update(&mut a, Event::Refreshed(view));
 
         assert!(a.banner().0.contains("Your go"), "{:?}", a.banner());
         assert!(
@@ -5453,12 +5438,17 @@ mod tests {
     #[test]
     fn a_refresh_records_the_content_seen() {
         let mut a = app(3, 10);
-        let reread = reread_of(&a, numbered(4), vec![]);
-        let sha = reread.sha256.clone();
 
-        update(&mut a, Event::Refreshed(reread));
+        update(
+            &mut a,
+            Event::Refreshed(View {
+                lines: numbered(4),
+                sha256: "seen".into(),
+                ..View::default()
+            }),
+        );
 
-        assert_eq!(a.seen(), sha);
+        assert_eq!(a.seen(), "seen");
     }
 
     #[test]
@@ -5469,26 +5459,26 @@ mod tests {
         update(&mut a, ctrl('s'));
         let mut lines = numbered(5);
         lines.insert(0, "new".into());
-        let reread = reread_of(&a, lines.clone(), vec![]);
+        let view = view_of(&a, lines.clone(), vec![]);
 
         update(
             &mut a,
             Event::Saved {
                 id: "c1".into(),
                 done: ThreadWrite::Added,
-                reread,
+                view,
             },
         );
         assert_eq!(a.lines(), lines);
         assert_eq!(a.lines()[a.cursor()], "line 3");
 
         lines.insert(0, "newer".into());
-        let reread = reread_of(&a, lines.clone(), vec![]);
+        let view = view_of(&a, lines.clone(), vec![]);
         update(
             &mut a,
             Event::ReviewSaved {
                 message: "handed off".into(),
-                reread,
+                view,
             },
         );
         assert_eq!(a.lines(), lines);
