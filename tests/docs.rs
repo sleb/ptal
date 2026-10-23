@@ -316,7 +316,10 @@ fn prose_units(text: &str) -> Vec<String> {
             .iter()
             .any(|marker| trimmed.starts_with(marker))
             || trimmed.split_once(". ").is_some_and(|(n, _)| {
-                (1..=2).contains(&n.len()) && n.chars().all(|c| c.is_ascii_digit())
+                // A wrapped line starting "12. " is an item only inside a numbered list.
+                (1..=2).contains(&n.len())
+                    && n.chars().all(|c| c.is_ascii_digit())
+                    && (current.is_empty() || current.starts_with(|c: char| !c.is_alphabetic()))
             });
         if in_fence || line.starts_with('|') || line.starts_with('#') || line.trim().is_empty() {
             flush(&mut units, &mut current);
@@ -334,14 +337,14 @@ fn prose_units(text: &str) -> Vec<String> {
     units
 }
 
-/// `text` with fenced code blocks and table rows removed.
-fn without_code_and_tables(text: &str) -> String {
+/// `text` with fenced code blocks removed.
+fn without_code(text: &str) -> String {
     let mut in_fence = false;
     let mut kept = Vec::new();
     for line in text.lines() {
         if line.trim_start().starts_with("```") {
             in_fence = !in_fence;
-        } else if !in_fence && !line.starts_with('|') {
+        } else if !in_fence {
             kept.push(line);
         }
     }
@@ -368,11 +371,13 @@ fn banned_words(text: &str, banned: &[&str]) -> Vec<String> {
 #[test]
 fn readme_has_no_status_or_roadmap_bookkeeping() {
     let readme = read("README.md");
-    let prose = without_code_and_tables(&readme);
+    let prose = without_code(&readme);
     let banned = [
         "**Status",
         "**Planned",
         "not built",
+        "not yet built",
+        "was built",
         "crit",
         "deliberately",
         "Why not a PR",
@@ -417,6 +422,7 @@ fn prose_units_split_on_blank_lines_items_and_skip_code_and_tables() {
         ]
     );
     assert_eq!(prose_units("wrapped\n2024. year\n"), ["wrapped 2024. year"]);
+    assert_eq!(prose_units("wrapped\n12. more\n"), ["wrapped 12. more"]);
     assert_eq!(prose_units("a\n* b\n> c\n"), ["a", "* b", "> c"]);
 }
 

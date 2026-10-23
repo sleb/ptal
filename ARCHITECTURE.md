@@ -594,7 +594,8 @@ line taller than the view; a hanging indent for wrapped list items; real tab
 stops; inline markup in laid-out table cells (a laid-out table gets only its
 header line's bold); `NO_COLOR` for the TUI's chrome as well; GFM padding of
 ragged table rows; pipes inside inline code in a cell; tables inside lists or
-blockquotes; editing threads; notes on resolve/reopen from the TUI; a bell or
+blockquotes; editing threads; a comment sidebar toggle (`s`); a show/hide
+resolved-threads key (`R`); notes on resolve/reopen from the TUI; a bell or
 desktop notification when the turn comes back (the banner changes, nothing
 more).
 
@@ -711,8 +712,10 @@ hand-off or close.
     styling recomputed, and the search origin mapped. Screen rows, the clamp
     and key effects are identical with highlighting on and off. The help
     probe ties `tui::keys::HELP` to the key handlers.
-  - `tests/docs.rs`: ties the same listing to README's keys and the interface
-    map, and keeps every interface-map cell short. The footer hints are
+  - `tests/docs.rs`: ties the same listing to README's key tables and the
+    interface map, keeps every interface-map cell short, and holds README's
+    prose to no status or roadmap words, paragraphs of at most 120 words, and
+    a `For agents` section that links the reference docs. The footer hints are
     pinned by the `tui::render` snapshots instead.
   - `tui::render`: `TestBackend` snapshots (inline expected strings) cover
     Normal, Visual, Panel and Input rendering, gutter glyphs and styles

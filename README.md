@@ -4,8 +4,8 @@
 
 *Please take a look.* A keyboard-driven terminal UI for reviewing a text
 file, usually a throwaway plan or design doc (`.md`) that you and a coding
-agent iterate on together. Comments live in your user data directory, not in
-your repo, so nothing is written next to the file.
+agent iterate on together. Comments are stored outside your repo (see
+[Where data lives](#where-data-lives)).
 
 You read the file, leave threaded comments on lines, and hand off. The agent
 reads your comments through a small JSON CLI, edits the file, replies,
@@ -97,10 +97,6 @@ Help and review overlays:
 | `j` / `k` (or `↓` / `↑`), `ctrl+d` / `ctrl+u` (or `PgDn` / `PgUp`), `g` / `G` (or `Home` / `End`) | Scroll the listing |
 | `?` for help, `i` for the review (or `esc`, `q`, `ctrl+c`) | Close |
 
-The top row is the review's banner: `your turn`, `agent's turn` or
-`closed: approved`, the latest note's first line, and the keys for what you
-can do now.
-
 ### Reading and navigation
 
 - Long lines wrap at word boundaries onto continuation rows. The line number
@@ -177,6 +173,7 @@ can do now.
 - `C` closes with a verdict: `approved` (go ahead) or `dropped` (don't).
   Either side can reopen a closed review (`O` in the TUI).
 - The turn is a signal, not a lock: both sides can comment at any time.
+- The agent's side of this is in [For agents](#for-agents).
 
 ### For agents
 
