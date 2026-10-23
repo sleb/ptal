@@ -282,12 +282,24 @@ mod tests {
         let mut a = app(20, 12);
         send(&mut a, [ch('G'), alt_graph('g')]);
         assert_eq!(a.cursor, 0);
-        // The jumps reach the same state as the plain keys.
-        for key in [']', '[', '}', '{'] {
-            let (mut plain, mut altgr) = (app(20, 12), app(20, 12));
-            send(&mut plain, [ch(key)]);
-            send(&mut altgr, [alt_graph(key)]);
-            assert_eq!(at(&altgr), at(&plain), "{key}");
+    }
+
+    #[test]
+    fn altgr_jump_keys_move_like_the_plain_ones() {
+        // Fixtures with threads and changes, so a jump that did nothing
+        // would fail the movement assertion.
+        for (fixture, forward, back) in
+            [(jump_app as fn() -> App, ']', '['), (change_app, '}', '{')]
+        {
+            let (mut plain, mut altgr) = (fixture(), fixture());
+            send(&mut plain, [ch(forward), ch(forward)]);
+            send(&mut altgr, [alt_graph(forward), alt_graph(forward)]);
+            assert_ne!(plain.cursor, 0, "{forward} moves in this fixture");
+            assert_eq!(at(&altgr), at(&plain), "{forward}");
+
+            send(&mut plain, [ch(back)]);
+            send(&mut altgr, [alt_graph(back)]);
+            assert_eq!(at(&altgr), at(&plain), "{back}");
         }
     }
 
