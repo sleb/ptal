@@ -22,16 +22,19 @@ Use the absolute path of the file and the same `--as` name for every write.
 2. Run `ptal wait <file>`. If your harness can, run it in the background;
    if not, pass `--timeout` below your command time limit and run it again
    on a timeout. Read `reason` in the output:
-   - `"turn"`: your move. The human's note is `review.latest.note`.
-   - `"closed"`: stop looping and read `review.verdict`. `"approved"` means
-     take the next step (see your choices); `"dropped"` means stop.
+   - `"turn"`: your move. The human's note, if they left one, is
+     `review.latest.note` (it can be null).
+   - `"closed"`: the loop ends. Read `review.verdict`. `"approved"` means
+     take the next step (see your choices) even with threads still open;
+     `"dropped"` means stop.
    - `"timeout"`: still the human's turn, so wait again.
 3. Run `ptal comments <file>` and read the open threads.
 4. Edit the file to address them, then run `ptal comments <file>` again,
    because your edits can leave threads outdated.
-5. For each thread, `ptal reply` to ask or explain, and `ptal resolve` when
-   you fixed it, with a `--note` saying what changed. `ptal reopen` takes a
-   resolved thread back.
+5. For each thread, use `ptal reply <file> <id> "text" --as <name>` to ask or
+   explain, and `ptal resolve <file> <id> --as <name> --note "what changed"`
+   when you fixed it. `ptal reopen <file> <id> --as <name>` takes a resolved
+   thread back.
 6. Run `ptal handoff <file> --as <name> --note "what you did"`, then go back
    to step 2.
 

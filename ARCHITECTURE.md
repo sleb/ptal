@@ -389,7 +389,7 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
 - **stdout** is data only: JSON when not a TTY (or `--json`), a readable
   rendering when a TTY. The one exception is `skill`, which always prints
   the markdown of `skills/ptal-review/SKILL.md` (embedded with
-  `include_str!`) and is handled before any review is touched. **stderr** is diagnostics. Never mixed; on failure
+  `include_str!`) and needs no data dir. **stderr** is diagnostics. Never mixed; on failure
   stdout is empty. `--help` and `--version` go to stdout with exit `0`. A
   failed stdout write is `Failure::Stdout` (`io`, exit `1`); a closed pipe
   (`BrokenPipe`) ends quietly with the command's own status.
@@ -455,7 +455,9 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   subcommand is named there, and every subcommand's help says what it prints
   and has an example. It states facts about the tool (what a command does, what a field
   means), not policy, and names no particular multiplexer: when to resolve, what to ask, how to hand over to the
-  human belong to the user's own skill or prompt, which ptal does not ship.
+  human are policy: they belong to the user's skill or prompt. ptal ships one
+  as an example, `skills/ptal-review/SKILL.md` (`ptal skill`), whose
+  `Your choices` section the user edits; the help stays policy-free.
 
 *Deferred:* `ptal schema`; output shapes are the `model`
 types, so changing them is a `schema_version` bump.

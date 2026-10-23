@@ -508,6 +508,8 @@ enum Output {
     Reopened(ReviewStatus),
     /// Why a wait returned.
     Waited(Waited),
+    /// The bundled skill: markdown in every mode, for no file.
+    Skill,
 }
 
 impl Output {
@@ -515,6 +517,7 @@ impl Output {
     /// prints with U+FFFD instead of failing.
     fn to_json(&self, file: &str) -> String {
         let value = match self {
+            Output::Skill => return SKILL.to_string(),
             Output::Threads(view) => json!({
                 "file": file,
                 "revision": view.revision,
@@ -538,6 +541,7 @@ impl Output {
     /// Presentation only, not a contract.
     fn to_text(&self) -> String {
         match self {
+            Output::Skill => SKILL.to_string(),
             Output::Threads(view) => {
                 format!(
                     "{}\n{}",
@@ -687,7 +691,6 @@ pub fn run<C: Clock, T: Ticker>(
 
     let json = cli.json;
     let result = match (cli.command, cli.file) {
-        (Some(Command::Skill), _) => finish(out, SKILL).map_err(Failure::Stdout),
         (Some(command), _) => run_command(&command, env, out, json),
         (None, Some(file)) => launch_tui(&file, env),
         (None, None) => Err(Failure::Usage(
@@ -750,16 +753,19 @@ fn run_command<C: Clock, T: Ticker>(
         | Command::Reply { file, .. }
         | Command::Reopen { file, .. }
         | Command::Handoff { file, .. }
-        | Command::Wait { file, .. } => file,
-        Command::Skill => unreachable!("`skill` is handled before `run_command`"),
+        | Command::Wait { file, .. } => Some(file),
+        Command::Skill => None,
     };
     let output = dispatch(command, env)?;
-    let canonical = std::fs::canonicalize(file).map_err(|source| {
-        Failure::Core(Error::FileUnreadable {
-            path: file.clone(),
-            source,
-        })
-    })?;
+    let canonical = match file {
+        Some(file) => std::fs::canonicalize(file).map_err(|source| {
+            Failure::Core(Error::FileUnreadable {
+                path: file.clone(),
+                source,
+            })
+        })?,
+        None => PathBuf::new(),
+    };
     let text = if json || !env.stdout_is_tty {
         output.to_json(&canonical.to_string_lossy())
     } else {
@@ -791,10 +797,12 @@ fn launch_tui<C: Clock, T: Ticker>(file: &Path, env: &Env<C, T>) -> Result<(), F
 }
 
 fn dispatch<C: Clock, T: Ticker>(command: &Command, env: &Env<C, T>) -> Result<Output, Failure> {
-    let reviews = env
-        .reviews
-        .as_ref()
-        .ok_or(Failure::Core(Error::NoDataDir))?;
+    // The skill is a constant: it needs no data dir.
+    let reviews = match (&env.reviews, command) {
+        (_, Command::Skill) => return Ok(Output::Skill),
+        (Some(reviews), _) => reviews,
+        (None, _) => return Err(Failure::Core(Error::NoDataDir)),
+    };
     let author = |flag: &Option<String>| resolve_author(flag.as_deref(), env.author_env.as_deref());
     match command {
         Command::Comments { file, all } => Ok(Output::Threads(reviews.view(file, *all)?)),
@@ -865,7 +873,7 @@ fn dispatch<C: Clock, T: Ticker>(command: &Command, env: &Env<C, T>) -> Result<O
             let timeout = timeout.map(std::time::Duration::from_secs);
             Ok(Output::Waited(reviews.wait(file, timeout, &env.ticker)?))
         }
-        Command::Skill => unreachable!("`skill` is handled before `dispatch`"),
+        Command::Skill => Ok(Output::Skill),
     }
 }
 

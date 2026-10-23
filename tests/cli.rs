@@ -373,3 +373,15 @@ fn skill_takes_no_arguments() {
     let sb = sandbox("one\n");
     assert_failure(&sb.run(&["skill", "extra"]), 2, "usage");
 }
+
+#[test]
+fn skill_needs_no_data_dir() {
+    let out = Command::new(env!("CARGO_BIN_EXE_ptal"))
+        .arg("skill")
+        .env_remove("PTAL_DATA_DIR")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("HOME")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+}
