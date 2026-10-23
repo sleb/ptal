@@ -207,6 +207,26 @@ fn ptal_plan_skill_defers_agreements_to_agents() {
 }
 
 #[test]
+fn crate_docs_say_binary_first_unstable_and_link_readme() {
+    let text = read("src/lib.rs");
+    let docs = text
+        .lines()
+        .take_while(|line| line.starts_with("//!"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!docs.is_empty(), "src/lib.rs has no crate-level docs");
+    for expected in ["binary-first", "unstable", README_URL] {
+        assert!(
+            docs.contains(expected),
+            "the crate docs do not name {expected:?}"
+        );
+    }
+}
+
+/// The README's canonical URL; the crate docs link to it from docs.rs.
+const README_URL: &str = "https://github.com/sleb/ptal/blob/main/README.md";
+
+#[test]
 fn long_cells_are_found_by_row_and_column() {
     let table = "| Op | CLI |\n|---|---|\n| Do it | one two three |\n";
     assert_eq!(long_cells(table, 2), ["Do it / CLI: 3 words"]);
