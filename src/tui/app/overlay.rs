@@ -338,6 +338,34 @@ mod tests {
     }
 
     #[test]
+    fn a_narrow_review_listing_wraps_each_line_of_the_entry() {
+        let rows = review_rows(&handed_off("one two three\nfour"), 12);
+        let shown: Vec<(&str, bool)> = rows
+            .iter()
+            .map(|row| (row.text.as_str(), row.heading))
+            .collect();
+
+        assert_eq!(
+            shown,
+            vec![
+                ("agent's turn", true),
+                ("", false),
+                ("hand-off by ", false),
+                ("scott ", false),
+                ("(human)", false),
+                ("at ", false),
+                ("2026-10-12T1", false),
+                ("0:00:00Z on ", false),
+                ("r2", false),
+                ("", false),
+                ("one two ", false),
+                ("three", false),
+                ("four", false),
+            ]
+        );
+    }
+
+    #[test]
     fn a_fresh_review_overlay_says_nothing_was_handed_off() {
         let mut a = app(5, 10);
 
