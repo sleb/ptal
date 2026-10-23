@@ -11,9 +11,9 @@ Produce an execution plan for one GitHub issue in this repo, in the shape of the
 
 1. **Gather context (read-only).**
    - `gh issue view <n> --json title,body,comments` — scope, acceptance criteria, out of scope.
-   - The parent issue it references ("Part of #N") — the MVP design decisions table and out-of-scope list bind this story.
+   - The parent issue it references ("Part of #N") — the milestone issue's design decisions table and out-of-scope list bind this story.
    - Dependency issues ("Depends on #M") and their plans/comments — reuse their decisions; don't re-decide.
-   - `ARCHITECTURE.md` and `README.md` — note where the MVP deliberately narrows the architecture.
+   - `ARCHITECTURE.md` and `README.md` — note where the milestone issue narrows the architecture.
    - The code that exists now (`src/`, `tests/`, `Cargo.toml`) — plans must build on what is actually there, not what the docs say should be.
    - Project instruction files if present (`AGENTS.md`, `CLAUDE.md`, or equivalent for the running agent).
 2. **Draft the plan** to the scratchpad as `plan-<n>.md` using the template below.
@@ -31,22 +31,16 @@ Produce an execution plan for one GitHub issue in this repo, in the shape of the
 4. **Publish only on explicit approval** (an `approved` close, or the user saying so): `gh issue comment <n> --body-file <file>`. Post as a comment (keeps the original scope and acceptance criteria intact) unless the user asks to edit the body. Return the comment URL.
 5. Do not start implementing unless asked.
 
-## Non-negotiable working agreements
+## Working agreements
 
-Every plan states these at the top, verbatim in spirit:
-
-1. **Strict TDD.** Every behavior starts as a failing test, seen failing for the right reason, then minimum code to pass, then refactor green. One red→green→refactor per commit-sized step; no production code without a test that demanded it.
-2. **Fearless refactoring.** Single user, no compatibility burden. If something is wrong or the decision changes, delete it and rewrite it. No shims, deprecated aliases, or migration code for formats nobody has.
-3. **Docs stay true.** Each step lands with the docs that describe it (rustdoc, `ARCHITECTURE.md`, `README.md`). Docs describe what exists; planned-but-unbuilt design is labeled as such. A step is not done while a doc contradicts the code.
-
-Definition of done for every step: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` green; docs touched where behavior changed.
+`AGENTS.md`'s working agreements and five-command green gate bind every plan and every step; read them there. The definition of done for a step is that gate. This skill does not restate a copy, because a copy drifts from the source — which is the defect this skill's plans must not reintroduce.
 
 ## Plan template
 
 ```markdown
 ## Execution plan
 
-Working agreements: <the three above, plus the definition of done>
+Working agreements: `AGENTS.md`'s working agreements and green gate bind every step.
 
 ### Overview
 - **Today:** <what is wrong or missing, in one or two lines>
@@ -68,7 +62,7 @@ Working agreements: <the three above, plus the definition of done>
 - Refactor: <what to tidy while green>
 - Docs: <exactly which doc sections change>
 ... each step is a list of small red/green cycles, ordered so each builds on the last.
-**N. Docs pass and close-out** — ARCHITECTURE status, README status, tick acceptance criteria with proving tests, PR (`Closes #<n>`), one commit per step.
+**N. Docs pass and close-out** — tick acceptance criteria with proving tests, update only the docs the change touches (no release-status section, no build-status markers and no per-component deferral notes; planned design goes only in `ARCHITECTURE.md`'s `## Deferred`), PR (`Closes #<n>`), one commit per step.
 
 ### Acceptance criteria → proving tests
 | Criterion (from the issue, verbatim) | Proved by (step) |
@@ -83,7 +77,8 @@ Working agreements: <the three above, plus the definition of done>
 - **Stay inside the issue's scope and the parent's out-of-scope list.** Flag, don't absorb, anything adjacent.
 - **Prefer seams for testability:** pure functions over env/clock/randomness injected, no printing in core, front ends thin.
 - **Make edge cases explicit decisions** (idempotency, empty input, encoding, ordering, error precedence) rather than leaving them to be discovered mid-implementation.
-- **Resolve doc drift in the plan.** If ARCHITECTURE/README describe something the MVP doesn't build, the plan includes rewriting that section (and moving the future design to a labeled deferred section), not annotating around it.
+- **Resolve doc drift in the plan.** If ARCHITECTURE/README describe something that is not built, the plan includes rewriting that section (and moving the future design to `ARCHITECTURE.md`'s `## Deferred`), not annotating around it.
+- **No status bookkeeping.** Plans carry no release-status section, no build-status markers and no per-component deferral notes. Planned design goes only in `ARCHITECTURE.md`'s `## Deferred`; a plan's steps are the only record of what is done.
 - **Verify before asserting.** Check that a std API or crate behavior you rely on exists in the installed toolchain (`cargo --version`, docs) and list unverified assumptions under Risks.
 - Pronouns: use they/them for anyone not stated.
 - Keep it scannable: tables for decisions and criteria, short bullets for steps. No prose essays.

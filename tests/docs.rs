@@ -1,10 +1,12 @@
 //! Drift tests between the docs and the code they describe: every key in the
 //! help overlay's listing is named somewhere in README's Keys section and in
 //! `docs/interfaces.md` (not checked per mode), and no cell
-//! of the interface map is too long to read.
+//! of the interface map is too long to read. They also hold the contributor
+//! docs (`AGENTS.md`, the ptal-plan skill) to the repo's current vocabulary:
+//! no milestone-status bookkeeping, and one definition of done.
 //!
-//! These read `README.md` and `docs/` at run time, so the file is not part of
-//! the published package (the package ships no `docs/`).
+//! These read the repo at run time, so the file is not part of the published
+//! package.
 
 use std::collections::HashSet;
 use std::fs;
@@ -139,6 +141,68 @@ fn interface_cells_are_short() {
         long.is_empty(),
         "cells over {MAX_CELL_WORDS} words; move detail under the tables:\n{}",
         long.join("\n")
+    );
+}
+
+/// Every banned phrase in `text`, as `phrase`, or empty.
+fn banned_phrases(text: &str, banned: &[&str]) -> Vec<String> {
+    banned
+        .iter()
+        .filter(|phrase| text.contains(**phrase))
+        .map(|phrase| format!("{phrase:?}"))
+        .collect()
+}
+
+#[test]
+fn agents_has_no_mvp_or_status_bookkeeping() {
+    let text = read("AGENTS.md");
+    let banned = [
+        "MVP",
+        "Once the crate exists",
+        "labeled deferred",
+        "## Status",
+        "Built:",
+    ];
+    let found = banned_phrases(&text, &banned);
+    assert!(found.is_empty(), "AGENTS.md still says {found:?}");
+}
+
+#[test]
+fn ptal_plan_skill_has_no_status_bookkeeping() {
+    let text = read(".agents/skills/ptal-plan/SKILL.md");
+    let banned = [
+        "MVP",
+        "ARCHITECTURE status",
+        "README status",
+        "## Status",
+        "Built:",
+        "component-local",
+        "Deferred within",
+    ];
+    let found = banned_phrases(&text, &banned);
+    assert!(found.is_empty(), "the ptal-plan skill still says {found:?}");
+}
+
+#[test]
+fn ptal_plan_skill_defers_agreements_to_agents() {
+    let text = read(".agents/skills/ptal-plan/SKILL.md");
+    for expected in ["AGENTS.md", "green gate"] {
+        assert!(
+            text.contains(expected),
+            "the skill does not name {expected:?}"
+        );
+    }
+    let restated = [
+        "cargo fmt --check",
+        "cargo clippy --all-targets",
+        "cargo test",
+        "cargo doc --no-deps",
+        "cargo package --locked",
+    ];
+    let found = banned_phrases(&text, &restated);
+    assert!(
+        found.is_empty(),
+        "the skill restates AGENTS.md's gate as {found:?}"
     );
 }
 
