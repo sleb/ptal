@@ -515,7 +515,7 @@ mod tests {
             .chunks(width)
             .map(|row| {
                 row.iter()
-                    .map(|cell| cell.symbol())
+                    .map(ratatui::buffer::Cell::symbol)
                     .collect::<String>()
                     .trim_end()
                     .to_string()

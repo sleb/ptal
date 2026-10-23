@@ -546,7 +546,7 @@ impl<C: Clock> Reviews<C> {
         &self,
         file: &Path,
         timeout: Option<Duration>,
-        ticker: &dyn Ticker,
+        ticker: &impl Ticker,
     ) -> Result<Waited> {
         Content::read(file)?;
         let reader = self.store.reader(file)?;

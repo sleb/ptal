@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(draft.cursor_at(8), (0, 7));
 
         let draft = lines("a\nb");
-        let mut after_newline = draft.clone();
+        let mut after_newline = draft;
         after_newline.left();
         assert_eq!(after_newline.cursor_at(8), (1, 0));
         let mut before_newline = after_newline.clone();

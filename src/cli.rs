@@ -4,6 +4,7 @@
 //! module only decides what bytes go to which stream and which exit code.
 
 use std::ffi::{OsStr, OsString};
+use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -26,18 +27,27 @@ const EXIT_CALLER: u8 = 2;
 const EXIT_RUNTIME: u8 = 1;
 
 /// A failure the CLI reports: a core error, or one only the CLI can detect.
-#[derive(Debug)]
+/// Its [`Display`](std::fmt::Display) is the human-readable message.
+#[derive(Debug, thiserror::Error)]
 pub enum Failure {
     /// The invocation itself is malformed (clap, `--lines` syntax).
+    #[error("{0}")]
     Usage(String),
     /// A write command had neither `--as` nor `PTAL_AUTHOR`.
+    #[error("no author: pass --as <name> or set PTAL_AUTHOR")]
     MissingAuthor,
     /// `ptal <file>` needs an interactive terminal on stdin and stdout.
+    #[error("the interactive view needs a terminal; agents should use `ptal comments`")]
     NotATerminal,
     /// The terminal failed while the TUI was running.
-    Terminal(io::Error),
+    #[error("terminal error: {0}")]
+    Terminal(#[source] io::Error),
+    /// Writing the result to stdout failed (a closed pipe is not a failure).
+    #[error("cannot write to stdout: {0}")]
+    Stdout(#[source] io::Error),
     /// The core refused or failed.
-    Core(Error),
+    #[error(transparent)]
+    Core(#[from] Error),
 }
 
 impl Failure {
@@ -48,6 +58,7 @@ impl Failure {
             Failure::MissingAuthor => ("missing_author", EXIT_CALLER),
             Failure::NotATerminal => ("not_a_terminal", EXIT_RUNTIME),
             Failure::Terminal(_) => ("terminal", EXIT_RUNTIME),
+            Failure::Stdout(_) => ("io", EXIT_RUNTIME),
             Failure::Core(error) => match error {
                 Error::EmptyAuthor => ("missing_author", EXIT_CALLER),
                 Error::NotFound(_) => ("not_found", EXIT_CALLER),
@@ -69,25 +80,11 @@ impl Failure {
             },
         }
     }
-
-    /// Human-readable description.
-    pub fn message(&self) -> String {
-        match self {
-            Failure::Usage(message) => message.clone(),
-            Failure::MissingAuthor => "no author: pass --as <name> or set PTAL_AUTHOR".to_string(),
-            Failure::NotATerminal => {
-                "the interactive view needs a terminal; agents should use `ptal comments`"
-                    .to_string()
-            }
-            Failure::Terminal(error) => format!("terminal error: {error}"),
-            Failure::Core(error) => error.to_string(),
-        }
-    }
 }
 
 /// Everything `run` needs from the process, injected so tests can drive every
 /// path in-process.
-pub struct Env<C: Clock> {
+pub struct Env<C: Clock, T: Ticker> {
     /// Review operations (store and clock). `None` when no data directory
     /// could be resolved; only commands that need the store then fail, with
     /// `no_data_dir`, so `--help`, `--version` and usage errors still work.
@@ -104,8 +101,8 @@ pub struct Env<C: Clock> {
     pub stderr_is_tty: bool,
     /// Whether the TUI may highlight text: [`color_wanted`] of `NO_COLOR`.
     pub color: bool,
-    /// The clock `wait` measures its timeout on and sleeps with.
-    pub ticker: Box<dyn Ticker>,
+    /// The ticker `wait` measures its timeout on and sleeps with.
+    pub ticker: T,
 }
 
 // Help text. The top level is the loop and the concepts; each command's
@@ -404,7 +401,7 @@ enum Command {
         #[arg(long)]
         note: Option<String>,
         /// Which side reopens the review (default agent); threads have none.
-        #[arg(long, value_enum)]
+        #[arg(long, value_enum, conflicts_with = "id")]
         side: Option<SideArg>,
     },
     /// Hand the turn to the other side.
@@ -553,7 +550,7 @@ impl Output {
             Output::HandedOff(HandedOff { review, waiting }) => {
                 let mut line = format!("handed off: {}", state_line(review));
                 if !waiting.is_empty() {
-                    line.push_str(&format!(" (waiting on you: {})", waiting.join(", ")));
+                    let _ = write!(line, " (waiting on you: {})", waiting.join(", "));
                 }
                 line + "\n"
             }
@@ -636,7 +633,7 @@ fn render_text(threads: &[ThreadView]) -> String {
                 anchor.start_line, anchor.end_line
             );
             for line in anchor.quote.lines() {
-                block.push_str(&format!("  > {line}\n"));
+                let _ = writeln!(block, "  > {line}");
             }
             for comment in comments {
                 block.push_str(&indent_body(&comment.author, &comment.body));
@@ -649,26 +646,27 @@ fn render_text(threads: &[ThreadView]) -> String {
 
 /// Parse `args` (including the program name), execute, and return the exit
 /// status. Data goes to `out`, errors to `err`.
-pub fn run<C, I, T>(args: I, env: &Env<C>, out: &mut dyn Write, err: &mut dyn Write) -> u8
-where
-    C: Clock,
-    I: IntoIterator<Item = T>,
-    T: Into<OsString> + Clone,
-{
+pub fn run<C: Clock, T: Ticker>(
+    args: impl IntoIterator<Item = impl Into<OsString>>,
+    env: &Env<C, T>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> u8 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
-    let json_flag = args.iter().any(|a| a == "--json");
+    let json_flag = json_requested(&args);
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(e) if e.use_stderr() => {
-            let text = if env.stderr_is_tty && !json_flag {
-                e.to_string()
-            } else {
-                error_line(&Failure::Usage(e.to_string().trim().to_string()))
-            };
-            return finish(err, &text, EXIT_CALLER);
+            let failure = Failure::Usage(e.to_string().trim().to_string());
+            return report(&failure, env, json_flag, err, Some(e.to_string()));
         }
         // `--help` and `--version`.
-        Err(e) => return finish(out, &e.to_string(), 0),
+        Err(e) => {
+            return match finish(out, &e.to_string()) {
+                Ok(()) => 0,
+                Err(source) => report(&Failure::Stdout(source), env, json_flag, err, None),
+            };
+        }
     };
 
     let json = cli.json;
@@ -681,22 +679,50 @@ where
     };
     match result {
         Ok(()) => 0,
-        Err(failure) => {
-            let (_, code) = failure.classify();
-            let text = if env.stderr_is_tty && !json {
-                format!("error: {}\n", failure.message())
-            } else {
-                error_line(&failure)
-            };
-            finish(err, &text, code)
-        }
+        Err(failure) => report(&failure, env, json, err, None),
+    }
+}
+
+/// Whether `--json` is among the options in `args` (the program name and
+/// anything after `--` do not count).
+///
+/// Used only when clap rejected the command line: there is then no parsed
+/// `--json` to read, yet the error's format still has to follow it. An option
+/// value that is literally `--json` (`--note --json`) still counts.
+fn json_requested(args: &[OsString]) -> bool {
+    args.iter()
+        .skip(1)
+        .take_while(|a| *a != "--")
+        .any(|a| a == "--json")
+}
+
+/// Write `failure` to `err` (readable on a terminal unless `json`, else the
+/// JSON envelope) and return its exit status. `readable` overrides the
+/// terminal text. A stderr that cannot be written leaves nowhere to report,
+/// so the status is just a runtime error.
+fn report<C: Clock, T: Ticker>(
+    failure: &Failure,
+    env: &Env<C, T>,
+    json: bool,
+    err: &mut dyn Write,
+    readable: Option<String>,
+) -> u8 {
+    let (_, code) = failure.classify();
+    let text = match (env.stderr_is_tty && !json, readable) {
+        (true, Some(text)) => text,
+        (true, None) => format!("error: {failure}\n"),
+        (false, _) => error_line(failure),
+    };
+    match finish(err, &text) {
+        Ok(()) => code,
+        Err(_) => EXIT_RUNTIME,
     }
 }
 
 /// Execute an agent command and print its result to `out`.
-fn run_command<C: Clock>(
+fn run_command<C: Clock, T: Ticker>(
     command: &Command,
-    env: &Env<C>,
+    env: &Env<C, T>,
     out: &mut dyn Write,
     json: bool,
 ) -> Result<(), Failure> {
@@ -721,17 +747,12 @@ fn run_command<C: Clock>(
     } else {
         output.to_text()
     };
-    match finish(out, &text, 0) {
-        0 => Ok(()),
-        _ => Err(Failure::Terminal(io::Error::other(
-            "cannot write to stdout",
-        ))),
-    }
+    finish(out, &text).map_err(Failure::Stdout)
 }
 
 /// Open the interactive view. Everything that can be refused is refused
 /// here, before the terminal is touched.
-fn launch_tui<C: Clock>(file: &Path, env: &Env<C>) -> Result<(), Failure> {
+fn launch_tui<C: Clock, T: Ticker>(file: &Path, env: &Env<C, T>) -> Result<(), Failure> {
     if !(env.stdin_is_tty && env.stdout_is_tty) {
         return Err(Failure::NotATerminal);
     }
@@ -751,7 +772,7 @@ fn launch_tui<C: Clock>(file: &Path, env: &Env<C>) -> Result<(), Failure> {
     tui::run(app, reviews, file, author).map_err(Failure::Terminal)
 }
 
-fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure> {
+fn dispatch<C: Clock, T: Ticker>(command: &Command, env: &Env<C, T>) -> Result<Output, Failure> {
     let reviews = env
         .reviews
         .as_ref()
@@ -794,13 +815,8 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
             id: Some(id),
             author: flag,
             note,
-            side,
+            ..
         } => {
-            if side.is_some() {
-                return Err(Failure::Usage(
-                    "--side applies only to reopening the review: threads have no side".to_string(),
-                ));
-            }
             let author = author(flag)?;
             let thread = reviews.reopen(file, id, &author, note.as_deref())?;
             Ok(Output::Thread(thread, ThreadWrite::Reopened))
@@ -829,22 +845,17 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
         }
         Command::Wait { file, timeout } => {
             let timeout = timeout.map(std::time::Duration::from_secs);
-            Ok(Output::Waited(reviews.wait(
-                file,
-                timeout,
-                env.ticker.as_ref(),
-            )?))
+            Ok(Output::Waited(reviews.wait(file, timeout, &env.ticker)?))
         }
     }
 }
 
-/// Write `text` to `w` and return `code`. A closed pipe ends quietly; any
-/// other write failure is a runtime error.
-fn finish(w: &mut dyn Write, text: &str, code: u8) -> u8 {
+/// Write `text` to `w`. A closed pipe ends quietly; any other write failure
+/// is returned.
+fn finish(w: &mut dyn Write, text: &str) -> io::Result<()> {
     match w.write_all(text.as_bytes()).and_then(|()| w.flush()) {
-        Ok(()) => code,
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => code,
-        Err(_) => EXIT_RUNTIME,
+        Err(e) if e.kind() != io::ErrorKind::BrokenPipe => Err(e),
+        _ => Ok(()),
     }
 }
 
@@ -852,16 +863,10 @@ fn error_line(failure: &Failure) -> String {
     format!("{}\n", error_json(failure))
 }
 
-impl From<Error> for Failure {
-    fn from(error: Error) -> Self {
-        Failure::Core(error)
-    }
-}
-
 /// The one-line JSON error envelope written to stderr.
 pub fn error_json(failure: &Failure) -> String {
     let (code, _) = failure.classify();
-    serde_json::json!({ "error": { "code": code, "message": failure.message() } }).to_string()
+    serde_json::json!({ "error": { "code": code, "message": failure.to_string() } }).to_string()
 }
 
 /// Entry point for the `ptal` binary: read the process environment, run, and
@@ -879,7 +884,7 @@ pub fn main() -> ExitCode {
         stdout_is_tty,
         stderr_is_tty,
         color: color_wanted(std::env::var_os("NO_COLOR").as_deref()),
-        ticker: Box::new(SystemTicker),
+        ticker: SystemTicker,
     };
     let code = run(
         std::env::args_os(),
@@ -911,6 +916,7 @@ mod tests {
             (Failure::MissingAuthor, "missing_author", 2),
             (Failure::NotATerminal, "not_a_terminal", 1),
             (Failure::Terminal(io_err()), "terminal", 1),
+            (Failure::Stdout(io_err()), "io", 1),
             (Failure::Core(Error::EmptyAuthor), "missing_author", 2),
             (Failure::Core(Error::NotFound("c9".into())), "not_found", 2),
             (
@@ -983,6 +989,33 @@ mod tests {
     }
 
     #[test]
+    fn failures_display_their_documented_messages_and_are_errors() {
+        fn assert_error<E: std::error::Error>(_: &E) {}
+        let core = Failure::Core(Error::NotFound("c9".into()));
+        assert_error(&core);
+
+        assert_eq!(Failure::Usage("bad".into()).to_string(), "bad");
+        assert_eq!(
+            Failure::MissingAuthor.to_string(),
+            "no author: pass --as <name> or set PTAL_AUTHOR"
+        );
+        assert_eq!(
+            Failure::NotATerminal.to_string(),
+            "the interactive view needs a terminal; agents should use `ptal comments`"
+        );
+        assert_eq!(
+            Failure::Terminal(io_err()).to_string(),
+            "terminal error: boom"
+        );
+        assert_eq!(
+            Failure::Stdout(io_err()).to_string(),
+            "cannot write to stdout: boom"
+        );
+        assert_eq!(core.to_string(), "thread c9 not found");
+        assert!(std::error::Error::source(&Failure::Terminal(io_err())).is_some());
+    }
+
+    #[test]
     fn error_envelope_is_one_line_of_json() {
         let json = error_json(&Failure::Core(Error::NotFound("c9".into())));
 
@@ -1037,7 +1070,16 @@ mod tests {
     }
 
     impl Fixture {
-        fn env(&self, author: Option<&str>, tty: bool) -> Env<fn() -> String> {
+        fn env(&self, author: Option<&str>, tty: bool) -> Env<fn() -> String, SystemTicker> {
+            self.env_with(author, tty, SystemTicker)
+        }
+
+        fn env_with<T: Ticker>(
+            &self,
+            author: Option<&str>,
+            tty: bool,
+            ticker: T,
+        ) -> Env<fn() -> String, T> {
             let clock: fn() -> String = || NOW.to_string();
             Env {
                 reviews: Some(Reviews::with_clock(Store::new(&self.data), clock)),
@@ -1047,7 +1089,7 @@ mod tests {
                 stdout_is_tty: tty,
                 stderr_is_tty: tty,
                 color: true,
-                ticker: Box::new(SystemTicker),
+                ticker,
             }
         }
 
@@ -1057,7 +1099,7 @@ mod tests {
             self.run_with(args, &self.env(None, false))
         }
 
-        fn run_with(&self, args: &[&str], env: &Env<fn() -> String>) -> Out {
+        fn run_with(&self, args: &[&str], env: &Env<fn() -> String, impl Ticker>) -> Out {
             let path = self.file.to_str().unwrap();
             let argv = std::iter::once("ptal")
                 .chain(args.iter().copied())
@@ -1071,7 +1113,7 @@ mod tests {
             }
         }
 
-        fn env_without_store(&self, tty: bool) -> Env<fn() -> String> {
+        fn env_without_store(&self, tty: bool) -> Env<fn() -> String, SystemTicker> {
             Env {
                 reviews: None,
                 ..self.env(None, tty)
@@ -2225,6 +2267,78 @@ c2  open  outdated  lines 3-4
         assert_eq!(back.json()["review"]["latest"]["side"], "agent");
     }
 
+    /// A stream whose writes fail with `kind`.
+    struct FailingWriter(io::ErrorKind);
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(self.0.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(self.0.into())
+        }
+    }
+
+    #[test]
+    fn a_failed_stdout_write_is_io_exit_1_for_output_and_help() {
+        let fx = fixture_with_two_threads();
+        let path = fx.file.to_str().unwrap();
+        for args in [&["comments", path][..], &["--help"], &["--version"]] {
+            let argv = std::iter::once("ptal").chain(args.iter().copied());
+            let mut err = Vec::new();
+            let code = run(
+                argv,
+                &fx.env(None, false),
+                &mut FailingWriter(io::ErrorKind::Other),
+                &mut err,
+            );
+
+            assert_eq!(code, 1, "{args:?}");
+            let v: serde_json::Value = serde_json::from_slice(&err).unwrap();
+            assert_eq!(v["error"]["code"], "io", "{args:?}");
+            let message = v["error"]["message"].as_str().unwrap();
+            assert!(message.starts_with("cannot write to stdout"), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_closed_stdout_pipe_ends_quietly_with_the_commands_own_status() {
+        let fx = fixture_with_two_threads();
+        let path = fx.file.to_str().unwrap();
+        for args in [&["comments", path][..], &["--help"], &["--version"]] {
+            let argv = std::iter::once("ptal").chain(args.iter().copied());
+            let mut err = Vec::new();
+            let code = run(
+                argv,
+                &fx.env(None, false),
+                &mut FailingWriter(io::ErrorKind::BrokenPipe),
+                &mut err,
+            );
+
+            assert_eq!(code, 0, "{args:?}");
+            assert!(err.is_empty(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn a_failed_stderr_write_exits_1_whatever_the_failure() {
+        let fx = fixture("one\n");
+        for args in [&["add", "FILE", "--lines", "x"][..], &["comments", "nope"]] {
+            let argv = std::iter::once("ptal").chain(args.iter().copied());
+            let mut out = Vec::new();
+            let code = run(
+                argv,
+                &fx.env(None, false),
+                &mut out,
+                &mut FailingWriter(io::ErrorKind::Other),
+            );
+
+            assert_eq!(code, 1, "{args:?}");
+            assert!(out.is_empty(), "{args:?}");
+        }
+    }
+
     #[test]
     fn a_bad_side_or_a_side_on_a_thread_reopen_is_usage() {
         let fx = fixture_with_two_threads();
@@ -2240,6 +2354,40 @@ c2  open  outdated  lines 3-4
             assert_eq!(out.error_code(), "usage", "{args:?}");
         }
         assert_eq!(fx.review_bytes(), before);
+    }
+
+    #[test]
+    fn a_side_on_a_thread_reopen_is_a_clap_conflict() {
+        let fx = fixture_with_two_threads();
+
+        let out = fx.run_with(
+            &["reopen", "FILE", "c1", "--as", "x", "--side", "agent"],
+            &fx.env(None, true),
+        );
+
+        assert_eq!(out.code, 2);
+        assert!(out.stderr.contains("--side"), "{}", out.stderr);
+        assert!(out.stderr.contains("cannot be used with"), "{}", out.stderr);
+    }
+
+    #[test]
+    fn a_json_after_the_double_dash_is_not_the_flag() {
+        let fx = fixture_with_two_threads();
+
+        let out = fx.run_with(
+            &["add", "FILE", "--lines", "x", "--", "--json"],
+            &fx.env(None, true),
+        );
+
+        assert_eq!(out.code, 2);
+        assert!(serde_json::from_str::<serde_json::Value>(&out.stderr).is_err());
+        assert!(out.stderr.starts_with("error:"), "{}", out.stderr);
+
+        let flagged = fx.run_with(
+            &["add", "FILE", "--lines", "x", "--json"],
+            &fx.env(None, true),
+        );
+        assert_eq!(flagged.error_code(), "usage");
     }
 
     #[test]
@@ -2545,13 +2693,9 @@ c2  open  outdated  lines 3-4
     }
 
     impl Fixture {
-        fn wait_env(&self, tty: bool) -> Env<fn() -> String> {
-            Env {
-                ticker: Box::new(InstantTicker(std::cell::Cell::new(
-                    std::time::Instant::now(),
-                ))),
-                ..self.env(None, tty)
-            }
+        fn wait_env(&self, tty: bool) -> Env<fn() -> String, InstantTicker> {
+            let ticker = InstantTicker(std::cell::Cell::new(std::time::Instant::now()));
+            self.env_with(None, tty, ticker)
         }
     }
 

@@ -281,7 +281,7 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
   `review.json`'s bytes (`ReviewReader::bytes`), so a poller can tell that
   either changed without a full `view`. Hashes, not mtimes: mtime
   granularity can miss a same-second, same-length write. Never writes.
-- `wait(file, timeout?, &dyn Ticker) -> Waited { reason, review }` — blocks
+- `wait(file, timeout?, &impl Ticker) -> Waited { reason, review }` — blocks
   until it is not the human's turn: `Woke::Turn` on the agent's turn,
   `Woke::Closed` when closed, `Woke::Timeout` once `timeout` passes on the
   ticker's clock. Level-triggered on the state, checked before the first
@@ -293,9 +293,9 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
   `WAIT_READ_RETRIES` (20, about 5 s) in a row; any other error (a corrupt
   or newer review) ends the wait at once. A wait that times out without ever
   reading `review.json` fails with the last read's `Io` error rather than
-  reporting a made-up state. `Ticker {
-  now, sleep }` is injected like the clock (`SystemTicker` for real), so
-  tests hand off from inside a fake `sleep`. Polling, not file watching:
+  reporting a made-up state. `Ticker { now, sleep }` is injected like the
+  clock, as a generic (`SystemTicker` for real), so tests hand off from
+  inside a fake `sleep`. Polling, not file watching:
   `review.json` and editors' saves replace files by rename, which breaks
   per-file watches, and the files are a few KB.
 
@@ -388,7 +388,9 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
 **Contract**
 - **stdout** is data only: JSON when not a TTY (or `--json`), a readable
   rendering when a TTY. **stderr** is diagnostics. Never mixed; on failure
-  stdout is empty. `--help` and `--version` go to stdout with exit `0`.
+  stdout is empty. `--help` and `--version` go to stdout with exit `0`. A
+  failed stdout write is `Failure::Stdout` (`io`, exit `1`); a closed pipe
+  (`BrokenPipe`) ends quietly with the command's own status.
 - `file` in every JSON output is the canonical path; a non-UTF-8 byte in it
   prints as U+FFFD (the command still works, and the printed path isn't
   usable). The readable rendering hangs a multi-line comment or note's later
@@ -422,14 +424,16 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   A wait that never read the review fails with `io` (exit `1`).
   It takes no `--as` (a read) and no `--side` (only the agent waits). One
   blocking call per turn, not a stream: an agent's command tool reads a
-  command's output when it exits. The ticker comes from `Env.ticker`
-  (`SystemTicker` in `main`), so in-process tests never sleep.
+  command's output when it exits. The ticker comes from `Env.ticker`, the `T`
+  of `Env<C, T>` (`SystemTicker` in `main`), so in-process tests never sleep.
 - Threads carry no `waiting_on` field. A thread is waiting on an agent when
   `Thread::is_waiting_on` its `--as` name (open, last comment by someone
   else, exact match); the help says so and tells agents to use one stable
   name. A hand-off's `waiting` asks the same of the author handing off.
 - Errors are one line on stderr, `{"error": {"code", "message"}}` (readable
-  text on a TTY stderr unless `--json`). The code-to-exit mapping is the
+  text on a TTY stderr unless `--json` appears before `--`). `--side` on a
+  thread reopen is a clap conflict (`usage`). `Failure` is a `std::error::Error`
+  (`thiserror`); its `Display` is the message. The code-to-exit mapping is the
   `Failure::classify` table, pinned by a unit test and documented in
   [docs/interfaces.md](docs/interfaces.md#exit-codes): `2` means the caller
   can fix the invocation, `1` is a runtime failure.
@@ -898,6 +902,8 @@ hand-off or close.
 - **Lines are 1-based and inclusive** everywhere in the model and on the wire.
 - **Time and randomness are injected** (clock, id counter) so core logic is
   testable deterministically.
+- **Lints live in `Cargo.toml`'s `[lints]`:** a short curated list of clippy
+  lints that caught real issues, not the `pedantic` group.
 - **Forward compatibility.** `schema_version` on every persisted file; refuse
   newer versions, migrate older.
 
