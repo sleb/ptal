@@ -201,9 +201,37 @@ impl Serialize for ReviewStatus {
 pub struct HandedOff {
     /// The review's state after the hand-off.
     pub review: ReviewStatus,
-    /// Ids of open threads whose last comment isn't by the author handing
-    /// off: still waiting on them (exact name match), as of the hand-off.
+    /// Ids of the threads that [`Thread::is_waiting_on`] the author handing
+    /// off, as of the hand-off.
     pub waiting: Vec<String>,
+}
+
+/// Which of the four thread writes a front end made: [`Reviews::add_thread`],
+/// [`Reviews::reply`], [`Reviews::resolve`] or [`Reviews::reopen`]. The CLI
+/// and the TUI report it; it is never persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadWrite {
+    /// A new thread was added.
+    Added,
+    /// A comment was appended to a thread.
+    Replied,
+    /// A thread was resolved.
+    Resolved,
+    /// A thread was reopened.
+    Reopened,
+}
+
+impl ThreadWrite {
+    /// The write in past tense: `added`, `replied`, `resolved` or
+    /// `reopened`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThreadWrite::Added => "added",
+            ThreadWrite::Replied => "replied",
+            ThreadWrite::Resolved => "resolved",
+            ThreadWrite::Reopened => "reopened",
+        }
+    }
 }
 
 /// A fingerprint of a reviewed file and its review: see [`Reviews::stamp`].
@@ -1203,6 +1231,18 @@ mod tests {
     }
 
     // --- lines ---
+
+    #[test]
+    fn a_thread_write_names_itself_in_past_tense() {
+        let names = [
+            ThreadWrite::Added,
+            ThreadWrite::Replied,
+            ThreadWrite::Resolved,
+            ThreadWrite::Reopened,
+        ]
+        .map(ThreadWrite::as_str);
+        assert_eq!(names, ["added", "replied", "resolved", "reopened"]);
+    }
 
     #[test]
     fn view_lines_split_like_str_lines() {

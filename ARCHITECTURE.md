@@ -240,6 +240,9 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 - `resolve`, `reply` and `reopen` return the thread with its lines mapped to
   the content they read (the stored anchor is unchanged); `add_thread`'s
   range is as given, since it anchors to the current content.
+- `ThreadWrite` — `Added | Replied | Resolved | Reopened`: which of these
+  four writes a front end made, the one kind both the CLI and the TUI report
+  (`as_str()` gives `added`, `replied`, …). Never persisted.
 - `resolve(file, id, author, note?)` — marks the thread resolved; a note is
   appended as a second comment by the resolver. Resolving a resolved thread
   is `AlreadyResolved` and writes nothing, so the note is dropped.
@@ -522,7 +525,7 @@ Its parts:
   never touched; a close box's `confirm_asked` is cleared (its open-thread
   count may be stale), `discard_asked` and `status` are kept. `Refreshed`
   changes nothing else, and
-  `done` (`Added | Replied | Resolved | Reopened`) picks the footer message and `id` is
+  `done` (a `review::ThreadWrite`) picks the footer message and `id` is
   always the thread id; `Effect` is `Add { start, end, body } | Reply { id,
   body } | Resolve { id } | Reopen { id } | HandOff { note } | Close {
   verdict, note } | ReopenReview | Quit`, where `start..=end` is

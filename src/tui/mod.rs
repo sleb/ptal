@@ -39,9 +39,9 @@ use ratatui::crossterm::terminal::{
 
 use crate::error::{Error, Result};
 use crate::model::{Side, Thread};
-use crate::review::{Clock, POLL_INTERVAL, ReviewStatus, Reviews, Stamp, View};
+use crate::review::{Clock, POLL_INTERVAL, ReviewStatus, Reviews, Stamp, ThreadWrite, View};
 
-use app::{App, Done, Effect, Event, Reread, update};
+use app::{App, Effect, Event, Reread, update};
 use render::render;
 
 /// A file, its threads, the review's state and its changes since the last
@@ -303,19 +303,19 @@ pub fn step<C: Clock>(
             let written = reviews
                 .against(&seen)
                 .add_thread(file, start, end, &body, author);
-            answer(app, reviews, file, Done::Added, written)
+            answer(app, reviews, file, ThreadWrite::Added, written)
         }
         Some(Effect::Reply { id, body }) => {
             let written = reviews.reply(file, &id, &body, author);
-            answer(app, reviews, file, Done::Replied, written)
+            answer(app, reviews, file, ThreadWrite::Replied, written)
         }
         Some(Effect::Resolve { id }) => {
             let written = reviews.resolve(file, &id, author, None);
-            answer(app, reviews, file, Done::Resolved, written)
+            answer(app, reviews, file, ThreadWrite::Resolved, written)
         }
         Some(Effect::Reopen { id }) => {
             let written = reviews.reopen(file, &id, author, None);
-            answer(app, reviews, file, Done::Reopened, written)
+            answer(app, reviews, file, ThreadWrite::Reopened, written)
         }
         Some(Effect::HandOff { note }) => {
             let seen = app.seen().to_string();
@@ -378,7 +378,7 @@ fn answer<C: Clock>(
     app: &mut App,
     reviews: &Reviews<C>,
     file: &Path,
-    done: Done,
+    done: ThreadWrite,
     written: Result<Thread>,
 ) -> ControlFlow<()> {
     let event = match written {
