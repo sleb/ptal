@@ -469,9 +469,9 @@ Its parts:
   (rows, widths, wrapped rows and the view clamps), `normal` (Normal and
   Visual keys), `find` (the `/` prompt and `n`/`N`), `threads` (the panel),
   `input` (the comment box) and `overlay` (help and the review overlay);
-  test helpers two of them share are in `app::fixtures`.
-  `App` state (`lines`, their `tables` rows from `tui::table`
-  at `text_width()`, recomputed on open, on resize and when a re-read changes
+  test helpers two of them share are in `app::fixtures`. Together they hold
+  the `App` state (`lines`, their `tables` rows from `tui::table` at
+  `text_width()`, recomputed on open, on resize and when a re-read changes
   the lines, their `stylings` from `tui::highlight`, computed by
   `App::highlighted(true)` and again when a re-read changes the lines (the
   `highlight` flag remembers which), `seen`, the content hash of the lines
@@ -502,12 +502,13 @@ Its parts:
   two in `Visual` and in a box opened from it (the range stays fixed while
   typing), else the cursor line alone. That movement helper, the overlays
   and the panel read their scroll keys through one `Scroll::of(key)`
-  (`Up | Down | HalfUp | HalfDown | Top | Bottom`: `j`/`k`/`g`/`G` without
-  ctrl, `ctrl+d`/`ctrl+u`, and the named keys with any modifiers); each
-  mode maps the intent to its own move, and the panel takes only `Up` and
-  `Down`. `]`/`[` and `}`/`{` jump with one `nearest(sorted, from,
-  forward)`, over the covered lines and the change starts. `enter` in `Visual` always opens a
-  box for a new thread on the selection, never the panel; a save from it
+  (`Up | Down | HalfUp | HalfDown | Top | Bottom`: `j`/`k`/`g`/`G`, `↓`/`↑`
+  and `End`/`Home` without ctrl, `ctrl+d`/`ctrl+u`, and `PgDn`/`PgUp` with
+  any modifiers); each mode maps the intent to its own move, and the panel
+  takes only `Up` and `Down`. `]`/`[` and `}`/`{` jump with one
+  `nearest(sorted, from, forward)`, over the covered lines and the change
+  starts. `enter` in `Visual` always opens a box for a new thread on the
+  selection, never the panel; a save from it
   goes to Normal. In `Input`, `enter` inserts a newline and `ctrl+s`
   (or `ctrl+S`) saves the draft as typed less trailing whitespace and leading blank lines (one that
   is only whitespace and newlines saves nothing). `esc` or `ctrl+c` returns
@@ -664,9 +665,9 @@ Its parts:
   cut). `Mode::Overlay { kind: Help, back, scroll }` shows it full-screen,
   opened by `?` from Normal or the panel (not from Visual, Search or the
   box, where `?` is text or unbound); `back` is an `OverlayBack`, `Normal`
-  or `Panel`, and closing returns there untouched; `?`/`esc`/`q`/`ctrl+c` close, `j`/`k`,
-  `ctrl+d`/`ctrl+u`, `PgDn`/`PgUp`, `g`/`G`, `Home`/`End` scroll, clamped in
-  `update`. `i` in Normal opens the other overlay, `kind: Review`: the state
+  or `Panel`, and closing returns there untouched; `?`/`esc`/`q`/`ctrl+c`
+  close, `j`/`k`, `ctrl+d`/`ctrl+u`, `PgDn`/`PgUp`, `g`/`G`, `Home`/`End`
+  scroll, clamped in `update`. `i` in Normal opens the other overlay, `kind: Review`: the state
   as a header, what the latest log entry was, by whom (and which side), when
   and on which revision, then its whole note, wrapped; it scrolls and
   closes the same way, with `i` in place of `?`. The
