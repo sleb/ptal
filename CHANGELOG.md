@@ -6,6 +6,10 @@ workflow publishes that section as the GitHub Release notes. See
 
 ## Unreleased
 
+- `ptal skill` prints an agent skill for the review loop (markdown), the same
+  file `npx skills add sleb/ptal` installs. A file named `skill` now needs
+  `./skill` to open in the TUI, like the other command names.
+
 ## 0.3.1 - 2026-10-23
 
 Fixes and cleanup. The review store format is unchanged. A few CLI edge cases

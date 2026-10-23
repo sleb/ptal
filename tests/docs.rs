@@ -5,12 +5,16 @@
 //! docs (`AGENTS.md`, the ptal-plan skill) to the repo's current vocabulary:
 //! no milestone-status bookkeeping, and one definition of done. README's prose
 //! is held to the same: no status or roadmap words, no paragraph over 120
-//! words, and a `For agents` section that links the reference docs.
+//! words, and a `For agents` section that links the reference docs and the
+//! `ptal-review` skill. That skill (`skills/ptal-review/SKILL.md`, printed by
+//! `ptal skill`) is held to the built binary: every command, flag and JSON
+//! field it names exists, it stays short, and it links the reference docs
+//! instead of restating them.
 //!
 //! These read the repo at run time, so the file is not part of the published
 //! package.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -437,4 +441,227 @@ fn readme_agent_section_links_the_reference_docs() {
         !readme.contains("**Turns.**"),
         "the Turns paragraph is back"
     );
+}
+
+// ---- the ptal-review skill -------------------------------------------------
+
+const SKILL_PATH: &str = "skills/ptal-review/SKILL.md";
+const MAX_SKILL_LINES: usize = 70;
+
+fn ptal(args: &[&str]) -> String {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_ptal"))
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "ptal {args:?} failed");
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// The `ptal <word>` commands and `--flags` named in `text`'s backticked
+/// spans, in order. A flag is paired with the nearest `ptal <word>` before it
+/// in its span (else `None`).
+fn commands_and_flags(text: &str) -> Vec<(Option<String>, String)> {
+    let mut found = Vec::new();
+    for span in text.split('`').skip(1).step_by(2) {
+        let words: Vec<&str> = span
+            .split_whitespace()
+            .map(|w| w.trim_end_matches([',', '.', ';', ':', ')']))
+            .collect();
+        let mut command: Option<String> = None;
+        for (i, word) in words.iter().enumerate() {
+            if *word == "ptal"
+                && let Some(next) = words.get(i + 1)
+                && next.chars().all(|c| c.is_ascii_lowercase())
+            {
+                command = Some((*next).to_string());
+                found.push((None, format!("ptal {next}")));
+            }
+            if word.starts_with("--") && word[2..].starts_with(char::is_alphabetic) {
+                found.push((command.clone(), (*word).to_string()));
+            }
+        }
+    }
+    found
+}
+
+/// What is wrong with the commands and flags `text` names, judged by the
+/// built binary's own help.
+fn unknown_commands_and_flags(text: &str) -> Vec<String> {
+    let top = ptal(&["--help"]);
+    let subcommands: Vec<String> = top
+        .lines()
+        .skip_while(|l| *l != "Commands:")
+        .skip(1)
+        .take_while(|l| l.starts_with("  "))
+        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+        .filter(|c| c != "help")
+        .collect();
+    assert!(subcommands.contains(&"wait".to_string()), "{subcommands:?}");
+    let helps: HashMap<&str, String> = subcommands
+        .iter()
+        .map(|c| (c.as_str(), ptal(&[c, "--help"])))
+        .collect();
+    let all_help = helps.values().fold(top, |all, h| all + h);
+    let mut bad = Vec::new();
+    for (command, name) in commands_and_flags(text) {
+        match (&command, name.strip_prefix("ptal ")) {
+            (_, Some(word)) if !helps.contains_key(word) => bad.push(name),
+            (Some(command), None) => {
+                if !helps
+                    .get(command.as_str())
+                    .is_some_and(|h| h.contains(&name))
+                {
+                    bad.push(format!("ptal {command} {name}"));
+                }
+            }
+            (None, None) if !all_help.contains(&name) => bad.push(name),
+            _ => {}
+        }
+    }
+    bad
+}
+
+#[test]
+fn the_checker_catches_a_made_up_command_and_flag() {
+    let bad = unknown_commands_and_flags("run `ptal frobnicate x`, then `ptal wait f --nope`\n");
+    assert_eq!(bad, ["ptal frobnicate", "ptal wait --nope"]);
+    assert!(unknown_commands_and_flags("`ptal wait f --timeout 5`\n").is_empty());
+}
+
+#[test]
+fn skill_has_frontmatter_and_is_short() {
+    let skill = read(SKILL_PATH);
+    assert!(skill.starts_with("---\n"));
+    assert!(skill.contains("\nname: ptal-review\n"));
+    assert!(
+        skill
+            .lines()
+            .any(|l| l.starts_with("description: ") && l.len() > "description: ".len() + 20),
+        "description is missing or empty"
+    );
+    assert!(
+        skill.lines().count() <= MAX_SKILL_LINES,
+        "skill is too long"
+    );
+    assert!(
+        !skill.lines().any(|l| l.trim_start().starts_with('|')),
+        "no tables in the skill"
+    );
+}
+
+#[test]
+fn ptal_skill_output_matches_the_repo_file() {
+    assert_eq!(ptal(&["skill"]), read(SKILL_PATH));
+}
+
+#[test]
+fn skill_uses_only_real_commands_and_flags() {
+    assert_eq!(
+        unknown_commands_and_flags(&read(SKILL_PATH)),
+        [] as [String; 0]
+    );
+}
+
+#[test]
+fn skill_json_fields_are_documented() {
+    let skill = read(SKILL_PATH);
+    let wait = ptal(&["wait", "--help"]);
+    let comments = ptal(&["comments", "--help"]);
+    // The skill's field path, and the quoted key each segment is documented as.
+    for (path, help, keys) in [
+        ("reason", &wait, &["\"reason\""][..]),
+        (
+            "review.latest.note",
+            &comments,
+            &["\"review\"", "\"latest\"", "\"note\""],
+        ),
+        ("review.verdict", &comments, &["\"review\"", "\"verdict\""]),
+    ] {
+        assert!(skill.contains(path), "the skill no longer reads {path}");
+        for key in keys {
+            assert!(help.contains(key), "{path}: help lacks {key}");
+        }
+    }
+}
+
+#[test]
+fn wait_reason_field_is_what_the_skill_switches_on() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("plan.md");
+    fs::write(&file, "one\n").unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_ptal"))
+        .args(["wait", file.to_str().unwrap(), "--timeout", "0"])
+        .env("PTAL_DATA_DIR", tmp.path().join("data"))
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["reason"], "timeout");
+    let skill = read(SKILL_PATH);
+    for reason in ["turn", "closed", "timeout"] {
+        assert!(skill.contains(&format!("\"{reason}\"")), "{reason}");
+    }
+}
+
+#[test]
+fn skill_links_the_reference_docs_by_absolute_url() {
+    let skill = read(SKILL_PATH);
+    assert!(skill.contains("ptal --help"));
+    for doc in ["docs/interfaces.md", "docs/protocol.md"] {
+        assert!(
+            skill.contains(&format!("{}/blob/main/{doc}", repository())),
+            "{doc} is not linked by absolute URL"
+        );
+    }
+    assert!(!skill.contains("](docs/") && !skill.contains("](./"));
+}
+
+#[test]
+fn skill_calls_out_its_policy_choices() {
+    let skill = read(SKILL_PATH);
+    let choices = skill
+        .split("\n## Your choices\n")
+        .nth(1)
+        .expect("no `## Your choices` section");
+    for needle in ["resolve", "approved", "--as", "edit"] {
+        assert!(
+            choices.to_lowercase().contains(needle),
+            "choices lack {needle:?}"
+        );
+    }
+}
+
+#[test]
+fn skill_does_not_restate_reference() {
+    let skill = read(SKILL_PATH);
+    for banned in ["\"error\":", "{\"file\"", "exit code"] {
+        assert!(!skill.contains(banned), "the skill restates {banned:?}");
+    }
+    assert!(!skill.lines().any(|l| l.trim_start().starts_with('{')));
+}
+
+#[test]
+fn readme_agent_section_links_the_skill() {
+    let readme = read("README.md");
+    let agents = section(&readme, "### For agents", "## Troubleshooting");
+    for expected in [
+        "skills/ptal-review/SKILL.md",
+        "ptal skill",
+        "npx skills add",
+    ] {
+        assert!(agents.contains(expected), "For agents lacks {expected:?}");
+    }
+}
+
+#[test]
+fn contributor_skills_are_hidden_from_npx() {
+    for path in [
+        ".agents/skills/ptal-plan/SKILL.md",
+        ".agents/skills/rust-skills/SKILL.md",
+    ] {
+        let skill = read(path);
+        let front = skill.split("\n---\n").next().unwrap();
+        for needle in ["name:", "description:", "internal: true"] {
+            assert!(front.contains(needle), "{path} lacks {needle:?}");
+        }
+    }
 }

@@ -41,6 +41,7 @@ acceptance criteria and link here instead of restating commands.
 | Reopen a review | `ptal reopen <file> --as <name> [--note "..."]` (no thread id), as the agent (`--side human` to act as the human); prints `{"file", "review"}`; back to the human's turn; `not_closed` if active | `O` in Normal reopens the review at once (no note); on an active one the footer says `review is not closed` | `reopen_review` |
 | See whether a thread is stale | `state: "current" \| "outdated"` in `comments`; the range is where the anchored text is now (edits above move it), `outdated` once an anchored line is edited or removed, at a best guess with the original quote | `outdated` in the thread panel; the footer counts open outdated threads (`N outdated`); the gutter and panel follow the same mapped range | `view` |
 | Learn the tool | `ptal --help` is the one page an agent must read (the turn loop, concepts, conventions, exit codes); each `ptal <command> --help` has that command's output shape, errors and examples | `?` opens a full-screen key listing, grouped by mode. See [Learn the tool](#learn-the-tool) | none |
+| Get the agent skill | `ptal skill` prints the review-loop skill as markdown (not JSON, with or without `--json`); save it where your agent loads skills | n/a | none |
 
 ## Cross-cutting
 
