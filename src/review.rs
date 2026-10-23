@@ -790,8 +790,7 @@ impl<C: Clock> Reviews<C> {
             let waiting = review
                 .threads
                 .iter()
-                .filter(|t| t.status == Status::Open)
-                .filter(|t| t.comments.last().is_some_and(|c| c.author != author))
+                .filter(|t| t.is_waiting_on(author))
                 .map(|t| t.id.clone())
                 .collect();
             Ok(HandedOff {

@@ -80,6 +80,10 @@ threads are never silently dropped or silently re-pointed at the wrong text.
   revisions are never pruned.
 - `Thread` — `{ id, anchor, status, comments }`. Its id is its first
   comment's id.
+- `Thread::is_waiting_on(author)` — the one "waiting on you" rule: the
+  thread is open and its last comment isn't by `author` (exact match). A
+  thread with no comments waits on no one. `review`'s hand-off and the TUI's
+  markers both ask it.
 - `Status` — `open` or `resolved`; `resolved_by`, `resolved_at` and
   `resolved_revision` appear on the wire only when resolved. Reopening, or replying to a resolved thread,
   makes the thread `open` and drops them.
@@ -248,8 +252,8 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
 - `hand_off(file, side, author, note?) -> HandedOff { review, waiting }` —
   appends a `hand_off` entry by `side` to the log and passes the turn to the
   other side. `review` is the resulting `ReviewStatus`; `waiting` lists the
-  open threads whose last comment isn't by `author` (exact match), the same
-  "waiting on you" rule the TUI's gutter uses. A hand-off by the side
+  threads that `Thread::is_waiting_on(author)`, the rule the TUI's gutter
+  uses too. A hand-off by the side
   without the turn, or on a closed review, is `NotYourTurn`.
 - `close(file, author, verdict?, note?) -> ReviewStatus` — the human ends
   the review with a `close` entry, during either side's turn. Open threads
@@ -408,9 +412,9 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   command's output when it exits. The ticker comes from `Env.ticker`
   (`SystemTicker` in `main`), so in-process tests never sleep.
 - Threads carry no `waiting_on` field. A thread is waiting on an agent when
-  its last comment's `author` is not the agent's `--as` name (exact match);
-  the help says so and tells agents to use one stable name. A hand-off's
-  `waiting` applies the same rule to the author handing off.
+  `Thread::is_waiting_on` its `--as` name (open, last comment by someone
+  else, exact match); the help says so and tells agents to use one stable
+  name. A hand-off's `waiting` asks the same of the author handing off.
 - Errors are one line on stderr, `{"error": {"code", "message"}}` (readable
   text on a TTY stderr unless `--json`). The code-to-exit mapping is the
   `Failure::classify` table, pinned by a unit test and documented in
@@ -486,8 +490,8 @@ Its parts:
   shrinks to stay above it. A thread covers its range as
   `view` maps it to the file as last re-read, whatever its
   `state`, so an outdated thread sits at its best-guess lines; `Marker = Waiting | Open | Resolved` is derived
-  per line (waiting > open > resolved). Waiting means open and last comment
-  not by `author`. The panel's thread set is recomputed from the threads and
+  per line (waiting > open > resolved). Waiting is
+  `Thread::is_waiting_on(author)`. The panel's thread set is recomputed from the threads and
   the cursor, never cached. `screen_rows()` maps the view to
   `ScreenRow { line, first, text }`, filling the view height from `top` with
   each line's rows at `text_width()` (terminal columns minus the gutter, at

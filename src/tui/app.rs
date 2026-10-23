@@ -748,16 +748,12 @@ impl App {
     }
 
     fn marker_of(&self, view: &ThreadView) -> Marker {
-        let open = view.thread.status == Status::Open;
-        let theirs = view
-            .thread
-            .comments
-            .last()
-            .is_some_and(|comment| comment.author != self.author);
-        match (open, theirs) {
-            (true, true) => Marker::Waiting,
-            (true, false) => Marker::Open,
-            (false, _) => Marker::Resolved,
+        if view.thread.is_waiting_on(&self.author) {
+            Marker::Waiting
+        } else if view.thread.status == Status::Open {
+            Marker::Open
+        } else {
+            Marker::Resolved
         }
     }
 
