@@ -725,12 +725,10 @@ impl App {
     }
 
     fn marker_of(&self, view: &ThreadView) -> Marker {
-        if view.thread.is_waiting_on(&self.author) {
-            Marker::Waiting
-        } else if view.thread.status == Status::Open {
-            Marker::Open
-        } else {
-            Marker::Resolved
+        match view.thread.status {
+            Status::Open if view.thread.is_waiting_on(&self.author) => Marker::Waiting,
+            Status::Open => Marker::Open,
+            Status::Resolved { .. } => Marker::Resolved,
         }
     }
 
