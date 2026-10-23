@@ -27,6 +27,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo package --locked
 ```
 
+Every story issue in the milestone is closed with its acceptance criteria
+ticked. The milestone issue's own `Done means` boxes are checked in step 9,
+since most of them only become true as the release completes.
+
 The crates.io token needs the `publish-update` scope and no crate-name
 restriction that excludes `ptal`. A token without them fails at upload with
 `403 Forbidden`, after the dry run passed. Save a replacement with
@@ -135,7 +139,33 @@ the version and a successful docs build. `https://docs.rs/ptal/X.Y.Z/ptal/`
 returning `200` means the build succeeded. `crate/ptal/X.Y.Z/builds.json`
 returned HTML, not JSON, when tried, so don't script against it.
 
-## 9. Failure handling
+## 9. Close out the milestone
+
+The release is done only when its tracking is too. Every story issue in the
+milestone must be closed with its acceptance criteria ticked, and every box in
+the milestone issue's `Done means` list must be ticked, including the green
+gate on the release commit and this procedure having been followed.
+
+```sh
+milestone=$(gh api repos/sleb/ptal/milestones \
+  --jq '.[] | select(.title=="vX.Y.Z") | .number')
+gh issue list --milestone vX.Y.Z --state all
+for n in $(gh issue list --milestone vX.Y.Z --state all --json number -q '.[].number'); do
+  unticked=$(gh issue view "$n" --json body -q .body | grep -c '^[[:space:]]*- \[ \]' || true)
+  echo "#$n: $unticked unticked"
+done
+```
+
+Tick each box that is genuinely done (`gh issue edit <n> --body-file body.md`
+with the edited body), and open an issue for anything that is not. Then close
+the milestone issue and the milestone itself:
+
+```sh
+gh issue close <milestone-issue>
+gh api -X PATCH "repos/sleb/ptal/milestones/$milestone" -f state=closed
+```
+
+## 10. Failure handling
 
 | Situation | Action |
 |---|---|
