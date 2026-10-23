@@ -7,7 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::anchor::{Change, ChangeKind, Diff, LineRange};
+use crate::anchor::{Change, ChangeKind, Diff, LineRange, line_number};
 use crate::model::{Entry, Event as LogEvent, ReviewState, Side, State, Status, Verdict};
 use crate::review::{ReviewStatus, ThreadView, ThreadWrite};
 
@@ -481,7 +481,7 @@ impl App {
         let new: Vec<&str> = new.iter().map(String::as_str).collect();
         let diff = Diff::new(&old, &new);
         let map = |line: usize| {
-            let n = u32::try_from(line + 1).unwrap_or(u32::MAX);
+            let n = line_number(line);
             let mapped = diff.map(LineRange { start: n, end: n });
             usize::try_from(mapped.range.start).map_or(0, |n| n.saturating_sub(1))
         };
@@ -1689,14 +1689,11 @@ fn save_box(
             id: id.clone(),
             body,
         },
-        Target::NewThread => {
-            let one_based = |line: usize| u32::try_from(line + 1).unwrap_or(u32::MAX);
-            Effect::Add {
-                start: one_based(first),
-                end: one_based(last),
-                body,
-            }
-        }
+        Target::NewThread => Effect::Add {
+            start: line_number(first),
+            end: line_number(last),
+            body,
+        },
         Target::HandOff => Effect::HandOff { note },
         Target::Close {
             verdict,

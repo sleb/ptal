@@ -121,8 +121,8 @@ impl Diff {
             && self.unchanged(first, last);
 
         let guess = LineRange {
-            start: u32::try_from(new_first + 1).unwrap_or(u32::MAX),
-            end: u32::try_from(new_last + 1).unwrap_or(u32::MAX),
+            start: line_number(new_first),
+            end: line_number(new_last),
         };
         Mapped {
             range: clamp(guess, self.new_len),
@@ -228,14 +228,22 @@ impl Diff {
     }
 }
 
-/// The 1-based line number of 0-based index `i`.
-fn line_number(i: usize) -> u32 {
+/// The 1-based line number of 0-based index `i`, saturating at
+/// `u32::MAX`: the one index-to-line conversion, the TUI's too.
+pub(crate) fn line_number(i: usize) -> u32 {
     u32::try_from(i + 1).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_number_is_the_index_plus_one_saturating() {
+        assert_eq!(line_number(0), 1);
+        assert_eq!(line_number(41), 42);
+        assert_eq!(line_number(u32::MAX as usize), u32::MAX);
+    }
 
     fn range(start: u32, end: u32) -> LineRange {
         LineRange { start, end }
