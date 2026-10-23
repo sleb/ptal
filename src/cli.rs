@@ -2306,7 +2306,7 @@ c2  open  outdated  lines 3-4
     fn a_closed_stdout_pipe_ends_quietly_with_the_commands_own_status() {
         let fx = fixture_with_two_threads();
         let path = fx.file.to_str().unwrap();
-        for (args, expected) in [(&["comments", path][..], 0), (&["--help"], 0)] {
+        for args in [&["comments", path][..], &["--help"], &["--version"]] {
             let argv = std::iter::once("ptal").chain(args.iter().copied());
             let mut err = Vec::new();
             let code = run(
@@ -2316,7 +2316,7 @@ c2  open  outdated  lines 3-4
                 &mut err,
             );
 
-            assert_eq!(code, expected, "{args:?}");
+            assert_eq!(code, 0, "{args:?}");
             assert!(err.is_empty(), "{args:?}");
         }
     }
