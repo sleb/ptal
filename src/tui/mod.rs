@@ -70,10 +70,9 @@ impl Loaded {
     /// its markdown structure highlighted when `file` is markdown
     /// ([`highlight::is_markdown`]) and `color` is wanted.
     pub fn into_app(self, file: &Path, author: &str, size: (u16, u16), color: bool) -> App {
-        App::open(Vec::new(), &[], author, size)
+        App::open(self.view, author, size)
             .labeled(file.display().to_string())
             .highlighted(color && highlight::is_markdown(file))
-            .with_reread(self.view)
     }
 }
 
@@ -545,11 +544,15 @@ mod tests {
             state: crate::model::ReviewState::Turn(Side::Agent),
             latest: None,
         };
-        let app = App::open(vec!["one".into()], &[], "scott", (40, 5)).with_reread(View {
-            lines: vec!["one".into()],
-            sha256: "shown".into(),
-            ..View::default()
-        });
+        let app = App::open(
+            View {
+                lines: vec!["one".into()],
+                sha256: "shown".into(),
+                ..View::default()
+            },
+            "scott",
+            (40, 5),
+        );
 
         let view = reread(&reviews, &tmp.path().join("gone.md"), &app, &current);
 

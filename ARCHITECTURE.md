@@ -473,7 +473,10 @@ Its parts:
   human's last look (`View.changes`, one `anchor::Change` per hunk; `change(line)`
   is a line's `ChangeKind`), footer `status`, the active
   `search` query, the `help` and review overlay listings laid out for
-  `cols`, the `file` label), `Mode = Normal | Visual { anchor } |
+  `cols`, the `file` label), built only by `App::open(view, author, (cols,
+  rows))` from one `review::View` (its lines, `sha256` as `seen`, threads,
+  review and changes; `revision` is ignored), the cursor at the top,
+  `Mode = Normal | Visual { anchor } |
   Search { query, anchor, origin, hit } |
   Panel { selected, scroll } | Input { draft, discard_asked, back, target } |
   Overlay { kind, back, scroll }` (`kind` is `Overlay::Help | Review`;
@@ -525,8 +528,7 @@ Its parts:
   `anchor::Diff` from the old lines to the new (inserted lines above you
   leave you on the same text; an edited line goes to the best guess), then
   clamped, so an anchor past a shrunk file is clamped with the cursor;
-  mapping from no lines (the app is built from an empty view, then
-  `with_reread`) starts at the top. Tables and styling are recomputed. The
+  mapping from no lines (an empty file) starts at the top. Tables and styling are recomputed. The
   panel, and the panel a reply box returns to (`Back::Panel`), keep their
   selected thread by id: at its new index on the cursor line, or, when the
   thread now starts elsewhere, by moving the cursor to its first line; a
