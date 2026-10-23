@@ -636,7 +636,7 @@ impl<C: Clock> Reviews<C> {
                 resolved_revision: Some(revision),
             };
             thread.comments.extend(note_comment);
-            self.mapped(file, review, index, &content)
+            Ok(self.mapped(file, review, index, &content))
         })
     }
 
@@ -695,7 +695,7 @@ impl<C: Clock> Reviews<C> {
             let thread = &mut review.threads[index];
             thread.status = Status::Open;
             thread.comments.extend(note_comment);
-            self.mapped(file, review, index, &content)
+            Ok(self.mapped(file, review, index, &content))
         })
     }
 
@@ -742,7 +742,7 @@ impl<C: Clock> Reviews<C> {
             let thread = &mut review.threads[index];
             thread.comments.push(comment);
             thread.status = Status::Open;
-            self.mapped(file, review, index, &content)
+            Ok(self.mapped(file, review, index, &content))
         })
     }
 
@@ -944,16 +944,10 @@ impl<C: Clock> Reviews<C> {
 
     /// Thread `index` of `review` with its lines mapped to `content`, for
     /// output; the stored anchor is unchanged.
-    fn mapped(
-        &self,
-        file: &Path,
-        review: &Review,
-        index: usize,
-        content: &Content,
-    ) -> Result<Thread> {
+    fn mapped(&self, file: &Path, review: &Review, index: usize, content: &Content) -> Thread {
         let mut thread = review.threads[index].clone();
         Mapper::new(&self.store, file, review, content).map(&mut thread.anchor);
-        Ok(thread)
+        thread
     }
 }
 
