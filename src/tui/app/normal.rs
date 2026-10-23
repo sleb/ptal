@@ -266,6 +266,32 @@ mod tests {
     }
 
     #[test]
+    fn altgr_characters_act_as_the_plain_key_for_the_other_normal_bindings() {
+        let is_overlay = |a: &App| matches!(a.mode, Mode::Overlay { .. });
+        let is_input = |a: &App| matches!(a.mode, Mode::Input { .. });
+        let mut a = app(20, 12);
+        send(&mut a, [alt_graph('i')]);
+        assert!(is_overlay(&a), "{:?}", a.mode);
+        let mut a = app(20, 12);
+        send(&mut a, [alt_graph('C')]);
+        assert!(is_input(&a), "{:?}", a.mode);
+        assert_eq!(
+            update(&mut app(20, 12), alt_graph('O')),
+            Some(Effect::ReopenReview)
+        );
+        let mut a = app(20, 12);
+        send(&mut a, [ch('G'), alt_graph('g')]);
+        assert_eq!(a.cursor, 0);
+        // The jumps reach the same state as the plain keys.
+        for key in [']', '[', '}', '{'] {
+            let (mut plain, mut altgr) = (app(20, 12), app(20, 12));
+            send(&mut plain, [ch(key)]);
+            send(&mut altgr, [alt_graph(key)]);
+            assert_eq!(at(&altgr), at(&plain), "{key}");
+        }
+    }
+
+    #[test]
     fn altgr_characters_act_as_the_plain_key_in_visual() {
         let mut a = app(20, 12);
         send(&mut a, [ch('v'), ch('j')]);

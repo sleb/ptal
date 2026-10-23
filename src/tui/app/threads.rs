@@ -639,6 +639,13 @@ mod tests {
         assert!(matches!(a.mode, Mode::Input { .. }), "{:?}", a.mode);
 
         let mut a = open_and_resolved_panel();
+        send(&mut a, [press(KeyCode::Tab)]);
+        assert_eq!(
+            update(&mut a, alt_graph('o')),
+            Some(Effect::Reopen { id: "c2".into() })
+        );
+
+        let mut a = open_and_resolved_panel();
         send(&mut a, [alt_graph('a')]);
         assert!(matches!(a.mode, Mode::Input { .. }), "{:?}", a.mode);
         let mut a = open_and_resolved_panel();

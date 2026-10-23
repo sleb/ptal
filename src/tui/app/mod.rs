@@ -469,7 +469,9 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
 /// typed with both held as that character with no modifiers: every mode acts
 /// on it as the plain key (`[`, `{`, `@`, ... type or bind as usual) and no
 /// ctrl chord fires from it. Named keys keep ctrl+alt, since AltGr never
-/// types one. No handler reads `KeyEvent::modifiers` itself.
+/// types one. This is a trade-off: a terminal that reports AltGr with no
+/// modifiers (most Unix ones) makes ctrl+alt+letter a real chord, and that
+/// chord acts as the bare letter. Nothing is bound to ctrl+alt. No handler reads `KeyEvent::modifiers` itself.
 #[derive(Clone, Copy)]
 struct Mods(KeyModifiers);
 
@@ -571,6 +573,11 @@ mod tests {
             (c, K::CONTROL | K::ALT | K::SHIFT, false, false, true),
             // AltGr never types a named key, so that stays a ctrl chord.
             (KeyCode::Down, K::CONTROL | K::ALT, true, true, false),
+            (KeyCode::Home, K::CONTROL | K::ALT, true, true, false),
+            (KeyCode::Enter, K::CONTROL | K::ALT, true, true, false),
+            (KeyCode::Tab, K::CONTROL | K::ALT, true, true, false),
+            (KeyCode::Esc, K::CONTROL | K::ALT, true, true, false),
+            (KeyCode::Backspace, K::CONTROL | K::ALT, true, true, false),
         ];
         for (code, m, ctrl, chord, shift) in table {
             let got = of(code, m);
