@@ -6,6 +6,38 @@ workflow publishes that section as the GitHub Release notes. See
 
 ## Unreleased
 
+## 0.3.1 - 2026-10-23
+
+Fixes and cleanup. The review store format is unchanged. A few CLI edge cases
+changed (below); the shapes of successful JSON output are the same.
+
+**CLI behavior changes** (edge cases, not the normal path):
+
+- A failed write to stdout now fails with error code `io` (exit 1). It was
+  `terminal`, a code documented for TUI failures. A closed pipe
+  (`ptal comments | head`) is no longer a failure.
+- `ptal wait --timeout` that expires before the first read of `review.json`
+  now fails with that read's error (for example a missing file), instead of
+  a plain timeout.
+- `ptal reopen <file> <thread> --side ...` is now rejected by clap as a
+  `usage` conflict (exit 2). It was already rejected, by hand in `dispatch`,
+  with the same code.
+- Parse errors print as JSON only when `--json` is a real flag. `-- --json`,
+  where it is a positional argument, no longer counts.
+- A file path that is not UTF-8 is printed lossily in JSON instead of
+  panicking.
+
+**Other changes**
+
+- `comments` indents continuation lines of a multi-line comment under its
+  body.
+- TUI: a long path gives way so the footer's counts show. AltGr characters are
+  the plain key in every mode, and text in the comment box.
+- Build: a curated `[lints.clippy]` table in `Cargo.toml`.
+- Internals: one definition each for the waiting rule, write kinds, blank text
+  and line numbers; store I/O helpers deduplicated; `tui::app` split up.
+- Docs: shorter tables, drift tests for the interface map, and corrections.
+
 ## 0.3.0 - 2026-10-21
 
 Turns release: the human and the agent take turns on a review, threads follow
