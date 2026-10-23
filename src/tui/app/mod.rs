@@ -17,7 +17,7 @@
 //! - `input`: the comment box and what saving it writes.
 //! - `overlay`: the help and review overlays.
 
-use ratatui::crossterm::event::{KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::text::Line;
 
 use crate::anchor::Change;
@@ -480,6 +480,51 @@ impl Mods {
     }
 }
 
+/// What a scrolling key asks for, whatever it scrolls.
+///
+/// The file view, the overlays and the panel read their scroll keys
+/// through [`Scroll::of`], so the keys and their modifier tests are one
+/// table; each mode decides what an intent moves (the panel takes only
+/// [`Up`](Self::Up) and [`Down`](Self::Down)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scroll {
+    /// `k` or `↑`.
+    Up,
+    /// `j` or `↓`.
+    Down,
+    /// `ctrl+u` or `PgUp`.
+    HalfUp,
+    /// `ctrl+d` or `PgDn`.
+    HalfDown,
+    /// `g` or `Home`.
+    Top,
+    /// `G` or `End`.
+    Bottom,
+}
+
+impl Scroll {
+    /// The intent of `key`, if it scrolls. The letters are plain keys only
+    /// (ctrl+j is not `j`), the named keys take any modifiers.
+    fn of(key: KeyEvent) -> Option<Self> {
+        let ctrl = Mods::of(key).ctrl();
+        Some(match key.code {
+            KeyCode::Char('k') if !ctrl => Scroll::Up,
+            KeyCode::Char('j') if !ctrl => Scroll::Down,
+            KeyCode::Char('u') if ctrl => Scroll::HalfUp,
+            KeyCode::Char('d') if ctrl => Scroll::HalfDown,
+            KeyCode::Char('g') if !ctrl => Scroll::Top,
+            KeyCode::Char('G') if !ctrl => Scroll::Bottom,
+            KeyCode::Up => Scroll::Up,
+            KeyCode::Down => Scroll::Down,
+            KeyCode::PageUp => Scroll::HalfUp,
+            KeyCode::PageDown => Scroll::HalfDown,
+            KeyCode::Home => Scroll::Top,
+            KeyCode::End => Scroll::Bottom,
+            _ => return None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod fixtures;
 
@@ -542,6 +587,42 @@ mod tests {
                 .count();
         }
         assert_eq!(reads, 1, "handlers must go through Mods::of");
+    }
+
+    #[test]
+    fn scroll_of_maps_each_key_plain_and_with_ctrl() {
+        use KeyModifiers as K;
+        let of = |code, m| Scroll::of(KeyEvent::new(code, m));
+        let c = KeyCode::Char;
+        // (key, plain, with ctrl)
+        let table = [
+            (c('j'), Some(Scroll::Down), None),
+            (KeyCode::Down, Some(Scroll::Down), Some(Scroll::Down)),
+            (c('k'), Some(Scroll::Up), None),
+            (KeyCode::Up, Some(Scroll::Up), Some(Scroll::Up)),
+            (c('d'), None, Some(Scroll::HalfDown)),
+            (
+                KeyCode::PageDown,
+                Some(Scroll::HalfDown),
+                Some(Scroll::HalfDown),
+            ),
+            (c('u'), None, Some(Scroll::HalfUp)),
+            (KeyCode::PageUp, Some(Scroll::HalfUp), Some(Scroll::HalfUp)),
+            (c('g'), Some(Scroll::Top), None),
+            (KeyCode::Home, Some(Scroll::Top), Some(Scroll::Top)),
+            (c('G'), Some(Scroll::Bottom), None),
+            (KeyCode::End, Some(Scroll::Bottom), Some(Scroll::Bottom)),
+            (c('x'), None, None),
+            (KeyCode::Enter, None, None),
+        ];
+        for (code, plain, with_ctrl) in table {
+            assert_eq!(of(code, K::NONE), plain, "{code:?}");
+            assert_eq!(of(code, K::CONTROL), with_ctrl, "ctrl+{code:?}");
+        }
+        // The loose ctrl test: ctrl+alt counts as ctrl here, as it does in
+        // every mode but the typing ones.
+        assert_eq!(of(c('d'), K::CONTROL | K::ALT), Some(Scroll::HalfDown));
+        assert_eq!(of(c('j'), K::CONTROL | K::ALT), None);
     }
 
     // --- the key listing and the handlers agree ---

@@ -5,7 +5,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::model::Status;
 
-use super::{App, Back, Effect, Marker, Mode, Mods, Overlay, Target, is_leave};
+use super::{App, Back, Effect, Marker, Mode, Mods, Overlay, Scroll, Target, is_leave};
 
 impl App {
     /// Whether the panel's selected thread is resolved.
@@ -112,19 +112,22 @@ pub(super) fn panel_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Char('o') if !ctrl => return app.change_status(selected, false),
         KeyCode::Tab if !shift => app.select_thread((selected + 1) % count),
         KeyCode::Tab | KeyCode::BackTab => app.select_thread((selected + count - 1) % count),
-        KeyCode::Char('j') | KeyCode::Down if !ctrl => {
-            app.mode = Mode::Panel {
-                selected,
-                scroll: scroll + 1,
-            };
-        }
-        KeyCode::Char('k') | KeyCode::Up if !ctrl => {
-            app.mode = Mode::Panel {
-                selected,
-                scroll: scroll.saturating_sub(1),
-            };
-        }
-        _ => {}
+        // The panel scrolls a row at a time; the other intents are unbound.
+        _ => match Scroll::of(key) {
+            Some(Scroll::Up) => {
+                app.mode = Mode::Panel {
+                    selected,
+                    scroll: scroll.saturating_sub(1),
+                };
+            }
+            Some(Scroll::Down) => {
+                app.mode = Mode::Panel {
+                    selected,
+                    scroll: scroll + 1,
+                };
+            }
+            Some(Scroll::HalfUp | Scroll::HalfDown | Scroll::Top | Scroll::Bottom) | None => {}
+        },
     }
     None
 }

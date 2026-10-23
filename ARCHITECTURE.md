@@ -491,7 +491,12 @@ Its parts:
   Normal and Visual share one movement helper and the view clamp keeps the
   moving end on screen; `selection()` is the ordered `(first, last)` of the
   two in `Visual` and in a box opened from it (the range stays fixed while
-  typing), else the cursor line alone. `enter` in `Visual` always opens a
+  typing), else the cursor line alone. That movement helper, the overlays
+  and the panel read their scroll keys through one `Scroll::of(key)`
+  (`Up | Down | HalfUp | HalfDown | Top | Bottom`: `j`/`k`/`g`/`G` without
+  ctrl, `ctrl+d`/`ctrl+u`, and the named keys with any modifiers); each
+  mode maps the intent to its own move, and the panel takes only `Up` and
+  `Down`. `enter` in `Visual` always opens a
   box for a new thread on the selection, never the panel; a save from it
   goes to Normal. In `Input`, `enter` inserts a newline and `ctrl+s`
   (or `ctrl+S`) saves the draft as typed less trailing whitespace and leading blank lines (one that

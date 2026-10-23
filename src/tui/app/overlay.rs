@@ -7,7 +7,7 @@ use crate::model::{Event as LogEvent, ReviewState, Side};
 use crate::review::ReviewStatus;
 use crate::tui::{keys, wrap};
 
-use super::{App, Back, Effect, Mode, Mods, Overlay};
+use super::{App, Back, Effect, Mode, Mods, Overlay, Scroll};
 
 impl App {
     /// The help listing laid out for the window.
@@ -121,15 +121,15 @@ pub(super) fn overlay_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Esc | KeyCode::Char('q') if !ctrl => return close(app, back),
         KeyCode::Char(c) if !ctrl && c == kind.toggle() => return close(app, back),
         KeyCode::Char('c') if ctrl => return close(app, back),
-        KeyCode::Char('j') | KeyCode::Down if !ctrl => scroll + 1,
-        KeyCode::Char('k') | KeyCode::Up if !ctrl => scroll.saturating_sub(1),
-        KeyCode::Char('d') if ctrl => scroll + half,
-        KeyCode::PageDown => scroll + half,
-        KeyCode::Char('u') if ctrl => scroll.saturating_sub(half),
-        KeyCode::PageUp => scroll.saturating_sub(half),
-        KeyCode::Char('g') | KeyCode::Home if !ctrl => 0,
-        KeyCode::Char('G') | KeyCode::End if !ctrl => usize::MAX,
-        _ => return None,
+        _ => match Scroll::of(key)? {
+            Scroll::Up => scroll.saturating_sub(1),
+            Scroll::Down => scroll + 1,
+            Scroll::HalfUp => scroll.saturating_sub(half),
+            Scroll::HalfDown => scroll + half,
+            Scroll::Top => 0,
+            // Clamped to the listing by `clamp_overlay`.
+            Scroll::Bottom => usize::MAX,
+        },
     };
     app.mode = Mode::Overlay {
         kind,

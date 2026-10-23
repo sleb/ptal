@@ -3,7 +3,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use super::{App, Back, Effect, Mode, Mods, Overlay, Target};
+use super::{App, Back, Effect, Mode, Mods, Overlay, Scroll, Target};
 
 impl App {
     pub(super) fn move_to(&mut self, cursor: usize) {
@@ -81,31 +81,26 @@ impl App {
 ///
 /// Normal and Visual share it, so the two modes move alike.
 fn movement(app: &mut App, key: KeyEvent) -> bool {
+    if let Some(scroll) = Scroll::of(key) {
+        match scroll {
+            Scroll::Up => app.move_to(app.cursor.saturating_sub(1)),
+            Scroll::Down => app.move_to(app.cursor + 1),
+            Scroll::HalfUp => app.scroll_half_page(false),
+            Scroll::HalfDown => app.scroll_half_page(true),
+            Scroll::Top => app.move_to(0),
+            Scroll::Bottom => app.move_to(app.last_line()),
+        }
+        return true;
+    }
     let mods = Mods::of(key);
-    let (ctrl, chord, ctrl_only) = (mods.ctrl(), mods.chord(), mods.ctrl_only());
-    // The letter aliases are plain keys only; ctrl+j is not `j`.
-    let code = match key.code {
-        KeyCode::Char('j') if !ctrl => KeyCode::Down,
-        KeyCode::Char('k') if !ctrl => KeyCode::Up,
-        KeyCode::Char('g') if !ctrl => KeyCode::Home,
-        KeyCode::Char('G') if !ctrl => KeyCode::End,
-        code => code,
-    };
-    match code {
-        KeyCode::Char('d') if ctrl => app.scroll_half_page(true),
-        KeyCode::Char('u') if ctrl => app.scroll_half_page(false),
-        KeyCode::Down => app.move_to(app.cursor + 1),
-        KeyCode::Up => app.move_to(app.cursor.saturating_sub(1)),
-        KeyCode::Home => app.move_to(0),
-        KeyCode::End => app.move_to(app.last_line()),
+    let (chord, ctrl_only) = (mods.chord(), mods.ctrl_only());
+    match key.code {
         KeyCode::Char(']') if !ctrl_only => app.jump_to_covered(true),
         KeyCode::Char('[') if !ctrl_only => app.jump_to_covered(false),
         KeyCode::Char('}') if !ctrl_only => app.jump_to_change(true),
         KeyCode::Char('{') if !ctrl_only => app.jump_to_change(false),
         KeyCode::Char('n') if !chord => app.repeat_search(true),
         KeyCode::Char('N') if !chord => app.repeat_search(false),
-        KeyCode::PageDown => app.scroll_half_page(true),
-        KeyCode::PageUp => app.scroll_half_page(false),
         _ => return false,
     }
     true
