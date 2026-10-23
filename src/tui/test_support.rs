@@ -4,8 +4,8 @@
 //!
 //! Helpers only `tui::app`'s submodules share stay in `app::fixtures`, since
 //! some read `App` methods that are private to `tui::app`. `tests/tui.rs`
-//! cannot see this module (it is `cfg(test)`), so it keeps its own helpers
-//! under the same names.
+//! cannot see this module (it is `cfg(test)`); the few helpers it has of its
+//! own (`key`, `draw`, `screen`) are named like their unit counterparts.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 

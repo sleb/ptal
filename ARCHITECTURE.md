@@ -936,8 +936,8 @@ hand-off or close.
   process's hand-off. Schema conformance is deferred with `ptal schema`.
 - `tui`: unit-test fixtures (key events, apps, views, threads, comments,
   review statuses) are defined once, in `tui::test_support`; `tests/tui.rs`
-  can't see `cfg(test)` items, so it keeps its own copies under the same
-  names. Scripted key events through `update` assert on state (including the search prompt, `n`/`N` and Visual search, and the help probe that ties `tui::keys::HELP` to the key handlers); `TestBackend`
+  can't see `cfg(test)` items, and the few helpers it has of its own (`key`,
+  `draw`, `screen`) are named like their unit counterparts. Scripted key events through `update` assert on state (including the search prompt, `n`/`N` and Visual search, and the help probe that ties `tui::keys::HELP` to the key handlers); `TestBackend`
   snapshots (inline expected strings) cover Normal, Visual, Panel and Input
   rendering, gutter glyphs and styles (including the selection highlight on
   wrapped and table rows, before and after a resize, and the comment box

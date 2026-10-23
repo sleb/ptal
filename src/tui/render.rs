@@ -687,8 +687,8 @@ mod tests {
             ],
         )];
         let mut app = opened_panel(&threads);
-        send(&mut app, [press(KeyCode::Char('j'))]);
-        send(&mut app, [press(KeyCode::Char('j'))]);
+        send(&mut app, [ch('j')]);
+        send(&mut app, [ch('j')]);
 
         let text = screen(&draw(&app, W, 16));
 
@@ -731,7 +731,7 @@ mod tests {
             &[("claude", "hi")],
         )];
         let mut app = opened_panel(&threads);
-        send(&mut app, [press(KeyCode::Char('a'))]);
+        send(&mut app, [ch('a')]);
         typed(&mut app, "ok");
 
         let text = screen(&draw(&app, W, 16));
@@ -789,7 +789,7 @@ mod tests {
             &[("claude", "hi")],
         )];
         let mut app = opened_panel(&threads);
-        send(&mut app, [press(KeyCode::Char('r'))]);
+        send(&mut app, [ch('r')]);
         typed(&mut app, "ok");
 
         let text = screen(&draw(&app, W, 16));
@@ -810,8 +810,8 @@ mod tests {
             &[("claude", "hi")],
         )];
         let mut app = app_with(numbered(12), &threads, 16);
-        send(&mut app, [press(KeyCode::Char('j'))]);
-        send(&mut app, [press(KeyCode::Char('j'))]);
+        send(&mut app, [ch('j')]);
+        send(&mut app, [ch('j')]);
         send(&mut app, [press(KeyCode::Enter)]);
 
         let terminal = draw(&app, W, 16);
@@ -1032,8 +1032,8 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
     #[test]
     fn input_mode_draws_a_titled_box_over_the_footer_with_the_file_above() {
         let mut app = app_with(numbered(12), &[], 8);
-        send(&mut app, [press(KeyCode::Char('j'))]);
-        send(&mut app, [press(KeyCode::Char('j'))]);
+        send(&mut app, [ch('j')]);
+        send(&mut app, [ch('j')]);
         send(&mut app, [press(KeyCode::Enter)]);
         typed(&mut app, "why?");
 
@@ -1098,16 +1098,16 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
     fn box_with(text: &str, (cols, rows): (u16, u16)) -> App {
         let mut app = narrow(&["one", "two"], &[], (cols, rows));
         send(&mut app, [press(KeyCode::Enter)]);
-        for c in text.chars() {
-            send(
-                &mut app,
-                [press(if c == '\n' {
-                    KeyCode::Enter
+        send(
+            &mut app,
+            text.chars().map(|c| {
+                if c == '\n' {
+                    press(KeyCode::Enter)
                 } else {
-                    KeyCode::Char(c)
-                })],
-            );
-        }
+                    ch(c)
+                }
+            }),
+        );
         app
     }
 
@@ -1347,7 +1347,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
         )];
         let mut app = app_with(numbered(3), &threads, 8);
         send(&mut app, [press(KeyCode::Enter)]);
-        send(&mut app, [press(KeyCode::Char('r'))]);
+        send(&mut app, [ch('r')]);
         typed(&mut app, "ok");
         update(&mut app, Event::SaveFailed(LOCKED.into()));
 
@@ -1514,7 +1514,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
     fn the_next_key_clears_the_error_and_brings_the_hint_back() {
         let mut app = box_with("hi", (W, 8));
         update(&mut app, Event::SaveFailed(LOCKED.into()));
-        send(&mut app, [press(KeyCode::Char('!'))]);
+        send(&mut app, [ch('!')]);
 
         let rows = box_rows(&draw(&app, W, 8), 3);
 
@@ -1545,7 +1545,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
     #[test]
     fn a_scrolled_view_starts_at_top() {
         let mut app = app_with(numbered(30), &[], 9);
-        send(&mut app, [press(KeyCode::Char('G'))]);
+        send(&mut app, [ch('G')]);
 
         let screen = screen(&draw(&app, 120, 9));
 
@@ -1586,7 +1586,7 @@ plan.md  L1/2  ente…"
     #[test]
     fn the_cursor_highlight_covers_every_row_of_a_wrapped_line() {
         let mut app = narrow(&["one", LONG, "three"], &[], (20, 7));
-        send(&mut app, [press(KeyCode::Char('j'))]);
+        send(&mut app, [ch('j')]);
 
         let terminal = draw(&app, 20, 7);
 
@@ -1643,8 +1643,8 @@ plan.md  L1/2  ente…"
     fn a_table_rows_glyph_and_the_cursor_highlight_cover_that_row_alone() {
         let threads = [view("c1", (4, 4), Status::Open, State::Current)];
         let mut app = narrow(&TABLE, &threads, (40, 7));
-        send(&mut app, [press(KeyCode::Char('j'))]);
-        send(&mut app, [press(KeyCode::Char('j'))]);
+        send(&mut app, [ch('j')]);
+        send(&mut app, [ch('j')]);
 
         let terminal = draw(&app, 40, 7);
 
@@ -1694,7 +1694,7 @@ plan.md  L1/5  enter:thread/c…"
         let threads = [view("c1", (4, 4), Status::Open, State::Current)];
         let mut app = narrow(&WIDE_TABLE, &threads, (30, 9));
         for _ in 0..3 {
-            send(&mut app, [press(KeyCode::Char('j'))]);
+            send(&mut app, [ch('j')]);
         }
 
         let terminal = draw(&app, 30, 9);
@@ -1725,7 +1725,7 @@ plan.md  L1/5  enter:thread/c…"
                 draw(&app, width, rows);
                 send(&mut app, [press(KeyCode::Enter)]);
                 draw(&app, width, rows);
-                send(&mut app, [press(KeyCode::Char('a'))]);
+                send(&mut app, [ch('a')]);
                 typed(&mut app, "hello");
                 draw(&app, width, rows);
                 draw(&app_with(Vec::new(), &[], rows), width, rows);
@@ -1767,7 +1767,7 @@ plan.md  L1/5  enter:thread/c…"
     #[test]
     fn only_the_cursor_line_is_highlighted() {
         let mut app = app_with(numbered(5), &[], 8);
-        send(&mut app, [press(KeyCode::Char('j'))]);
+        send(&mut app, [ch('j')]);
 
         let terminal = draw(&app, W, 8);
 
@@ -2034,7 +2034,7 @@ plan.md  L1/5  enter:thread/c…"
     #[test]
     fn a_long_search_is_cut_before_the_path_gives_way() {
         let mut app = app_with(numbered(12), &[], 8);
-        send(&mut app, [press(KeyCode::Char('/'))]);
+        send(&mut app, [ch('/')]);
         typed(&mut app, &"x".repeat(70));
         send(&mut app, [press(KeyCode::Enter)]);
 
@@ -2155,7 +2155,7 @@ plan.md  L1/5  enter:thread/c…"
         let threads = [view("c1", (1, 1), Status::Open, State::Current)];
         let mut app = narrow(&["one", "two"], &threads, (20, 16));
         send(&mut app, [press(KeyCode::Enter)]);
-        send(&mut app, [press(KeyCode::Char('r'))]);
+        send(&mut app, [ch('r')]);
         let screen = screen(&draw(&app, 20, 16));
         assert!(screen.contains("┌Reply to c1 as sc…┐"), "{screen}");
     }
@@ -2260,7 +2260,7 @@ plan.md  L1/5  enter:thread/c…"
     #[test]
     fn help_replaces_the_file_with_the_listing_at_80_by_24() {
         let mut app = app_with(numbered(12), &[], 24);
-        send(&mut app, [press(KeyCode::Char('?'))]);
+        send(&mut app, [ch('?')]);
 
         let screen = screen(&draw(&app, 80, 24));
 
@@ -2278,19 +2278,19 @@ plan.md  L1/5  enter:thread/c…"
     #[test]
     fn help_scrolls_through_a_listing_taller_than_the_window() {
         let mut app = app_with(numbered(12), &[], 10);
-        send(&mut app, [press(KeyCode::Char('?'))]);
+        send(&mut app, [ch('?')]);
         let top = screen(&draw(&app, 80, 10));
         assert!(!top.contains("Thread panel"), "{top}");
 
-        send(&mut app, [press(KeyCode::Char('j'))]);
+        send(&mut app, [ch('j')]);
         assert_ne!(screen(&draw(&app, 80, 10)), top);
 
-        send(&mut app, [press(KeyCode::Char('G'))]);
+        send(&mut app, [ch('G')]);
         let end = screen(&draw(&app, 80, 10));
         assert!(end.contains("close the panel"), "{end}");
         assert!(end.lines().nth(8).is_some_and(|r| !r.is_empty()), "{end}");
 
-        send(&mut app, [press(KeyCode::Char('g'))]);
+        send(&mut app, [ch('g')]);
         assert_eq!(screen(&draw(&app, 80, 10)), top);
     }
 
@@ -2319,7 +2319,7 @@ plan.md  L1/5  enter:thread/c…"
                 }
             }
             let mut app = app_with(numbered(12), &[], 24);
-            send(&mut app, [press(KeyCode::Char('?'))]);
+            send(&mut app, [ch('?')]);
             assert!(
                 screen(&draw(&app, width, 24))
                     .lines()
@@ -2333,9 +2333,9 @@ plan.md  L1/5  enter:thread/c…"
         for width in 0..=3 {
             for rows in 0..=3 {
                 let mut app = app_with(numbered(5), &[], rows);
-                send(&mut app, [press(KeyCode::Char('?'))]);
+                send(&mut app, [ch('?')]);
                 draw(&app, width, rows);
-                send(&mut app, [press(KeyCode::Char('G'))]);
+                send(&mut app, [ch('G')]);
                 draw(&app, width, rows);
             }
         }
