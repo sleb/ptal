@@ -18,10 +18,10 @@ fn saved_body(draft: &str) -> &str {
 }
 
 /// A key in the comment box: `ctrl+s` (either case, as some terminals
-/// report it with shift or caps lock) saves, as [`save`] decides; `tab` picks
-/// a close's verdict; `enter` starts a new line; the rest edit the draft.
-/// `esc` or `ctrl+c` returns to where the box came from: at once for a
-/// blank draft, else on a second press, any other key in between keeping
+/// report it with shift or caps lock) saves, as [`save_box`] decides; `tab`
+/// picks a close's verdict; `enter` starts a new line; the rest edit the
+/// draft. `esc` or `ctrl+c` returns to where the box came from: at once for
+/// a blank draft, else on a second press, any other key in between keeping
 /// the draft (and cancelling a pending confirmation). Only ctrl without alt
 /// makes a chord: AltGr characters (ctrl+alt) are inserted as text.
 pub(super) fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {

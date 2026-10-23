@@ -462,7 +462,15 @@ Depends on `review` and `model` (and the crate-wide `error`), never on
 
 Its parts:
 
-- `tui::app`: `App` state (`lines`, their `tables` rows from `tui::table`
+- `tui::app`: the types, `update` and the `Mods` and `Scroll` key helpers
+  are in `app/mod.rs` (with the probe test that the key listing matches the
+  handlers); each submodule adds an `impl App` block and its own tests:
+  `state` (opening, re-reads, what the screen asks of the state), `layout`
+  (rows, widths, wrapped rows and the view clamps), `normal` (Normal and
+  Visual keys), `find` (the `/` prompt and `n`/`N`), `threads` (the panel),
+  `input` (the comment box) and `overlay` (help and the review overlay);
+  test helpers two of them share are in `app::fixtures`.
+  `App` state (`lines`, their `tables` rows from `tui::table`
   at `text_width()`, recomputed on open, on resize and when a re-read changes
   the lines, their `stylings` from `tui::highlight`, computed by
   `App::highlighted(true)` and again when a re-read changes the lines (the
@@ -497,7 +505,8 @@ Its parts:
   (`Up | Down | HalfUp | HalfDown | Top | Bottom`: `j`/`k`/`g`/`G` without
   ctrl, `ctrl+d`/`ctrl+u`, and the named keys with any modifiers); each
   mode maps the intent to its own move, and the panel takes only `Up` and
-  `Down`. `enter` in `Visual` always opens a
+  `Down`. `]`/`[` and `}`/`{` jump with one `nearest(sorted, from,
+  forward)`, over the covered lines and the change starts. `enter` in `Visual` always opens a
   box for a new thread on the selection, never the panel; a save from it
   goes to Normal. In `Input`, `enter` inserts a newline and `ctrl+s`
   (or `ctrl+S`) saves the draft as typed less trailing whitespace and leading blank lines (one that

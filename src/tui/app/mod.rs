@@ -296,11 +296,11 @@ pub enum Effect {
 #[derive(Debug, Clone)]
 pub struct App {
     pub(super) lines: Vec<String>,
-    /// Each line's table rows from [`table::align`] at `text_width()`.
+    /// Each line's table rows from [`table::align`](super::table::align) at `text_width()`.
     /// Recomputed by `relayout` whenever the text width can change (on open
     /// and resize); anything else that changes it must call `relayout` too.
     tables: Vec<Option<Vec<String>>>,
-    /// Each line's markdown styling, from [`highlight::highlight`] at
+    /// Each line's markdown styling, from [`highlight::highlight`](super::highlight::highlight) at
     /// [`App::highlighted`] and again whenever a re-read changes the lines;
     /// empty when not highlighted.
     stylings: Vec<Styling>,
