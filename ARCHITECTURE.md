@@ -431,7 +431,8 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   else, exact match); the help says so and tells agents to use one stable
   name. A hand-off's `waiting` asks the same of the author handing off.
 - Errors are one line on stderr, `{"error": {"code", "message"}}` (readable
-  text on a TTY stderr unless `--json`). `Failure` is a `std::error::Error`
+  text on a TTY stderr unless `--json` appears before `--`). `--side` on a
+  thread reopen is a clap conflict (`usage`). `Failure` is a `std::error::Error`
   (`thiserror`); its `Display` is the message. The code-to-exit mapping is the
   `Failure::classify` table, pinned by a unit test and documented in
   [docs/interfaces.md](docs/interfaces.md#exit-codes): `2` means the caller

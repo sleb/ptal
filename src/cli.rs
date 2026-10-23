@@ -400,7 +400,7 @@ enum Command {
         #[arg(long)]
         note: Option<String>,
         /// Which side reopens the review (default agent); threads have none.
-        #[arg(long, value_enum)]
+        #[arg(long, value_enum, conflicts_with = "id")]
         side: Option<SideArg>,
     },
     /// Hand the turn to the other side.
@@ -652,7 +652,7 @@ where
     T: Into<OsString> + Clone,
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
-    let json_flag = args.iter().any(|a| a == "--json");
+    let json_flag = json_requested(&args);
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(e) if e.use_stderr() => {
@@ -680,6 +680,19 @@ where
         Ok(()) => 0,
         Err(failure) => report(&failure, env, json, err, None),
     }
+}
+
+/// Whether `--json` is among the options in `args` (the program name and
+/// anything after `--` do not count).
+///
+/// Used only when clap rejected the command line: there is then no parsed
+/// `--json` to read, yet the error's format still has to follow it. An option
+/// value that is literally `--json` (`--note --json`) still counts.
+fn json_requested(args: &[OsString]) -> bool {
+    args.iter()
+        .skip(1)
+        .take_while(|a| *a != "--")
+        .any(|a| a == "--json")
 }
 
 /// Write `failure` to `err` (readable on a terminal unless `json`, else the
@@ -801,13 +814,8 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
             id: Some(id),
             author: flag,
             note,
-            side,
+            ..
         } => {
-            if side.is_some() {
-                return Err(Failure::Usage(
-                    "--side applies only to reopening the review: threads have no side".to_string(),
-                ));
-            }
             let author = author(flag)?;
             let thread = reviews.reopen(file, id, &author, note.as_deref())?;
             Ok(Output::Thread(thread, ThreadWrite::Reopened))
@@ -2322,6 +2330,44 @@ c2  open  outdated  lines 3-4
             assert_eq!(out.error_code(), "usage", "{args:?}");
         }
         assert_eq!(fx.review_bytes(), before);
+    }
+
+    #[test]
+    fn a_side_on_a_thread_reopen_is_a_clap_conflict() {
+        let fx = fixture_with_two_threads();
+
+        let out = fx.run_with(
+            &["reopen", "FILE", "c1", "--as", "x", "--side", "agent"],
+            &fx.env(None, true),
+        );
+
+        assert_eq!(out.code, 2);
+        assert!(out.stderr.contains("--side"), "{}", out.stderr);
+        assert!(
+            out.stderr.contains("cannot be used with"),
+            "{}",
+            out.stderr
+        );
+    }
+
+    #[test]
+    fn a_json_after_the_double_dash_is_not_the_flag() {
+        let fx = fixture_with_two_threads();
+
+        let out = fx.run_with(
+            &["add", "FILE", "--lines", "x", "--", "--json"],
+            &fx.env(None, true),
+        );
+
+        assert_eq!(out.code, 2);
+        assert!(serde_json::from_str::<serde_json::Value>(&out.stderr).is_err());
+        assert!(out.stderr.starts_with("error:"), "{}", out.stderr);
+
+        let flagged = fx.run_with(
+            &["add", "FILE", "--lines", "x", "--json"],
+            &fx.env(None, true),
+        );
+        assert_eq!(flagged.error_code(), "usage");
     }
 
     #[test]
