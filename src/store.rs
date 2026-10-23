@@ -13,7 +13,6 @@
 //! `hash8` is derived from the canonical absolute path of the reviewed file,
 //! so the same file always maps to the same review.
 
-use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -261,23 +260,29 @@ impl Snapshots {
 /// assert_ne!(content_hash(b"a\n"), content_hash(b"a\r\n"));
 /// ```
 pub fn content_hash(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut hex = String::with_capacity(64);
     for b in Sha256::digest(bytes) {
-        write!(hex, "{b:02x}").expect("writing to a String cannot fail");
+        hex.push(char::from(DIGITS[usize::from(b >> 4)]));
+        hex.push(char::from(DIGITS[usize::from(b & 0xf)]));
     }
     hex
 }
 
 /// Map an I/O failure on `path` to [`Error::Io`]; for `map_err`.
-fn io_err(path: &Path) -> impl FnOnce(io::Error) -> Error {
-    let path = path.to_path_buf();
-    move |source| Error::Io { path, source }
+///
+/// Borrows `path`; it is copied only when an error is built.
+fn io_err(path: &Path) -> impl FnOnce(io::Error) -> Error + '_ {
+    move |source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    }
 }
 
 /// Run a read, turning `NotFound` into `None` and any other failure into
 /// [`Error::Io`] on `path`.
-fn optional<T>(path: &Path, read: io::Result<T>) -> Result<Option<T>> {
-    match read {
+fn optional<T>(path: &Path, read: impl FnOnce(&Path) -> io::Result<T>) -> Result<Option<T>> {
+    match read(path) {
         Ok(value) => Ok(Some(value)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(io_err(path)(e)),
@@ -285,11 +290,11 @@ fn optional<T>(path: &Path, read: io::Result<T>) -> Result<Option<T>> {
 }
 
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
-    optional(path, fs::read(path))
+    optional(path, fs::read)
 }
 
 fn read_optional_string(path: &Path) -> Result<Option<String>> {
-    optional(path, fs::read_to_string(path))
+    optional(path, fs::read_to_string)
 }
 
 /// Write `bytes` to `temp` (truncating a stale one), fsync, and rename it to
