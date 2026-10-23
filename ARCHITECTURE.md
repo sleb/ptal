@@ -944,7 +944,7 @@ hand-off or close.
 - `tui`: unit-test fixtures (key events, apps, views, threads, comments,
   review statuses) are defined once, in `tui::test_support`; `tests/tui.rs`
   can't see `cfg(test)` items, and the few helpers it has of its own (`key`,
-  `draw`, `screen`) are named like their unit counterparts. Scripted key events through `update` assert on state (including the search prompt, `n`/`N` and Visual search, and the help probe that ties `tui::keys::HELP` to the key handlers); `TestBackend`
+  `draw`, `screen`) are named like their unit counterparts. Scripted key events through `update` assert on state (including the search prompt, `n`/`N` and Visual search, and the help probe that ties `tui::keys::HELP` to the key handlers; `tests/docs.rs` ties the same listing to README's keys and the interface map, while the footer hints are pinned by the `tui::render` snapshots instead); `TestBackend`
   snapshots (inline expected strings) cover Normal, Visual, Panel and Input
   rendering, gutter glyphs and styles (including the selection highlight on
   wrapped and table rows, before and after a resize, and the comment box
@@ -1002,7 +1002,10 @@ origin mapped) and checks that screen rows,
 
 The crate is publishable; the procedure is [docs/releasing.md](docs/releasing.md).
 The `include` allowlist in `Cargo.toml` is the source of truth for what ships
-(`src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `README.md`, `LICENSE`); `docs/`,
+(`src/`, the integration tests, `Cargo.toml`, `Cargo.lock`, `README.md`, `LICENSE`); the
+test files are listed one by one, so a new one is added by hand or it does not
+ship. `tests/docs.rs` is left out on purpose: it reads `docs/`, which the package
+does not hold. `docs/`,
 `ARCHITECTURE.md`, `CHANGELOG.md`, `scripts/` and agent/editor directories are
 deliberately excluded; README links to them are relative, which GitHub and
 crates.io (via `repository`) resolve against the repo. The allowlist is
