@@ -290,9 +290,13 @@ or null if nothing has been written against it yet.
 Author: write commands need --as <name> or the PTAL_AUTHOR environment
 variable. ptal never guesses one.
 
-Output is JSON when stdout is not a terminal, or with --json. Each command's
-help, `ptal <command> --help`, has its output shape, the errors it can
-return and examples: comments, add, reply, resolve, reopen, handoff, wait.
+Output is JSON when stdout is not a terminal, or with --json, except
+`ptal skill`, which always prints markdown. Each command's help,
+`ptal <command> --help`, has its output shape, the errors it can return and
+examples: comments, add, reply, resolve, reopen, handoff, wait.
+
+To teach an agent this loop, save the skill: `ptal skill` prints it
+(`ptal skill --help` says where it goes).
 
 Errors: nothing on stdout; stderr gets one line,
   {\"error\": {\"code\": \"not_found\", \"message\": \"...\"}}
@@ -330,6 +334,19 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 }
+
+/// The skill `ptal skill` prints: the repo file `npx skills` installs.
+const SKILL: &str = include_str!("../skills/ptal-review/SKILL.md");
+
+const SKILL_HELP: &str = "\
+Prints the ptal-review skill: a markdown file that teaches an agent the
+review loop, as written for this version of ptal. The output is markdown, not
+JSON, with or without --json. Save it where your agent loads skills from, and
+save it again after upgrading ptal.
+
+Example (Claude Code; other agents use their own skills directory):
+  mkdir -p ~/.claude/skills/ptal-review
+  ptal skill > ~/.claude/skills/ptal-review/SKILL.md";
 
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -424,6 +441,9 @@ enum Command {
         #[arg(long, value_name = "SECS")]
         timeout: Option<u64>,
     },
+    /// Print the agent skill for the review loop (markdown, not JSON).
+    #[command(after_long_help = SKILL_HELP)]
+    Skill,
 }
 
 /// `--side`: which side the CLI acts as. The agent unless told otherwise.
@@ -667,6 +687,7 @@ pub fn run<C: Clock, T: Ticker>(
 
     let json = cli.json;
     let result = match (cli.command, cli.file) {
+        (Some(Command::Skill), _) => finish(out, SKILL).map_err(Failure::Stdout),
         (Some(command), _) => run_command(&command, env, out, json),
         (None, Some(file)) => launch_tui(&file, env),
         (None, None) => Err(Failure::Usage(
@@ -730,6 +751,7 @@ fn run_command<C: Clock, T: Ticker>(
         | Command::Reopen { file, .. }
         | Command::Handoff { file, .. }
         | Command::Wait { file, .. } => file,
+        Command::Skill => unreachable!("`skill` is handled before `run_command`"),
     };
     let output = dispatch(command, env)?;
     let canonical = std::fs::canonicalize(file).map_err(|source| {
@@ -843,6 +865,7 @@ fn dispatch<C: Clock, T: Ticker>(command: &Command, env: &Env<C, T>) -> Result<O
             let timeout = timeout.map(std::time::Duration::from_secs);
             Ok(Output::Waited(reviews.wait(file, timeout, &env.ticker)?))
         }
+        Command::Skill => unreachable!("`skill` is handled before `dispatch`"),
     }
 }
 

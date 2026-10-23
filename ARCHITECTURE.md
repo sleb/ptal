@@ -35,7 +35,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State`, the review log (`Entry`, `Event`, `Side`, `Verdict`), its derived `ReviewState`, and the human's last look (`Review::last_look`) |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
 | `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state, changes since the human's last look), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review`, `wait`, `against` (writes against the content shown), `stamp` |
-| `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff`, `wait` |
+| `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff`, `wait`, `skill` |
 | `tui` | Built: the interactive review (modes, thread panel, comment box, search, review banner and overlay, hand-off, close, reopen, `?` help), live refresh, gutter markers, wrapped lines, aligned tables, markdown highlighting; the full surface is [docs/interfaces.md](docs/interfaces.md) |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor` | Built: `map_range`, `Diff` (with `Diff::changes`), `clamp` (Myers line diff via `similar`) |
@@ -378,7 +378,7 @@ with the process facts (store, clock, ticker, `PTAL_AUTHOR`, TTY flags) injected
 `Env`, so every path is testable in-process; `main` only fills `Env` from the
 real process.
 
-Commands: `comments`, `add`, `resolve`, `reply`, `reopen`, `handoff`, `wait`. Bare `ptal <file>` launches the TUI
+Commands: `comments`, `add`, `resolve`, `reply`, `reopen`, `handoff`, `wait`, `skill`. Bare `ptal <file>` launches the TUI
 (`args_conflicts_with_subcommands`; a file named like a subcommand is written
 `./name`). `run` splits into `run_command` and `launch_tui`; the latter
 refuses everything it can before the terminal is touched: no TTY on stdin and
@@ -387,7 +387,9 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
 
 **Contract**
 - **stdout** is data only: JSON when not a TTY (or `--json`), a readable
-  rendering when a TTY. **stderr** is diagnostics. Never mixed; on failure
+  rendering when a TTY. The one exception is `skill`, which always prints
+  the markdown of `skills/ptal-review/SKILL.md` (embedded with
+  `include_str!`) and is handled before any review is touched. **stderr** is diagnostics. Never mixed; on failure
   stdout is empty. `--help` and `--version` go to stdout with exit `0`. A
   failed stdout write is `Failure::Stdout` (`io`, exit `1`); a closed pipe
   (`BrokenPipe`) ends quietly with the command's own status.

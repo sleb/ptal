@@ -352,3 +352,24 @@ fn a_wait_on_a_closed_review_returns_at_once() {
     assert_eq!(json["reason"], "closed");
     assert_eq!(json["review"]["verdict"], "dropped");
 }
+
+#[test]
+fn skill_prints_the_bundled_skill() {
+    let sb = sandbox("one\n");
+    let plain = sb.run(&["skill"]);
+    assert!(plain.status.success(), "{}", stderr(&plain));
+    assert_eq!(stderr(&plain), "");
+    let text = String::from_utf8(plain.stdout.clone()).unwrap();
+    assert!(text.starts_with("---\n"), "{text}");
+    assert!(text.contains("\nname: ptal-review\n"), "{text}");
+
+    // Raw markdown with `--json` and when piped (the test's stdout is a pipe).
+    let json = sb.run(&["skill", "--json"]);
+    assert_eq!(json.stdout, plain.stdout);
+}
+
+#[test]
+fn skill_takes_no_arguments() {
+    let sb = sandbox("one\n");
+    assert_failure(&sb.run(&["skill", "extra"]), 2, "usage");
+}
