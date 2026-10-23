@@ -89,3 +89,54 @@ fn keys_split_on_commas_and_slashes() {
     assert_eq!(keys_of("/"), ["/"]);
     assert_eq!(keys_of("ctrl+d/ctrl+u"), ["ctrl+d", "ctrl+u"]);
 }
+
+/// The most words a cell of the interface map may have; longer detail goes
+/// in a section under the tables.
+const MAX_CELL_WORDS: usize = 40;
+
+/// `row: column: words` for each cell of a pipe table in `text` over `max`
+/// words. The header and delimiter rows are skipped.
+fn long_cells(text: &str, max: usize) -> Vec<String> {
+    let mut long = Vec::new();
+    let mut headers: Vec<&str> = Vec::new();
+    let mut in_table = false;
+    for line in text.lines() {
+        if !line.starts_with('|') {
+            in_table = false;
+            continue;
+        }
+        let cells: Vec<&str> = line.trim_matches('|').split(" | ").map(str::trim).collect();
+        if !in_table {
+            in_table = true;
+            headers = cells;
+            continue;
+        }
+        if cells.iter().all(|c| c.starts_with("---")) {
+            continue;
+        }
+        for (cell, header) in cells.iter().zip(&headers) {
+            let words = cell.split_whitespace().count();
+            if words > max {
+                long.push(format!("{} / {header}: {words} words", cells[0]));
+            }
+        }
+    }
+    long
+}
+
+#[test]
+fn interface_cells_are_at_most_40_words() {
+    let long = long_cells(&read("docs/interfaces.md"), MAX_CELL_WORDS);
+    assert!(
+        long.is_empty(),
+        "move detail under the tables:\n{}",
+        long.join("\n")
+    );
+}
+
+#[test]
+fn long_cells_are_found_by_row_and_column() {
+    let table = "| Op | CLI |\n|---|---|\n| Do it | one two three |\n";
+    assert_eq!(long_cells(table, 2), ["Do it / CLI: 3 words"]);
+    assert!(long_cells(table, 3).is_empty());
+}
