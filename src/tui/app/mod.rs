@@ -688,7 +688,7 @@ mod tests {
 
     // --- the key listing and the handlers agree ---
 
-    fn key_event(name: &str) -> KeyEvent {
+    fn key(name: &str) -> KeyEvent {
         let none = KeyModifiers::NONE;
         match name {
             "enter" => KeyEvent::new(KeyCode::Enter, none),
@@ -811,7 +811,7 @@ mod tests {
             .entries
             .iter()
             .flat_map(|entry| keys::names(entry.keys))
-            .map(key_event)
+            .map(key)
             .collect()
     }
 
