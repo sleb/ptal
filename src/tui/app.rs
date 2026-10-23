@@ -342,24 +342,17 @@ impl App {
     /// hash, [`App::seen`]) on a terminal `cols` x `rows` cells, the cursor
     /// at the top. `author` is who comments are written as, and whose last
     /// word is not "waiting".
-    pub fn open(
-        View {
-            revision: _,
-            lines,
-            sha256,
-            threads,
-            review,
-            changes,
-        }: View,
-        author: &str,
-        (cols, rows): (u16, u16),
-    ) -> Self {
+    ///
+    /// The view goes in through the same re-read a refresh applies, from
+    /// no text, so a fresh app and a refreshed one take the same state
+    /// from a [`View`].
+    pub fn open(view: View, author: &str, (cols, rows): (u16, u16)) -> Self {
         let mut app = App {
             tables: Vec::new(),
             stylings: Vec::new(),
             highlight: false,
-            seen: sha256,
-            lines,
+            seen: String::new(),
+            lines: Vec::new(),
             cursor: 0,
             top: 0,
             cols: usize::from(cols),
@@ -369,12 +362,13 @@ impl App {
             search: None,
             help: Vec::new(),
             review_rows: Vec::new(),
-            review,
+            review: ReviewStatus::default(),
             file: String::new(),
             author: author.to_string(),
-            threads,
-            changes,
+            threads: Vec::new(),
+            changes: Vec::new(),
         };
+        app.reread(view);
         app.relayout();
         app.clamp_view();
         app
@@ -412,8 +406,8 @@ impl App {
     ) {
         let selected = self.selected_thread_id();
         if lines != self.lines {
-            // From no text (an empty file) there is no place to keep, so
-            // the view starts at the top.
+            // From no text (opening, or an empty file) there is no place to
+            // keep, so the view starts at the top.
             if !self.lines.is_empty() {
                 self.follow_text(&lines);
             }
@@ -1852,6 +1846,7 @@ mod tests {
         );
 
         assert_eq!(a.lines(), ["one", "two"]);
+        assert_eq!((a.cursor, a.top), (0, 0));
         assert_eq!(a.marker(1), Some(Marker::Waiting));
         assert_eq!(a.review(), &handed_off("over to you"));
         assert_eq!(a.change(0), Some(ChangeKind::Changed));

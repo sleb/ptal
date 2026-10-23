@@ -60,6 +60,7 @@ pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<View> {
 /// A fresh [`App`] over `view` of `file` on a terminal of `size` (cols,
 /// rows), its markdown structure highlighted when `file` is markdown
 /// ([`highlight::is_markdown`]) and `color` is wanted.
+#[must_use]
 pub fn open(view: View, file: &Path, author: &str, size: (u16, u16), color: bool) -> App {
     App::open(view, author, size)
         .labeled(file.display().to_string())
