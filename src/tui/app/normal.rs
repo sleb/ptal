@@ -587,6 +587,8 @@ mod tests {
         ));
     }
 
+    // --- } and { ---
+
     fn change_app() -> App {
         let lines = (1..=12).map(|i| i.to_string()).collect();
         App::open(

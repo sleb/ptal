@@ -3,7 +3,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::anchor::{Change, ChangeKind, LineRange};
-use crate::model::{Anchor, Comment, ReviewState, Side, State, Status, Thread};
+use crate::model::{Anchor, Comment, Entry, ReviewState, Side, State, Status, Thread};
 use crate::review::{ReviewStatus, ThreadView, View};
 
 use super::*;

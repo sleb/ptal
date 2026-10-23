@@ -719,7 +719,7 @@ mod tests {
         }
     }
 
-    // --- adding a thread from the panel ---
+    // --- the comment box's size ---
 
     #[test]
     fn input_box_shrinks_the_view_and_keeps_the_cursor_visible() {
@@ -823,7 +823,7 @@ mod tests {
         }
     }
 
-    // --- the review state ---
+    // --- the banner ---
 
     #[test]
     fn the_banner_takes_a_row_from_the_file_view() {
