@@ -6,9 +6,11 @@ name: Code review
 #   PR is opened (or reopened, or leaves draft), and posts the findings as
 #   inline review comments. Later pushes do not re-run it.
 # - `follow-up` runs when someone replies on one of those review threads. It
-#   answers that thread only: it trusts a "won't fix" or "deferred to #N",
-#   answers a question, and checks that a claimed fix really fixes the
-#   finding. It never starts new threads or reviews anything else.
+#   answers that thread only: it accepts a "won't fix" or "deferred to #N"
+#   with a one-line acknowledgement, answers a question, and checks that a
+#   claimed fix really fixes the finding. Every fix, decline or deferral gets
+#   a reply, so the author knows when the follow-up is done. It never starts
+#   new threads or reviews anything else.
 #
 # The review prompt is a plain instruction, not `/code-review high --comment
 # N`: the skill runs as a fork whose output contract is a findings list, so
@@ -112,7 +114,9 @@ jobs:
             2. Decide what the reply is, and act:
                - It declines or defers the finding ("won't fix", "no change", "intended",
                  "deferred to #N", "tracked in #N", "out of scope"), with or without reasons:
-                 trust it. Post nothing and stop. Do not argue or restate the finding.
+                 accept it. Reply in one short sentence acknowledging the decision, naming
+                 the issue for a deferral (for example "Accepted: won't fix." or "Accepted:
+                 deferred to #N."). Do not argue, restate the finding, or reopen the thread.
                - It says the finding is fixed (usually naming a commit): check the fix, and
                  only the fix. Read that commit (`git show <sha>`) or the PR's current code at
                  the finding's location, and decide whether it resolves the failure scenario
