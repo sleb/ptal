@@ -782,7 +782,9 @@ crates.io (via `repository`) resolve against the repo. The allowlist is
 reviewed against the previous tag's package list before every publish.
 `rust-version` is the floor declared by the dependency tree, checked by hand and
 not enforced in CI. CI runs `cargo package --locked`, fails if a forbidden path
-enters the tarball, and builds the docs from the unpacked tarball.
+enters the tarball, and builds the docs from the unpacked tarball. A separate
+CI step runs `knap lint .`, which checks that every markdown link and anchor
+in the repo resolves.
 
 A release is: bump `Cargo.toml` and `CHANGELOG.md`, `cargo publish` by hand
 (crates.io first, as it is irreversible), then push tag `vX.Y.Z`.

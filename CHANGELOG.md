@@ -6,6 +6,11 @@ workflow publishes that section as the GitHub Release notes. See
 
 ## Unreleased
 
+- README: install options (crates.io, prebuilt archives with checksum
+  verification), where data lives (one directory per file; a rename or move
+  starts a new review; how to remove reviews), troubleshooting for the common
+  errors, and a link to this changelog.
+
 ## 0.3.1 - 2026-10-23
 
 Fixes and cleanup. The review store format is unchanged. A few CLI edge cases

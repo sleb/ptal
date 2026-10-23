@@ -5,7 +5,10 @@
 //! docs (`AGENTS.md`, the ptal-plan skill) to the repo's current vocabulary:
 //! no milestone-status bookkeeping, and one definition of done. README's prose
 //! is held to the same: no status or roadmap words, no paragraph over 120
-//! words, and a `For agents` section that links the reference docs.
+//! words, and a `For agents` section that links the reference docs. README
+//! Install, Troubleshooting and Where data lives are checked against the
+//! release workflow's targets, the real error codes and messages, and the
+//! store's file names; the README links `CHANGELOG.md`.
 //!
 //! These read the repo at run time, so the file is not part of the published
 //! package.
@@ -242,13 +245,13 @@ fn ptal_plan_skill_defers_agreements_to_agents() {
         !agreements.contains("cargo"),
         "the skill restates gate commands in Working agreements: {agreements}"
     );
-    // "five-command" is a claim about AGENTS.md's gate, so it must match it.
-    if text.contains("five-command") {
+    // "six-command" is a claim about AGENTS.md's gate, so it must match it.
+    if text.contains("six-command") {
         let commands = gate_commands();
         assert_eq!(
             commands.len(),
-            5,
-            "the skill says five-command, AGENTS.md's gate has {}: {commands:?}",
+            6,
+            "the skill says six-command, AGENTS.md's gate has {}: {commands:?}",
             commands.len()
         );
     }
@@ -437,4 +440,95 @@ fn readme_agent_section_links_the_reference_docs() {
         !readme.contains("**Turns.**"),
         "the Turns paragraph is back"
     );
+}
+
+/// The `target:` values of the build matrix in `.github/workflows/release.yml`.
+fn release_targets() -> Vec<String> {
+    read(".github/workflows/release.yml")
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("- { target: "))
+        .filter_map(|rest| rest.split(',').next())
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn release_targets_are_parsed_from_the_workflow() {
+    let targets = release_targets();
+    assert_eq!(targets.len(), 4, "{targets:?}");
+    assert!(targets.contains(&"x86_64-unknown-linux-gnu".to_string()));
+}
+
+#[test]
+fn readme_install_covers_crates_io_and_prebuilt_binaries() {
+    let readme = read("README.md");
+    let install = section(&readme, "## Install", "## Usage");
+    let mut expected: Vec<String> = [
+        "cargo install ptal --locked",
+        "SHA256SUMS",
+        "shasum -a 256 -c",
+        "glibc",
+        "Windows",
+    ]
+    .map(String::from)
+    .into();
+    expected.extend(release_targets());
+    for want in expected {
+        assert!(install.contains(&want), "Install lacks {want:?}");
+    }
+}
+
+#[test]
+fn readme_data_section_matches_the_store() {
+    let readme = read("README.md");
+    let data = section(&readme, "## Where data lives", "## Building");
+    for want in [
+        "PTAL_DATA_DIR",
+        "XDG_DATA_HOME",
+        "<slug>-<hash8>",
+        "review.json",
+        "revisions/",
+        "canonical",
+        "rename",
+        "rm -r",
+    ] {
+        assert!(data.contains(want), "Where data lives lacks {want:?}");
+    }
+    let store = read("src/store.rs");
+    for file in ["review.json", "review.lock", "revisions"] {
+        assert!(store.contains(file), "src/store.rs lost {file:?}");
+    }
+}
+
+#[test]
+fn readme_troubleshooting_matches_the_binary() {
+    use ptal::cli::Failure;
+    use ptal::error::Error;
+    let readme = read("README.md");
+    let troubleshooting = section(&readme, "## Troubleshooting", "## Where data lives");
+    let cli = read("src/cli.rs");
+    for (code, message) in [
+        ("not_a_terminal", Failure::NotATerminal.to_string()),
+        ("missing_author", Failure::MissingAuthor.to_string()),
+        ("locked", Error::Locked.to_string()),
+        ("file_changed", Error::FileChanged.to_string()),
+    ] {
+        assert!(
+            troubleshooting.contains(&format!("`{code}`")),
+            "Troubleshooting lacks the code {code}"
+        );
+        assert!(
+            troubleshooting.contains(&message),
+            "Troubleshooting lacks the message {message:?}"
+        );
+        assert!(
+            cli.contains(&format!("\"{code}\"")),
+            "src/cli.rs no longer has the code {code}"
+        );
+    }
+}
+
+#[test]
+fn readme_links_the_changelog() {
+    assert!(read("README.md").contains("](CHANGELOG.md)"));
 }
