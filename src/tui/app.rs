@@ -1537,10 +1537,10 @@ fn search_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         return None;
     };
     let (anchor, origin) = (*anchor, *origin);
-    let ctrl = Mods::of(key).ctrl_only();
+    let ctrl_only = Mods::of(key).ctrl_only();
     let back = anchor.map_or(Mode::Normal, |anchor| Mode::Visual { anchor });
     match key.code {
-        KeyCode::Esc | KeyCode::Char('c') if key.code == KeyCode::Esc || ctrl => {
+        KeyCode::Esc | KeyCode::Char('c') if key.code == KeyCode::Esc || ctrl_only => {
             app.mode = back;
             app.top = origin.1;
             app.move_to(origin.0);
@@ -1560,7 +1560,7 @@ fn search_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             query.pop();
             app.research();
         }
-        KeyCode::Char(c) if !ctrl => {
+        KeyCode::Char(c) if !ctrl_only => {
             query.push(c);
             app.research();
         }
@@ -1670,8 +1670,8 @@ fn saved_body(draft: &str) -> &str {
 /// the draft (and cancelling a pending confirmation). Only ctrl without alt
 /// makes a chord: AltGr characters (ctrl+alt) are inserted as text.
 fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
-    let ctrl = Mods::of(key).ctrl_only();
-    let save = ctrl && matches!(key.code, KeyCode::Char('s' | 'S'));
+    let ctrl_only = Mods::of(key).ctrl_only();
+    let save = ctrl_only && matches!(key.code, KeyCode::Char('s' | 'S'));
     // Only a save needs these; computed before the mode is borrowed.
     let (selection, open_threads) = if save {
         (app.selection(), app.open_threads())
@@ -1694,7 +1694,7 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     {
         *confirm_asked = false;
     }
-    let cancel = key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c'));
+    let cancel = key.code == KeyCode::Esc || (ctrl_only && key.code == KeyCode::Char('c'));
     if cancel {
         if draft.text().trim().is_empty() || *discard_asked {
             app.mode = back.mode();
@@ -1714,7 +1714,7 @@ fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 });
             }
         }
-        KeyCode::Char(c) if !ctrl => draft.insert(c),
+        KeyCode::Char(c) if !ctrl_only => draft.insert(c),
         KeyCode::Enter => draft.newline(),
         KeyCode::Backspace => draft.backspace(),
         KeyCode::Delete => draft.delete(),
@@ -2856,7 +2856,11 @@ mod tests {
     fn only_mods_reads_key_modifiers_outside_tests() {
         let src = include_str!("app.rs");
         let production = &src[..src.find("#[cfg(test)]").expect("test module")];
-        let reads = production.matches(".modifiers").count();
+        let reads = production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains(".modifiers"))
+            .count();
         assert_eq!(reads, 1, "handlers must go through Mods::of");
     }
 
