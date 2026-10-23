@@ -107,12 +107,12 @@ fn movement(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     let mods = Mods::of(key);
-    let (chord, ctrl_only) = (mods.chord(), mods.ctrl_only());
+    let (chord, ctrl) = (mods.chord(), mods.ctrl());
     match key.code {
-        KeyCode::Char(']') if !ctrl_only => app.jump_to_covered(true),
-        KeyCode::Char('[') if !ctrl_only => app.jump_to_covered(false),
-        KeyCode::Char('}') if !ctrl_only => app.jump_to_change(true),
-        KeyCode::Char('{') if !ctrl_only => app.jump_to_change(false),
+        KeyCode::Char(']') if !ctrl => app.jump_to_covered(true),
+        KeyCode::Char('[') if !ctrl => app.jump_to_covered(false),
+        KeyCode::Char('}') if !ctrl => app.jump_to_change(true),
+        KeyCode::Char('{') if !ctrl => app.jump_to_change(false),
         KeyCode::Char('n') if !chord => app.repeat_search(true),
         KeyCode::Char('N') if !chord => app.repeat_search(false),
         _ => return false,
@@ -237,6 +237,45 @@ mod tests {
         assert_eq!(at(&a), (14, 5));
         send(&mut a, [ctrl('u'), ctrl('u'), ctrl('u')]);
         assert_eq!(at(&a), (0, 0));
+    }
+
+    #[test]
+    fn altgr_characters_act_as_the_plain_key_in_normal() {
+        let mut a = app(20, 12);
+        let before = (a.mode.clone(), at(&a));
+        assert_eq!(update(&mut a, alt_graph('c')), None, "not ctrl+c");
+        send(&mut a, [alt_graph('d'), alt_graph('u')]);
+        assert_eq!((a.mode.clone(), at(&a)), before, "not a half page");
+
+        send(&mut a, [alt_graph('j')]);
+        assert_eq!(a.cursor, 1);
+        send(&mut a, [alt_graph('G')]);
+        assert_eq!(a.cursor, 19);
+        send(&mut a, [alt_graph('v')]);
+        assert!(matches!(a.mode, Mode::Visual { .. }));
+        let mut a = app(20, 12);
+        send(&mut a, [alt_graph('/')]);
+        assert!(matches!(a.mode, Mode::Search { .. }), "{:?}", a.mode);
+        let mut a = app(20, 12);
+        send(&mut a, [alt_graph('?')]);
+        assert!(matches!(a.mode, Mode::Overlay { .. }), "{:?}", a.mode);
+        let mut a = app(20, 12);
+        send(&mut a, [alt_graph('H')]);
+        assert!(matches!(a.mode, Mode::Input { .. }), "{:?}", a.mode);
+        assert_eq!(update(&mut app(3, 10), alt_graph('q')), Some(Effect::Quit));
+    }
+
+    #[test]
+    fn altgr_characters_act_as_the_plain_key_in_visual() {
+        let mut a = app(20, 12);
+        send(&mut a, [ch('v'), ch('j')]);
+        send(&mut a, [alt_graph('c')]);
+        assert_eq!(a.mode, Mode::Visual { anchor: 0 }, "not ctrl+c");
+        send(&mut a, [alt_graph('/')]);
+        assert!(matches!(a.mode, Mode::Search { .. }), "{:?}", a.mode);
+        let mut a = app(20, 12);
+        send(&mut a, [ch('v'), alt_graph('v')]);
+        assert_eq!(a.mode, Mode::Normal);
     }
 
     #[test]

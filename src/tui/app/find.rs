@@ -125,10 +125,10 @@ pub(super) fn search_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         return None;
     };
     let (anchor, origin) = (*anchor, *origin);
-    let ctrl_only = Mods::of(key).ctrl_only();
+    let ctrl = Mods::of(key).ctrl();
     let back = anchor.map_or(Mode::Normal, |anchor| Mode::Visual { anchor });
     match key.code {
-        KeyCode::Esc | KeyCode::Char('c') if key.code == KeyCode::Esc || ctrl_only => {
+        KeyCode::Esc | KeyCode::Char('c') if key.code == KeyCode::Esc || ctrl => {
             app.mode = back;
             app.top = origin.1;
             app.move_to(origin.0);
@@ -148,7 +148,7 @@ pub(super) fn search_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             query.pop();
             app.research();
         }
-        KeyCode::Char(c) if !ctrl_only => {
+        KeyCode::Char(c) if !ctrl => {
             query.push(c);
             app.research();
         }
@@ -415,6 +415,19 @@ mod tests {
             send(&mut a, [event]);
             assert_eq!((a.cursor, a.status()), (2, None));
         }
+    }
+
+    #[test]
+    fn altgr_n_is_a_search_repeat() {
+        let mut a = searching(&PLAN, 10);
+        send(&mut a, [ch('/')]);
+        type_query(&mut a, "plan");
+        send(&mut a, [press(KeyCode::Enter)]);
+        let first = a.cursor;
+
+        send(&mut a, [alt_graph('n')]);
+
+        assert_ne!(a.cursor, first);
     }
 
     #[test]

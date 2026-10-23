@@ -465,36 +465,32 @@ fn apply(app: &mut App, event: Event) -> Option<Effect> {
 
 /// The modifiers of one key, read once so every handler agrees on them.
 ///
-/// Terminals report AltGr as ctrl+alt, so a key with both held is text (it
-/// types `[`, `{`, `@`, ...), not a chord: [`ctrl_only`](Self::ctrl_only) is
-/// a real ctrl chord, [`ctrl`](Self::ctrl) is the looser test of modes that
-/// ignore ctrl+alt letters. No handler reads `KeyEvent::modifiers` itself.
+/// Terminals report AltGr as ctrl+alt, so [`Mods::of`] reads a character
+/// typed with both held as that character with no modifiers: every mode acts
+/// on it as the plain key (`[`, `{`, `@`, ... type or bind as usual) and no
+/// ctrl chord fires from it. Named keys keep ctrl+alt, since AltGr never
+/// types one. No handler reads `KeyEvent::modifiers` itself.
 #[derive(Clone, Copy)]
 struct Mods(KeyModifiers);
 
 impl Mods {
     fn of(key: KeyEvent) -> Self {
-        Self(key.modifiers)
+        let both = KeyModifiers::CONTROL | KeyModifiers::ALT;
+        let mut mods = key.modifiers;
+        if matches!(key.code, KeyCode::Char(_)) && mods.contains(both) {
+            mods.remove(both);
+        }
+        Self(mods)
     }
 
-    /// Ctrl is held, AltGr included.
+    /// Ctrl is held: a real chord, never AltGr.
     fn ctrl(self) -> bool {
         self.0.contains(KeyModifiers::CONTROL)
     }
 
-    /// Ctrl without alt: a real ctrl chord, never AltGr.
-    fn ctrl_only(self) -> bool {
-        self.ctrl() && !self.alt_gr()
-    }
-
-    /// Ctrl or alt is held.
+    /// Ctrl or alt is held, AltGr excluded.
     fn chord(self) -> bool {
         self.ctrl() || self.0.contains(KeyModifiers::ALT)
-    }
-
-    /// Ctrl and alt together: how terminals report AltGr.
-    fn alt_gr(self) -> bool {
-        self.0.contains(KeyModifiers::CONTROL | KeyModifiers::ALT)
     }
 
     fn shift(self) -> bool {
@@ -561,28 +557,27 @@ mod tests {
     #[test]
     fn mods_answer_for_each_modifier_combination() {
         use KeyModifiers as K;
-        let of = |m| Mods::of(KeyEvent::new(KeyCode::Char('x'), m));
-        // (mods, ctrl, ctrl_only, chord, alt_gr, shift)
+        let of = |code, m| Mods::of(KeyEvent::new(code, m));
+        let c = KeyCode::Char('x');
+        // (key, mods, ctrl, chord, shift)
         let table = [
-            (K::NONE, false, false, false, false, false),
-            (K::SHIFT, false, false, false, false, true),
-            (K::CONTROL, true, true, true, false, false),
-            (K::ALT, false, false, true, false, false),
-            (K::CONTROL | K::ALT, true, false, true, true, false),
-            (K::CONTROL | K::SHIFT, true, true, true, false, true),
+            (c, K::NONE, false, false, false),
+            (c, K::SHIFT, false, false, true),
+            (c, K::CONTROL, true, true, false),
+            (c, K::ALT, false, true, false),
+            (c, K::CONTROL | K::SHIFT, true, true, true),
+            // A character typed with ctrl+alt is AltGr text: no modifiers.
+            (c, K::CONTROL | K::ALT, false, false, false),
+            (c, K::CONTROL | K::ALT | K::SHIFT, false, false, true),
+            // AltGr never types a named key, so that stays a ctrl chord.
+            (KeyCode::Down, K::CONTROL | K::ALT, true, true, false),
         ];
-        for (m, ctrl, ctrl_only, chord, alt_gr, shift) in table {
-            let got = of(m);
+        for (code, m, ctrl, chord, shift) in table {
+            let got = of(code, m);
             assert_eq!(
-                (
-                    got.ctrl(),
-                    got.ctrl_only(),
-                    got.chord(),
-                    got.alt_gr(),
-                    got.shift()
-                ),
-                (ctrl, ctrl_only, chord, alt_gr, shift),
-                "{m:?}"
+                (got.ctrl(), got.chord(), got.shift()),
+                (ctrl, chord, shift),
+                "{code:?} {m:?}"
             );
         }
     }
@@ -619,7 +614,7 @@ mod tests {
 
     #[test]
     fn ctrl_arrows_scroll_nothing_in_any_mode() {
-        let ctrl_key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL));
+        let ctrl_key = |code, m| Event::Key(KeyEvent::new(code, m));
         let named = [KeyCode::Down, KeyCode::Up, KeyCode::Home, KeyCode::End];
         let normal = || {
             let mut a = app(20, 10);
@@ -642,10 +637,15 @@ mod tests {
             ("panel", &panel),
         ] {
             for code in named {
-                let mut a = fixture();
-                let before = (a.mode.clone(), at(&a));
-                send(&mut a, [ctrl_key(code)]);
-                assert_eq!((a.mode.clone(), at(&a)), before, "{name}: ctrl+{code:?}");
+                for m in [
+                    KeyModifiers::CONTROL,
+                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                ] {
+                    let mut a = fixture();
+                    let before = (a.mode.clone(), at(&a));
+                    send(&mut a, [ctrl_key(code, m)]);
+                    assert_eq!((a.mode.clone(), at(&a)), before, "{name}: {m:?}+{code:?}");
+                }
             }
         }
     }
@@ -680,10 +680,9 @@ mod tests {
             assert_eq!(of(code, K::NONE), plain, "{code:?}");
             assert_eq!(of(code, K::CONTROL), with_ctrl, "ctrl+{code:?}");
         }
-        // The loose ctrl test: ctrl+alt counts as ctrl here, as it does in
-        // every mode but the typing ones.
-        assert_eq!(of(c('d'), K::CONTROL | K::ALT), Some(Scroll::HalfDown));
-        assert_eq!(of(c('j'), K::CONTROL | K::ALT), None);
+        // AltGr text is the plain key, never a ctrl chord.
+        assert_eq!(of(c('d'), K::CONTROL | K::ALT), None);
+        assert_eq!(of(c('j'), K::CONTROL | K::ALT), Some(Scroll::Down));
     }
 
     // --- the key listing and the handlers agree ---

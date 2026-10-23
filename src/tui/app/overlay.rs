@@ -190,6 +190,19 @@ mod tests {
     }
 
     #[test]
+    fn altgr_characters_act_as_the_plain_key_in_help() {
+        let mut a = app(5, 4);
+        send(&mut a, [ch('?')]);
+        let before = a.mode.clone();
+
+        send(&mut a, [alt_graph('c'), alt_graph('d')]);
+        assert_eq!(a.mode, before, "not ctrl+c, not a half page");
+
+        send(&mut a, [alt_graph('?')]);
+        assert_eq!(a.mode, Mode::Normal);
+    }
+
+    #[test]
     fn help_from_the_panel_returns_to_the_same_selection_and_scroll() {
         let threads = [chatty("c1", (2, 2), 6), chatty("c2", (2, 2), 1)];
         for close in [ch('?'), press(KeyCode::Esc), ch('q'), ctrl('c')] {

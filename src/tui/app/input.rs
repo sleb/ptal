@@ -22,11 +22,11 @@ fn saved_body(draft: &str) -> &str {
 /// picks a close's verdict; `enter` starts a new line; the rest edit the
 /// draft. `esc` or `ctrl+c` returns to where the box came from: at once for
 /// a blank draft, else on a second press, any other key in between keeping
-/// the draft (and cancelling a pending confirmation). Only ctrl without alt
-/// makes a chord: AltGr characters (ctrl+alt) are inserted as text.
+/// the draft (and cancelling a pending confirmation). AltGr characters are
+/// inserted as text (see [`Mods`]).
 pub(super) fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
-    let ctrl_only = Mods::of(key).ctrl_only();
-    let save = ctrl_only && matches!(key.code, KeyCode::Char('s' | 'S'));
+    let ctrl = Mods::of(key).ctrl();
+    let save = ctrl && matches!(key.code, KeyCode::Char('s' | 'S'));
     // Only a save needs these; computed before the mode is borrowed.
     let (selection, open_threads) = if save {
         (app.selection(), app.open_threads())
@@ -49,7 +49,7 @@ pub(super) fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     {
         *confirm_asked = false;
     }
-    let cancel = key.code == KeyCode::Esc || (ctrl_only && key.code == KeyCode::Char('c'));
+    let cancel = key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c'));
     if cancel {
         if draft.text().trim().is_empty() || *discard_asked {
             app.mode = back.mode();
@@ -69,7 +69,7 @@ pub(super) fn input_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 });
             }
         }
-        KeyCode::Char(c) if !ctrl_only => draft.insert(c),
+        KeyCode::Char(c) if !ctrl => draft.insert(c),
         KeyCode::Enter => draft.newline(),
         KeyCode::Backspace => draft.backspace(),
         KeyCode::Delete => draft.delete(),
