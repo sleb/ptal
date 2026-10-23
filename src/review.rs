@@ -365,9 +365,7 @@ impl<C: Clock> Reviews<C> {
         author: &str,
     ) -> Result<Thread> {
         require_author(author)?;
-        if body.trim().is_empty() {
-            return Err(Error::EmptyBody);
-        }
+        require_body(body)?;
         let content = Content::read(file)?.seen(seen)?;
         let lines = content.lines();
         let quote =
@@ -620,7 +618,7 @@ impl<C: Clock> Reviews<C> {
         note: Option<&str>,
     ) -> Result<Thread> {
         require_author(author)?;
-        let note = note.filter(|n| !n.trim().is_empty());
+        let note = non_blank(note);
         let content = Content::read(file)?;
         let now = self.clock.now();
 
@@ -681,7 +679,7 @@ impl<C: Clock> Reviews<C> {
         note: Option<&str>,
     ) -> Result<Thread> {
         require_author(author)?;
-        let note = note.filter(|n| !n.trim().is_empty());
+        let note = non_blank(note);
         let content = Content::read(file)?;
         let now = self.clock.now();
 
@@ -733,9 +731,7 @@ impl<C: Clock> Reviews<C> {
     /// ```
     pub fn reply(&self, file: &Path, id: &str, body: &str, author: &str) -> Result<Thread> {
         require_author(author)?;
-        if body.trim().is_empty() {
-            return Err(Error::EmptyBody);
-        }
+        require_body(body)?;
         let content = Content::read(file)?;
         let created_at = self.clock.now();
 
@@ -1001,7 +997,7 @@ impl Signature<'_> {
             created_at: self.created_at,
             revision,
             next_id: review.next_id,
-            note: self.note.filter(|n| !n.trim().is_empty()).map(String::from),
+            note: non_blank(self.note).map(String::from),
         };
         review.log.push(entry);
     }
@@ -1152,6 +1148,20 @@ fn require_author(author: &str) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// A comment body must not be blank: `EmptyBody` if it is.
+fn require_body(body: &str) -> Result<()> {
+    if body.trim().is_empty() {
+        Err(Error::EmptyBody)
+    } else {
+        Ok(())
+    }
+}
+
+/// A blank note is no note.
+fn non_blank(note: Option<&str>) -> Option<&str> {
+    note.filter(|n| !n.trim().is_empty())
 }
 
 /// Lines `start..=end` (1-based) of `lines` joined by `\n`, or `None` if the
