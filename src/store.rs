@@ -290,11 +290,11 @@ fn optional<T>(path: &Path, read: impl FnOnce(&Path) -> io::Result<T>) -> Result
 }
 
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
-    optional(path, fs::read)
+    optional(path, |p| fs::read(p))
 }
 
 fn read_optional_string(path: &Path) -> Result<Option<String>> {
-    optional(path, fs::read_to_string)
+    optional(path, |p| fs::read_to_string(p))
 }
 
 /// Write `bytes` to `temp` (truncating a stale one), fsync, and rename it to
