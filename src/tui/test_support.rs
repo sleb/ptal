@@ -93,20 +93,32 @@ pub(super) fn view(id: &str, (start, end): (u32, u32), status: Status, state: St
     }
 }
 
-/// `view` with a comment by each of `authors`, in order.
-pub(super) fn said_by(mut v: ThreadView, authors: &[&str]) -> ThreadView {
-    v.thread.comments = authors
-        .iter()
-        .enumerate()
-        .map(|(i, author)| Comment {
-            id: format!("{}-{i}", v.thread.id),
-            author: (*author).into(),
-            body: format!("body {i}"),
-            created_at: "2026-10-12T10:00:00Z".into(),
-            revision: None,
-        })
-        .collect();
-    v
+/// `view` with its anchor quoting `quote`.
+pub(super) fn quoted(mut view: ThreadView, quote: &str) -> ThreadView {
+    view.thread.anchor.quote = quote.into();
+    view
+}
+
+/// `view` with one more comment, by `author` at `at`; its id is the
+/// thread's and the comment's index (`c1-0`).
+pub(super) fn comment(mut view: ThreadView, author: &str, at: &str, body: &str) -> ThreadView {
+    let id = format!("{}-{}", view.thread.id, view.thread.comments.len());
+    view.thread.comments.push(Comment {
+        id,
+        author: author.into(),
+        body: body.into(),
+        created_at: at.into(),
+        revision: None,
+    });
+    view
+}
+
+/// `view` with a comment by each of `authors`, in order, each body
+/// `body {i}`.
+pub(super) fn said_by(view: ThreadView, authors: &[&str]) -> ThreadView {
+    authors.iter().enumerate().fold(view, |v, (i, author)| {
+        comment(v, author, "2026-10-12T10:00:00Z", &format!("body {i}"))
+    })
 }
 
 /// Resolved by `claude`.
