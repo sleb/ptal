@@ -121,6 +121,24 @@ pub(super) fn said_by(view: ThreadView, authors: &[&str]) -> ThreadView {
     })
 }
 
+/// A thread quoting `quote` with a comment for each (author, body) of
+/// `said`, a minute apart from 09:30:30.
+pub(super) fn talk(
+    id: &str,
+    range: (u32, u32),
+    quote: &str,
+    status: Status,
+    state: State,
+    said: &[(&str, &str)],
+) -> ThreadView {
+    let view = quoted(view(id, range, status, state), quote);
+    said.iter()
+        .enumerate()
+        .fold(view, |v, (i, (author, body))| {
+            comment(v, author, &format!("2026-10-12T09:{:02}:30Z", 30 + i), body)
+        })
+}
+
 /// Resolved by `claude`.
 pub(super) fn resolved() -> Status {
     Status::Resolved {
@@ -143,18 +161,22 @@ pub(super) fn change(start: u32, end: u32, kind: ChangeKind) -> Change {
     }
 }
 
+/// A review in `state`, its latest entry the human's hand-off with `note`
+/// at revision `r2`, or no entry without one.
+pub(super) fn review_status(state: ReviewState, note: Option<&str>) -> ReviewStatus {
+    let latest = note.map(|note| Entry {
+        event: crate::model::Event::HandOff,
+        side: Side::Human,
+        author: "scott".into(),
+        created_at: "2026-10-12T10:00:00Z".into(),
+        revision: "r2".into(),
+        next_id: 4,
+        note: Some(note.into()),
+    });
+    ReviewStatus { state, latest }
+}
+
 /// The agent's turn, after the human handed off with `note`.
 pub(super) fn handed_off(note: &str) -> ReviewStatus {
-    ReviewStatus {
-        state: ReviewState::Turn(Side::Agent),
-        latest: Some(Entry {
-            event: crate::model::Event::HandOff,
-            side: Side::Human,
-            author: "scott".into(),
-            created_at: "2026-10-12T10:00:00Z".into(),
-            revision: "r2".into(),
-            next_id: 4,
-            note: Some(note.into()),
-        }),
-    }
+    review_status(ReviewState::Turn(Side::Agent), Some(note))
 }

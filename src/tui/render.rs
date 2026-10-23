@@ -482,33 +482,19 @@ fn draw_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{
-        Anchor, Entry, Event as LogEvent, ReviewState, Side, State, Status, Thread, Verdict,
-    };
+    use crate::model::{ReviewState, Side, State, Status, Verdict};
     use crate::review::{ReviewStatus, ThreadView, View};
     use crate::tui::app::{Event, update};
     use crate::tui::keys;
+    use crate::tui::test_support::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::crossterm::event::KeyCode;
     use ratatui::style::{Color, Modifier};
 
     const W: u16 = 80;
     /// The screen row of the file view's first row, below the banner.
     const TOP: u16 = 1;
-
-    /// A view of `lines` and `threads`, with no review or changes.
-    fn showing(lines: Vec<String>, threads: &[ThreadView]) -> View {
-        View {
-            lines,
-            threads: threads.to_vec(),
-            ..View::default()
-        }
-    }
-
-    fn lines(n: usize) -> Vec<String> {
-        (1..=n).map(|i| format!("line {i}")).collect()
-    }
 
     fn app_with(lines: Vec<String>, threads: &[ThreadView], rows: u16) -> App {
         App::open(showing(lines, threads), "scott", (W, rows)).labeled("plan.md")
@@ -549,67 +535,6 @@ mod tests {
         spread("your turn", "H:hand off C:close", usize::from(width))
     }
 
-    fn key(app: &mut App, code: KeyCode) {
-        update(app, Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
-    }
-
-    fn type_text(app: &mut App, text: &str) {
-        for c in text.chars() {
-            key(app, KeyCode::Char(c));
-        }
-    }
-
-    fn open_thread(id: &str, (start, end): (u32, u32), state: State) -> ThreadView {
-        ThreadView {
-            thread: Thread {
-                id: id.into(),
-                anchor: Anchor {
-                    revision: None,
-                    start_line: start,
-                    end_line: end,
-                    quote: String::new(),
-                },
-                status: Status::Open,
-                comments: vec![],
-            },
-            state,
-        }
-    }
-
-    fn talk(
-        id: &str,
-        range: (u32, u32),
-        quote: &str,
-        status: Status,
-        state: State,
-        said: &[(&str, &str)],
-    ) -> ThreadView {
-        use crate::model::Comment;
-        let mut view = open_thread(id, range, state);
-        view.thread.anchor.quote = quote.into();
-        view.thread.status = status;
-        view.thread.comments = said
-            .iter()
-            .enumerate()
-            .map(|(i, (author, body))| Comment {
-                id: format!("{id}-{i}"),
-                author: (*author).into(),
-                body: (*body).into(),
-                created_at: format!("2026-10-12T09:{:02}:30Z", 30 + i),
-                revision: None,
-            })
-            .collect();
-        view
-    }
-
-    fn resolved_by_claude() -> Status {
-        Status::Resolved {
-            resolved_by: "claude".into(),
-            resolved_at: "2026-10-12T10:00:00Z".into(),
-            resolved_revision: None,
-        }
-    }
-
     /// A panel row: border, `text` padded to the box's inner width, border.
     fn boxed(text: &str) -> String {
         format!("│{text:<inner$}│", inner = usize::from(W) - 2)
@@ -626,9 +551,10 @@ mod tests {
         format!("└{}┘", "─".repeat(usize::from(W) - 2))
     }
 
-    fn panel_app(threads: &[ThreadView]) -> App {
-        let mut app = app_with(lines(12), threads, 16);
-        key(&mut app, KeyCode::Enter);
+    /// The thread panel opened on line 1 of twelve lines, at 80×16.
+    fn opened_panel(threads: &[ThreadView]) -> App {
+        let mut app = app_with(numbered(12), threads, 16);
+        send(&mut app, [press(KeyCode::Enter)]);
         app
     }
 
@@ -645,7 +571,7 @@ mod tests {
             State::Current,
             &[("scott", "Why this?"), ("claude", "Because.")],
         )];
-        let app = panel_app(&threads);
+        let app = opened_panel(&threads);
 
         let screen = screen(&draw(&app, W, 16));
 
@@ -691,7 +617,7 @@ mod tests {
                 &[("claude", "theirs")],
             ),
         ];
-        let mut app = panel_app(&threads);
+        let mut app = opened_panel(&threads);
 
         let first = screen(&draw(&app, W, 16));
         assert!(first.contains("│  c1 open"), "{first}");
@@ -700,7 +626,7 @@ mod tests {
             "waiting thread starts selected"
         );
 
-        key(&mut app, KeyCode::Tab);
+        send(&mut app, [press(KeyCode::Tab)]);
         let second = screen(&draw(&app, W, 16));
         assert!(second.contains("│▶ c1 open"), "{second}");
         assert!(second.contains("│  c2 open"));
@@ -712,11 +638,11 @@ mod tests {
             "c1",
             (1, 1),
             "a",
-            resolved_by_claude(),
+            resolved(),
             State::Current,
             &[("scott", "hm")],
         )];
-        let app = panel_app(&threads);
+        let app = opened_panel(&threads);
 
         let terminal = draw(&app, W, 16);
 
@@ -738,7 +664,7 @@ mod tests {
             State::Outdated,
             &[("scott", "x")],
         )];
-        let app = panel_app(&threads);
+        let app = opened_panel(&threads);
 
         let text = screen(&draw(&app, W, 16));
 
@@ -760,9 +686,9 @@ mod tests {
                 ("scott", "Ok."),
             ],
         )];
-        let mut app = panel_app(&threads);
-        key(&mut app, KeyCode::Char('j'));
-        key(&mut app, KeyCode::Char('j'));
+        let mut app = opened_panel(&threads);
+        send(&mut app, [press(KeyCode::Char('j'))]);
+        send(&mut app, [press(KeyCode::Char('j'))]);
 
         let text = screen(&draw(&app, W, 16));
 
@@ -782,7 +708,7 @@ mod tests {
             State::Current,
             &[("scott", &wide)],
         )];
-        let app = panel_app(&threads);
+        let app = opened_panel(&threads);
 
         let terminal = draw(&app, W, 16);
 
@@ -804,9 +730,9 @@ mod tests {
             State::Current,
             &[("claude", "hi")],
         )];
-        let mut app = panel_app(&threads);
-        key(&mut app, KeyCode::Char('a'));
-        type_text(&mut app, "ok");
+        let mut app = opened_panel(&threads);
+        send(&mut app, [press(KeyCode::Char('a'))]);
+        typed(&mut app, "ok");
 
         let text = screen(&draw(&app, W, 16));
 
@@ -839,8 +765,8 @@ mod tests {
             &[("claude", "hi")],
         )];
 
-        let open = screen(&draw(&panel_app(&open), W, 16));
-        let done = screen(&draw(&panel_app(&done), W, 16));
+        let open = screen(&draw(&opened_panel(&open), W, 16));
+        let done = screen(&draw(&opened_panel(&done), W, 16));
 
         assert!(
             open.ends_with("a:add r:reply x:resolve j/k:scroll esc:close ?:help"),
@@ -862,9 +788,9 @@ mod tests {
             State::Current,
             &[("claude", "hi")],
         )];
-        let mut app = panel_app(&threads);
-        key(&mut app, KeyCode::Char('r'));
-        type_text(&mut app, "ok");
+        let mut app = opened_panel(&threads);
+        send(&mut app, [press(KeyCode::Char('r'))]);
+        typed(&mut app, "ok");
 
         let text = screen(&draw(&app, W, 16));
 
@@ -883,10 +809,10 @@ mod tests {
             State::Current,
             &[("claude", "hi")],
         )];
-        let mut app = app_with(lines(12), &threads, 16);
-        key(&mut app, KeyCode::Char('j'));
-        key(&mut app, KeyCode::Char('j'));
-        key(&mut app, KeyCode::Enter);
+        let mut app = app_with(numbered(12), &threads, 16);
+        send(&mut app, [press(KeyCode::Char('j'))]);
+        send(&mut app, [press(KeyCode::Char('j'))]);
+        send(&mut app, [press(KeyCode::Enter)]);
 
         let terminal = draw(&app, W, 16);
 
@@ -898,7 +824,7 @@ mod tests {
 
     #[test]
     fn normal_mode_shows_gutter_text_and_a_footer() {
-        let app = app_with(lines(12), &[], 8);
+        let app = app_with(numbered(12), &[], 8);
 
         let screen = screen(&draw(&app, W, 8));
 
@@ -921,10 +847,10 @@ plan.md  L1/12  enter:thread/comment ]/[:jump q:quit v:select /:search ?:help",
     #[test]
     fn marked_lines_show_a_dot_and_outdated_threads_are_counted() {
         let threads = [
-            open_thread("c1", (2, 3), State::Current),
-            open_thread("c2", (6, 6), State::Outdated),
+            view("c1", (2, 3), Status::Open, State::Current),
+            view("c2", (6, 6), Status::Open, State::Outdated),
         ];
-        let app = app_with(lines(12), &threads, 8);
+        let app = app_with(numbered(12), &threads, 8);
 
         let screen = screen(&draw(&app, W, 8));
 
@@ -944,20 +870,13 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:sea�
         );
     }
 
-    use crate::anchor::{Change, ChangeKind, LineRange};
-
-    fn change(start: u32, end: u32, kind: ChangeKind) -> Change {
-        Change {
-            range: LineRange { start, end },
-            kind,
-        }
-    }
+    use crate::anchor::ChangeKind;
 
     #[test]
     fn changed_lines_and_removal_points_are_marked_and_counted() {
         let threads = [
-            open_thread("c1", (2, 2), State::Current),
-            open_thread("c2", (5, 5), State::Outdated),
+            view("c1", (2, 2), Status::Open, State::Current),
+            view("c2", (5, 5), Status::Open, State::Outdated),
         ];
         let app = App::open(
             View {
@@ -965,7 +884,7 @@ plan.md  L1/12  1 outdated  enter:thread/comment ]/[:jump q:quit v:select /:sea�
                     change(2, 3, ChangeKind::Changed),
                     change(5, 5, ChangeKind::Removed),
                 ],
-                ..showing(lines(12), &threads)
+                ..showing(numbered(12), &threads)
             },
             "scott",
             (W, 8),
@@ -998,7 +917,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
                     change(1, 1, ChangeKind::Changed),
                     change(3, 3, ChangeKind::Removed),
                 ],
-                ..showing(lines(4), &[])
+                ..showing(numbered(4), &[])
             },
             "scott",
             (W, 8),
@@ -1040,7 +959,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
         let app = App::open(
             View {
                 changes: vec![change(2, 2, ChangeKind::Changed)],
-                ..showing(lines(3), &[])
+                ..showing(numbered(3), &[])
             },
             "scott",
             (W, 8),
@@ -1058,7 +977,10 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
             let app = App::open(
                 View {
                     changes: vec![change(1, 1, ChangeKind::Changed)],
-                    ..showing(lines(3), &[open_thread("c1", (1, 1), State::Current)])
+                    ..showing(
+                        numbered(3),
+                        &[view("c1", (1, 1), Status::Open, State::Current)],
+                    )
                 },
                 "scott",
                 (width, 6),
@@ -1075,7 +997,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
 
     #[test]
     fn without_changes_the_footer_has_no_change_count() {
-        let app = app_with(lines(3), &[], 8);
+        let app = app_with(numbered(3), &[], 8);
 
         let screen = screen(&draw(&app, W, 8));
 
@@ -1084,29 +1006,15 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
 
     #[test]
     fn gutter_glyph_and_style_follow_the_marker() {
-        use crate::model::Comment;
-        let said = |mut v: ThreadView, author: &str| {
-            v.thread.comments = vec![Comment {
-                id: "x".into(),
-                author: author.into(),
-                body: "b".into(),
-                created_at: "2026-10-12T10:00:00Z".into(),
-                revision: None,
-            }];
-            v
-        };
-        let mut resolved = said(open_thread("c3", (3, 3), State::Current), "claude");
-        resolved.thread.status = Status::Resolved {
-            resolved_by: "claude".into(),
-            resolved_at: "2026-10-12T10:00:00Z".into(),
-            resolved_revision: None,
-        };
         let threads = [
-            said(open_thread("c1", (1, 1), State::Current), "scott"),
-            said(open_thread("c2", (2, 2), State::Current), "claude"),
-            resolved,
+            said_by(view("c1", (1, 1), Status::Open, State::Current), &["scott"]),
+            said_by(
+                view("c2", (2, 2), Status::Open, State::Current),
+                &["claude"],
+            ),
+            said_by(view("c3", (3, 3), resolved(), State::Current), &["claude"]),
         ];
-        let app = app_with(lines(4), &threads, 8);
+        let app = app_with(numbered(4), &threads, 8);
 
         let terminal = draw(&app, W, 8);
 
@@ -1123,11 +1031,11 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
 
     #[test]
     fn input_mode_draws_a_titled_box_over_the_footer_with_the_file_above() {
-        let mut app = app_with(lines(12), &[], 8);
-        key(&mut app, KeyCode::Char('j'));
-        key(&mut app, KeyCode::Char('j'));
-        key(&mut app, KeyCode::Enter);
-        type_text(&mut app, "why?");
+        let mut app = app_with(numbered(12), &[], 8);
+        send(&mut app, [press(KeyCode::Char('j'))]);
+        send(&mut app, [press(KeyCode::Char('j'))]);
+        send(&mut app, [press(KeyCode::Enter)]);
+        typed(&mut app, "why?");
 
         let screen = screen(&draw(&app, W, 8));
 
@@ -1149,9 +1057,9 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
 
     #[test]
     fn input_cursor_is_a_reversed_cell_mid_draft_and_at_the_end() {
-        let mut app = app_with(lines(3), &[], 8);
-        key(&mut app, KeyCode::Enter);
-        type_text(&mut app, "abc");
+        let mut app = app_with(numbered(3), &[], 8);
+        send(&mut app, [press(KeyCode::Enter)]);
+        typed(&mut app, "abc");
         let reversed = |terminal: &Terminal<TestBackend>, x: u16| {
             // 8 rows: the box fills rows 5..8, its text row is 6.
             terminal.backend().buffer()[(x, 6)]
@@ -1163,8 +1071,8 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
         assert!(reversed(&at_end, 4), "the space after `abc`");
         assert!(!reversed(&at_end, 3));
 
-        key(&mut app, KeyCode::Left);
-        key(&mut app, KeyCode::Left);
+        send(&mut app, [press(KeyCode::Left)]);
+        send(&mut app, [press(KeyCode::Left)]);
         let mid = draw(&app, W, 8);
         assert!(reversed(&mid, 2), "on `b`");
         assert!(!reversed(&mid, 4));
@@ -1189,15 +1097,15 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
     /// `\n` typed as `enter`.
     fn box_with(text: &str, (cols, rows): (u16, u16)) -> App {
         let mut app = narrow(&["one", "two"], &[], (cols, rows));
-        key(&mut app, KeyCode::Enter);
+        send(&mut app, [press(KeyCode::Enter)]);
         for c in text.chars() {
-            key(
+            send(
                 &mut app,
-                if c == '\n' {
+                [press(if c == '\n' {
                     KeyCode::Enter
                 } else {
                     KeyCode::Char(c)
-                },
+                })],
             );
         }
         app
@@ -1230,7 +1138,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
     #[test]
     fn a_pasted_tab_draws_as_four_spaces_with_the_cursor_after_the_text() {
         let mut app = box_with("", (20, 10));
-        update(&mut app, Event::Paste("\tab".into()));
+        send(&mut app, [paste("\tab")]);
 
         let terminal = draw(&app, 20, 10);
 
@@ -1242,7 +1150,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
     #[test]
     fn a_combining_mark_after_a_tab_draws_on_it_with_the_cursor_after_the_text() {
         let mut app = box_with("", (20, 10));
-        update(&mut app, Event::Paste("\t\u{301}x".into()));
+        send(&mut app, [paste("\t\u{301}x")]);
 
         let terminal = draw(&app, 20, 10);
 
@@ -1256,7 +1164,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
     #[test]
     fn a_tab_indented_line_that_wraps_continues_at_the_left_edge() {
         let mut app = box_with("", (20, 10));
-        update(&mut app, Event::Paste("\taaaa bbbbbbbbbbb".into()));
+        send(&mut app, [paste("\taaaa bbbbbbbbbbb")]);
 
         let terminal = draw(&app, 20, 10);
 
@@ -1299,7 +1207,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
         assert!(reversed_at(&bottom, 6, 14), "after `row 8`");
 
         for _ in 0..7 {
-            key(&mut app, KeyCode::Up);
+            send(&mut app, [press(KeyCode::Up)]);
         }
         let top = draw(&app, 20, 16);
         assert_eq!(box_rows(&top, 8)[1], "│row 1             │");
@@ -1343,7 +1251,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
     #[test]
     fn the_border_asks_before_esc_discards_a_draft() {
         let mut app = box_with("hi", (W, 8));
-        key(&mut app, KeyCode::Esc);
+        send(&mut app, [press(KeyCode::Esc)]);
 
         let rows = box_rows(&draw(&app, W, 8), 3);
 
@@ -1358,7 +1266,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
     #[test]
     fn a_narrow_box_asks_to_discard_in_a_short_hint() {
         let mut app = box_with("hi", (30, 8));
-        key(&mut app, KeyCode::Esc);
+        send(&mut app, [press(KeyCode::Esc)]);
 
         let rows = box_rows(&draw(&app, 30, 8), 3);
 
@@ -1371,7 +1279,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
     #[test]
     fn a_very_narrow_box_still_warns_before_discarding() {
         let mut app = box_with("hi", (20, 8));
-        key(&mut app, KeyCode::Esc);
+        send(&mut app, [press(KeyCode::Esc)]);
 
         let rows = box_rows(&draw(&app, 20, 8), 3);
 
@@ -1437,10 +1345,10 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
             State::Current,
             &[("claude", "Why?")],
         )];
-        let mut app = app_with(lines(3), &threads, 8);
-        key(&mut app, KeyCode::Enter);
-        key(&mut app, KeyCode::Char('r'));
-        type_text(&mut app, "ok");
+        let mut app = app_with(numbered(3), &threads, 8);
+        send(&mut app, [press(KeyCode::Enter)]);
+        send(&mut app, [press(KeyCode::Char('r'))]);
+        typed(&mut app, "ok");
         update(&mut app, Event::SaveFailed(LOCKED.into()));
 
         let terminal = draw(&app, W, 8);
@@ -1454,10 +1362,10 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
 
     #[test]
     fn a_failed_range_comment_shows_its_error_under_the_range_title() {
-        let mut app = app_with(lines(3), &[], 8);
-        keys(&mut app, "vj");
-        key(&mut app, KeyCode::Enter);
-        type_text(&mut app, "ok");
+        let mut app = app_with(numbered(3), &[], 8);
+        typed(&mut app, "vj");
+        send(&mut app, [press(KeyCode::Enter)]);
+        typed(&mut app, "ok");
         update(&mut app, Event::SaveFailed(LOCKED.into()));
 
         let terminal = draw(&app, W, 8);
@@ -1502,7 +1410,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
         assert_eq!(rows[2], "└ctrl+s:save esc:c…┘");
 
         let mut app = box_with("hi", (10, 8));
-        key(&mut app, KeyCode::Esc);
+        send(&mut app, [press(KeyCode::Esc)]);
         let rows = box_rows(&draw(&app, 10, 8), 3);
         assert_eq!(rows[2], "└esc:dis…┘");
     }
@@ -1606,7 +1514,7 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
     fn the_next_key_clears_the_error_and_brings_the_hint_back() {
         let mut app = box_with("hi", (W, 8));
         update(&mut app, Event::SaveFailed(LOCKED.into()));
-        key(&mut app, KeyCode::Char('!'));
+        send(&mut app, [press(KeyCode::Char('!'))]);
 
         let rows = box_rows(&draw(&app, W, 8), 3);
 
@@ -1636,8 +1544,8 @@ plan.md  L1/12  1 outdated  2 changes  enter:thread/comment ]/[:jump q:quit v:s�
 
     #[test]
     fn a_scrolled_view_starts_at_top() {
-        let mut app = app_with(lines(30), &[], 9);
-        key(&mut app, KeyCode::Char('G'));
+        let mut app = app_with(numbered(30), &[], 9);
+        send(&mut app, [press(KeyCode::Char('G'))]);
 
         let screen = screen(&draw(&app, 120, 9));
 
@@ -1678,7 +1586,7 @@ plan.md  L1/2  ente…"
     #[test]
     fn the_cursor_highlight_covers_every_row_of_a_wrapped_line() {
         let mut app = narrow(&["one", LONG, "three"], &[], (20, 7));
-        key(&mut app, KeyCode::Char('j'));
+        send(&mut app, [press(KeyCode::Char('j'))]);
 
         let terminal = draw(&app, 20, 7);
 
@@ -1693,7 +1601,7 @@ plan.md  L1/2  ente…"
 
     #[test]
     fn a_thread_glyph_shows_on_a_wrapped_lines_first_row_only() {
-        let threads = [open_thread("c1", (1, 1), State::Current)];
+        let threads = [view("c1", (1, 1), Status::Open, State::Current)];
         let app = narrow(&[LONG, "short"], &threads, (20, 6));
 
         let terminal = draw(&app, 20, 6);
@@ -1733,10 +1641,10 @@ plan.md  L1/2  ente…"
 
     #[test]
     fn a_table_rows_glyph_and_the_cursor_highlight_cover_that_row_alone() {
-        let threads = [open_thread("c1", (4, 4), State::Current)];
+        let threads = [view("c1", (4, 4), Status::Open, State::Current)];
         let mut app = narrow(&TABLE, &threads, (40, 7));
-        key(&mut app, KeyCode::Char('j'));
-        key(&mut app, KeyCode::Char('j'));
+        send(&mut app, [press(KeyCode::Char('j'))]);
+        send(&mut app, [press(KeyCode::Char('j'))]);
 
         let terminal = draw(&app, 40, 7);
 
@@ -1783,10 +1691,10 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_wrapped_table_lines_glyph_is_on_its_first_row_and_its_highlight_on_all() {
-        let threads = [open_thread("c1", (4, 4), State::Current)];
+        let threads = [view("c1", (4, 4), Status::Open, State::Current)];
         let mut app = narrow(&WIDE_TABLE, &threads, (30, 9));
         for _ in 0..3 {
-            key(&mut app, KeyCode::Char('j'));
+            send(&mut app, [press(KeyCode::Char('j'))]);
         }
 
         let terminal = draw(&app, 30, 9);
@@ -1809,13 +1717,16 @@ plan.md  L1/5  enter:thread/c…"
     fn tiny_terminals_do_not_panic() {
         for width in 0..=3 {
             for rows in 0..=3 {
-                let mut app =
-                    app_with(lines(5), &[open_thread("c1", (1, 2), State::Current)], rows);
+                let mut app = app_with(
+                    numbered(5),
+                    &[view("c1", (1, 2), Status::Open, State::Current)],
+                    rows,
+                );
                 draw(&app, width, rows);
-                key(&mut app, KeyCode::Enter);
+                send(&mut app, [press(KeyCode::Enter)]);
                 draw(&app, width, rows);
-                key(&mut app, KeyCode::Char('a'));
-                type_text(&mut app, "hello");
+                send(&mut app, [press(KeyCode::Char('a'))]);
+                typed(&mut app, "hello");
                 draw(&app, width, rows);
                 draw(&app_with(Vec::new(), &[], rows), width, rows);
             }
@@ -1855,8 +1766,8 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn only_the_cursor_line_is_highlighted() {
-        let mut app = app_with(lines(5), &[], 8);
-        key(&mut app, KeyCode::Char('j'));
+        let mut app = app_with(numbered(5), &[], 8);
+        send(&mut app, [press(KeyCode::Char('j'))]);
 
         let terminal = draw(&app, W, 8);
 
@@ -1954,16 +1865,10 @@ plan.md  L1/5  enter:thread/c…"
             .collect()
     }
 
-    fn keys(app: &mut App, codes: &str) {
-        for c in codes.chars() {
-            key(app, KeyCode::Char(c));
-        }
-    }
-
     #[test]
     fn every_selected_line_is_highlighted_and_no_other() {
-        let mut app = app_with(lines(6), &[], 8);
-        keys(&mut app, "jvjj");
+        let mut app = app_with(numbered(6), &[], 8);
+        typed(&mut app, "jvjj");
 
         let terminal = draw(&app, W, 8);
 
@@ -1976,7 +1881,7 @@ plan.md  L1/5  enter:thread/c…"
     #[test]
     fn a_selected_wrapped_line_is_highlighted_on_all_its_rows() {
         let mut app = narrow(&["one", LONG, "three"], &[], (20, 7));
-        keys(&mut app, "vj");
+        typed(&mut app, "vj");
 
         let terminal = draw(&app, 20, 7);
 
@@ -1986,7 +1891,7 @@ plan.md  L1/5  enter:thread/c…"
     #[test]
     fn a_selected_wrapped_table_line_is_highlighted_on_all_its_rows() {
         let mut app = narrow(&WIDE_TABLE, &[], (30, 9));
-        keys(&mut app, "jjvj");
+        typed(&mut app, "jjvj");
 
         let terminal = draw(&app, 30, 9);
 
@@ -1999,7 +1904,7 @@ plan.md  L1/5  enter:thread/c…"
     #[test]
     fn after_a_resize_the_rewrapped_selection_is_still_exactly_highlighted() {
         let mut app = narrow(&["one", LONG, "three", "four"], &[], (60, 8));
-        keys(&mut app, "jvk");
+        typed(&mut app, "jvk");
         assert_eq!(
             backgrounds(&draw(&app, 60, 8), 4),
             [true, true, false, false]
@@ -2015,8 +1920,8 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn the_visual_footer_shows_the_range_and_its_keys() {
-        let mut app = app_with(lines(12), &[], 8);
-        keys(&mut app, "jvjj");
+        let mut app = app_with(numbered(12), &[], 8);
+        typed(&mut app, "jvjj");
 
         let screen = screen(&draw(&app, W, 8));
 
@@ -2028,8 +1933,8 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn the_visual_footer_orders_an_upward_range() {
-        let mut app = app_with(lines(12), &[], 8);
-        keys(&mut app, "jjjvkk");
+        let mut app = app_with(numbered(12), &[], 8);
+        typed(&mut app, "jjjvkk");
 
         let screen = screen(&draw(&app, W, 8));
 
@@ -2038,9 +1943,9 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_box_from_visual_names_the_range_and_keeps_it_highlighted() {
-        let mut app = app_with(lines(12), &[], 9);
-        keys(&mut app, "jvjj");
-        key(&mut app, KeyCode::Enter);
+        let mut app = app_with(numbered(12), &[], 9);
+        typed(&mut app, "jvjj");
+        send(&mut app, [press(KeyCode::Enter)]);
 
         let terminal = draw(&app, W, 9);
 
@@ -2054,8 +1959,8 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn quit_stays_in_the_normal_footer_on_a_70_column_terminal() {
-        let threads = [open_thread("c1", (1, 1), State::Outdated)];
-        let app = app_with(lines(12), &threads, 8);
+        let threads = [view("c1", (1, 1), Status::Open, State::Outdated)];
+        let app = app_with(numbered(12), &threads, 8);
 
         let screen = screen(&draw(&app, 70, 8));
 
@@ -2066,9 +1971,9 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn cancel_stays_in_the_visual_footer_on_a_70_column_terminal() {
-        let threads = [open_thread("c1", (1, 1), State::Outdated)];
-        let mut app = app_with(lines(12), &threads, 8);
-        keys(&mut app, "vjj");
+        let threads = [view("c1", (1, 1), Status::Open, State::Outdated)];
+        let mut app = app_with(numbered(12), &threads, 8);
+        typed(&mut app, "vjj");
 
         let screen = screen(&draw(&app, 70, 8));
 
@@ -2094,8 +1999,8 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_long_path_is_cut_from_the_left_so_the_counts_show() {
-        let threads = [open_thread("c1", (1, 1), State::Outdated)];
-        let app = app_with(lines(12), &threads, 8).labeled(LONG_PATH);
+        let threads = [view("c1", (1, 1), Status::Open, State::Outdated)];
+        let app = app_with(numbered(12), &threads, 8).labeled(LONG_PATH);
 
         assert_eq!(
             footer(&app, 60),
@@ -2105,8 +2010,8 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn the_path_shrinks_to_an_ellipsis_before_the_counts_are_cut() {
-        let threads = [open_thread("c1", (1, 1), State::Outdated)];
-        let app = app_with(lines(12), &threads, 8).labeled(LONG_PATH);
+        let threads = [view("c1", (1, 1), Status::Open, State::Outdated)];
+        let app = app_with(numbered(12), &threads, 8).labeled(LONG_PATH);
 
         assert_eq!(footer(&app, 20), "…  L1/12  1 outdated");
         assert_eq!(footer(&app, 15), "…  L1/12  1 ou…");
@@ -2114,8 +2019,8 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_path_of_wide_characters_gives_way_by_whole_clusters() {
-        let threads = [open_thread("c1", (1, 1), State::Outdated)];
-        let app = app_with(lines(12), &threads, 8).labeled("/プロジェクト/計画/plan.md");
+        let threads = [view("c1", (1, 1), Status::Open, State::Outdated)];
+        let app = app_with(numbered(12), &threads, 8).labeled("/プロジェクト/計画/plan.md");
 
         // 21 cells for the path: a wide cluster would straddle the edge, so
         // the path takes 20 and the row is a cell short. The screen shows a
@@ -2128,10 +2033,10 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_long_search_is_cut_before_the_path_gives_way() {
-        let mut app = app_with(lines(12), &[], 8);
-        key(&mut app, KeyCode::Char('/'));
-        type_text(&mut app, &"x".repeat(70));
-        key(&mut app, KeyCode::Enter);
+        let mut app = app_with(numbered(12), &[], 8);
+        send(&mut app, [press(KeyCode::Char('/'))]);
+        typed(&mut app, &"x".repeat(70));
+        send(&mut app, [press(KeyCode::Enter)]);
 
         assert_eq!(
             footer(&app, 30),
@@ -2141,16 +2046,16 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn the_visual_and_panel_footers_shorten_the_path_too() {
-        let threads = [open_thread("c1", (1, 1), State::Outdated)];
-        let mut app = app_with(lines(12), &threads, 8).labeled(LONG_PATH);
-        keys(&mut app, "vj");
+        let threads = [view("c1", (1, 1), Status::Open, State::Outdated)];
+        let mut app = app_with(numbered(12), &threads, 8).labeled(LONG_PATH);
+        typed(&mut app, "vj");
 
         assert_eq!(
             footer(&app, 60),
             "…bC123/deep/q3/drafts/plan.md  L2/12  visual 1-2  1 outdated"
         );
 
-        let app = panel_app(&threads).labeled(LONG_PATH);
+        let app = opened_panel(&threads).labeled(LONG_PATH);
         let screen = screen(&draw(&app, 60, 16));
         assert_eq!(
             screen.lines().last().unwrap(),
@@ -2160,7 +2065,7 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_footer_that_fits_exactly_is_drawn_unchanged() {
-        let app = app_with(lines(12), &[], 8);
+        let app = app_with(numbered(12), &[], 8);
         let width = u16::try_from(NORMAL_FOOTER.len()).unwrap();
 
         assert_eq!(footer(&app, width), NORMAL_FOOTER);
@@ -2169,22 +2074,22 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_normal_footer_too_wide_for_the_terminal_ends_in_an_ellipsis() {
-        let app = app_with(lines(12), &[], 8);
+        let app = app_with(numbered(12), &[], 8);
 
         assert_eq!(footer(&app, 30), "plan.md  L1/12  enter:thread/…");
     }
 
     #[test]
     fn a_visual_footer_too_wide_for_the_terminal_ends_in_an_ellipsis() {
-        let mut app = app_with(lines(12), &[], 8);
-        keys(&mut app, "vj");
+        let mut app = app_with(numbered(12), &[], 8);
+        typed(&mut app, "vj");
 
         assert_eq!(footer(&app, 30), "plan.md  L2/12  visual 1-2  e…");
     }
 
     #[test]
     fn a_panel_footer_too_wide_for_the_terminal_ends_in_an_ellipsis() {
-        let app = panel_app(&[open_thread("c1", (1, 1), State::Current)]);
+        let app = opened_panel(&[view("c1", (1, 1), Status::Open, State::Current)]);
 
         let screen = screen(&draw(&app, 30, 16));
 
@@ -2196,7 +2101,7 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_multi_line_error_in_the_footer_is_on_one_row() {
-        let mut app = app_with(lines(12), &[], 8);
+        let mut app = app_with(numbered(12), &[], 8);
         update(
             &mut app,
             Event::SaveFailed("cannot write\nx.json:\tdenied".into()),
@@ -2211,7 +2116,7 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_long_error_in_the_footer_ends_in_an_ellipsis() {
-        let mut app = app_with(lines(12), &[], 8);
+        let mut app = app_with(numbered(12), &[], 8);
         update(
             &mut app,
             Event::SaveFailed(
@@ -2228,8 +2133,8 @@ plan.md  L1/5  enter:thread/c…"
     #[test]
     fn a_long_author_cuts_the_box_title_with_an_ellipsis_before_the_corner() {
         let author = "x".repeat(60);
-        let mut app = App::open(showing(lines(3), &[]), &author, (W, 8)).labeled("plan.md");
-        key(&mut app, KeyCode::Enter);
+        let mut app = App::open(showing(numbered(3), &[]), &author, (W, 8)).labeled("plan.md");
+        send(&mut app, [press(KeyCode::Enter)]);
 
         let rows = box_rows(&draw(&app, W, 8), 3);
 
@@ -2243,23 +2148,23 @@ plan.md  L1/5  enter:thread/c…"
         assert_eq!(box_rows(&draw(&app, 20, 8), 3)[0], "┌Comment on line 1…┐");
 
         let mut app = narrow(&["one", "two"], &[], (20, 8));
-        keys(&mut app, "vj");
-        key(&mut app, KeyCode::Enter);
+        typed(&mut app, "vj");
+        send(&mut app, [press(KeyCode::Enter)]);
         assert_eq!(box_rows(&draw(&app, 20, 8), 3)[0], "┌Comment on lines …┐");
 
-        let threads = [open_thread("c1", (1, 1), State::Current)];
+        let threads = [view("c1", (1, 1), Status::Open, State::Current)];
         let mut app = narrow(&["one", "two"], &threads, (20, 16));
-        key(&mut app, KeyCode::Enter);
-        key(&mut app, KeyCode::Char('r'));
+        send(&mut app, [press(KeyCode::Enter)]);
+        send(&mut app, [press(KeyCode::Char('r'))]);
         let screen = screen(&draw(&app, 20, 16));
         assert!(screen.contains("┌Reply to c1 as sc…┐"), "{screen}");
     }
 
     #[test]
     fn a_panel_title_too_wide_for_a_narrow_panel_ends_in_an_ellipsis() {
-        let threads = [open_thread("c1", (1, 1), State::Current)];
+        let threads = [view("c1", (1, 1), Status::Open, State::Current)];
         let mut app = narrow(&["one", "two"], &threads, (15, 16));
-        key(&mut app, KeyCode::Enter);
+        send(&mut app, [press(KeyCode::Enter)]);
 
         let screen = screen(&draw(&app, 15, 16));
 
@@ -2268,9 +2173,9 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_one_line_selection_still_says_line() {
-        let mut app = app_with(lines(12), &[], 8);
-        keys(&mut app, "jjv");
-        key(&mut app, KeyCode::Enter);
+        let mut app = app_with(numbered(12), &[], 8);
+        typed(&mut app, "jjv");
+        send(&mut app, [press(KeyCode::Enter)]);
 
         let screen = screen(&draw(&app, W, 8));
 
@@ -2289,20 +2194,20 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn the_search_prompt_replaces_the_footer_with_the_query_and_a_note() {
-        let mut app = app_with(lines(12), &[], 8);
-        keys(&mut app, "/line 9");
+        let mut app = app_with(numbered(12), &[], 8);
+        typed(&mut app, "/line 9");
         assert_eq!(footer(&app, W), "/line 9");
-        keys(&mut app, "9");
+        typed(&mut app, "9");
         assert_eq!(footer(&app, W), "/line 99 [no match]");
-        let mut app = app_with(lines(12), &[], 8);
-        keys(&mut app, "G/line 2");
+        let mut app = app_with(numbered(12), &[], 8);
+        typed(&mut app, "G/line 2");
         assert_eq!(footer(&app, W), "/line 2 [wrapped]");
     }
 
     #[test]
     fn a_query_wider_than_the_row_shows_its_tail_and_drops_the_note() {
-        let mut app = app_with(lines(12), &[], 8);
-        keys(&mut app, "/abcdefghij");
+        let mut app = app_with(numbered(12), &[], 8);
+        typed(&mut app, "/abcdefghij");
         assert_eq!(footer(&app, 8), "…defghij");
         assert_eq!(footer(&app, 6), "…fghij");
         assert_eq!(footer(&app, 3), "…ij");
@@ -2313,8 +2218,8 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_wide_character_query_is_cut_whole() {
-        let mut app = app_with(lines(12), &[], 8);
-        keys(&mut app, "/日本語");
+        let mut app = app_with(numbered(12), &[], 8);
+        typed(&mut app, "/日本語");
         // The screen helper shows a wide cell's spacer as a blank.
         assert_eq!(footer(&app, 6).replace(' ', ""), "…本語");
         assert_eq!(footer(&app, 4).replace(' ', ""), "…語");
@@ -2322,30 +2227,30 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn the_normal_footer_shows_the_active_search_and_the_hint() {
-        let mut app = app_with(lines(12), &[], 8);
+        let mut app = app_with(numbered(12), &[], 8);
         assert!(footer(&app, 200).ends_with("/:search ?:help"));
-        keys(&mut app, "/line 3");
-        key(&mut app, KeyCode::Enter);
+        typed(&mut app, "/line 3");
+        send(&mut app, [press(KeyCode::Enter)]);
         assert!(footer(&app, 200).contains("L3/12  /line 3  enter"));
     }
 
     #[test]
     fn matches_are_drawn_reversed_and_only_while_a_search_is_active() {
-        let mut app = app_with(lines(12), &[], 8);
+        let mut app = app_with(numbered(12), &[], 8);
         assert_eq!(reversed_cells(&draw(&app, W, 8)), 0);
-        keys(&mut app, "/line 2");
+        typed(&mut app, "/line 2");
         assert_eq!(reversed_cells(&draw(&app, W, 8)), "line 2".len());
-        key(&mut app, KeyCode::Enter);
+        send(&mut app, [press(KeyCode::Enter)]);
         assert_eq!(reversed_cells(&draw(&app, W, 8)), "line 2".len());
-        key(&mut app, KeyCode::Esc);
+        send(&mut app, [press(KeyCode::Esc)]);
         assert_eq!(reversed_cells(&draw(&app, W, 8)), 0);
     }
 
     #[test]
     fn a_tiny_terminal_does_not_panic_in_the_prompt() {
         for (w, h) in [(20, 4), (1, 1), (80, 24)] {
-            let mut app = app_with(lines(12), &[], h);
-            keys(&mut app, "/line 1");
+            let mut app = app_with(numbered(12), &[], h);
+            typed(&mut app, "/line 1");
             draw(&app, w, h);
         }
     }
@@ -2354,8 +2259,8 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn help_replaces_the_file_with_the_listing_at_80_by_24() {
-        let mut app = app_with(lines(12), &[], 24);
-        key(&mut app, KeyCode::Char('?'));
+        let mut app = app_with(numbered(12), &[], 24);
+        send(&mut app, [press(KeyCode::Char('?'))]);
 
         let screen = screen(&draw(&app, 80, 24));
 
@@ -2372,20 +2277,20 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn help_scrolls_through_a_listing_taller_than_the_window() {
-        let mut app = app_with(lines(12), &[], 10);
-        key(&mut app, KeyCode::Char('?'));
+        let mut app = app_with(numbered(12), &[], 10);
+        send(&mut app, [press(KeyCode::Char('?'))]);
         let top = screen(&draw(&app, 80, 10));
         assert!(!top.contains("Thread panel"), "{top}");
 
-        key(&mut app, KeyCode::Char('j'));
+        send(&mut app, [press(KeyCode::Char('j'))]);
         assert_ne!(screen(&draw(&app, 80, 10)), top);
 
-        key(&mut app, KeyCode::Char('G'));
+        send(&mut app, [press(KeyCode::Char('G'))]);
         let end = screen(&draw(&app, 80, 10));
         assert!(end.contains("close the panel"), "{end}");
         assert!(end.lines().nth(8).is_some_and(|r| !r.is_empty()), "{end}");
 
-        key(&mut app, KeyCode::Char('g'));
+        send(&mut app, [press(KeyCode::Char('g'))]);
         assert_eq!(screen(&draw(&app, 80, 10)), top);
     }
 
@@ -2413,8 +2318,8 @@ plan.md  L1/5  enter:thread/c…"
                     }
                 }
             }
-            let mut app = app_with(lines(12), &[], 24);
-            key(&mut app, KeyCode::Char('?'));
+            let mut app = app_with(numbered(12), &[], 24);
+            send(&mut app, [press(KeyCode::Char('?'))]);
             assert!(
                 screen(&draw(&app, width, 24))
                     .lines()
@@ -2427,10 +2332,10 @@ plan.md  L1/5  enter:thread/c…"
     fn help_on_tiny_terminals_does_not_panic() {
         for width in 0..=3 {
             for rows in 0..=3 {
-                let mut app = app_with(lines(5), &[], rows);
-                key(&mut app, KeyCode::Char('?'));
+                let mut app = app_with(numbered(5), &[], rows);
+                send(&mut app, [press(KeyCode::Char('?'))]);
                 draw(&app, width, rows);
-                key(&mut app, KeyCode::Char('G'));
+                send(&mut app, [press(KeyCode::Char('G'))]);
                 draw(&app, width, rows);
             }
         }
@@ -2438,7 +2343,7 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn the_help_hint_is_the_first_to_go_in_a_narrow_footer() {
-        let app = app_with(lines(12), &[], 8);
+        let app = app_with(numbered(12), &[], 8);
 
         assert!(footer(&app, 70).contains("q:quit"));
         assert!(!footer(&app, 70).contains("?:help"));
@@ -2447,24 +2352,11 @@ plan.md  L1/5  enter:thread/c…"
 
     // --- the review banner ---
 
-    fn status(state: ReviewState, note: Option<&str>) -> ReviewStatus {
-        let latest = note.map(|note| Entry {
-            event: LogEvent::HandOff,
-            side: Side::Human,
-            author: "scott".into(),
-            created_at: "2026-10-12T10:00:00Z".into(),
-            revision: "r1".into(),
-            next_id: 1,
-            note: Some(note.into()),
-        });
-        ReviewStatus { state, latest }
-    }
-
     fn banner(review: ReviewStatus, width: u16) -> String {
         let app = App::open(
             View {
                 review,
-                ..showing(lines(3), &[])
+                ..showing(numbered(3), &[])
             },
             "scott",
             (width, 6),
@@ -2479,7 +2371,7 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_fresh_review_shows_your_turn_and_the_hand_off_keys_on_top() {
-        let app = app_with(lines(3), &[], 6);
+        let app = app_with(numbered(3), &[], 6);
 
         let screen = screen(&draw(&app, W, 6));
 
@@ -2490,7 +2382,7 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn during_the_agents_turn_the_banner_shows_the_latest_note() {
-        let review = status(ReviewState::Turn(Side::Agent), Some("Over to you"));
+        let review = review_status(ReviewState::Turn(Side::Agent), Some("Over to you"));
 
         assert_eq!(
             banner(review, W),
@@ -2500,7 +2392,7 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_closed_review_shows_its_verdict_and_the_reopen_key() {
-        let review = status(ReviewState::Closed(Verdict::Approved), None);
+        let review = review_status(ReviewState::Closed(Verdict::Approved), None);
 
         assert_eq!(
             banner(review, W),
@@ -2510,8 +2402,8 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn a_long_or_multi_line_note_is_cut_on_one_row() {
-        let multi = status(ReviewState::Turn(Side::Human), Some("First line\nsecond"));
-        let long = status(ReviewState::Turn(Side::Human), Some(&"word ".repeat(30)));
+        let multi = review_status(ReviewState::Turn(Side::Human), Some("First line\nsecond"));
+        let long = review_status(ReviewState::Turn(Side::Human), Some(&"word ".repeat(30)));
 
         assert_eq!(
             banner(multi, W),
@@ -2530,17 +2422,10 @@ plan.md  L1/5  enter:thread/c…"
 
     // --- hand-off and close boxes ---
 
-    fn shift_key(app: &mut App, c: char) {
-        update(
-            app,
-            Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)),
-        );
-    }
-
     #[test]
     fn the_hand_off_box_says_what_saving_does() {
-        let mut app = app_with(lines(3), &[], 8);
-        shift_key(&mut app, 'H');
+        let mut app = app_with(numbered(3), &[], 8);
+        send(&mut app, [shift('H')]);
 
         let rows = box_rows(&draw(&app, W, 8), 3);
 
@@ -2556,33 +2441,30 @@ plan.md  L1/5  enter:thread/c…"
 
     #[test]
     fn the_close_box_title_follows_the_verdict() {
-        let mut app = app_with(lines(3), &[], 8);
-        shift_key(&mut app, 'C');
+        let mut app = app_with(numbered(3), &[], 8);
+        send(&mut app, [shift('C')]);
         let title = |app: &App| box_rows(&draw(app, W, 8), 3)[0].clone();
 
         assert!(title(&app).starts_with("┌Close as ? (tab: approved / dropped)─"));
         assert!(
             box_rows(&draw(&app, W, 8), 3)[2].starts_with("└tab:verdict ctrl+s:close esc:cancel─")
         );
-        key(&mut app, KeyCode::Tab);
+        send(&mut app, [press(KeyCode::Tab)]);
         assert!(title(&app).starts_with("┌Close as approved (tab: approved / dropped)─"));
-        key(&mut app, KeyCode::Tab);
+        send(&mut app, [press(KeyCode::Tab)]);
         assert!(title(&app).starts_with("┌Close as dropped (tab: approved / dropped)─"));
     }
 
     #[test]
     fn approving_with_open_threads_asks_on_the_border() {
         let threads = [
-            open_thread("c1", (1, 1), State::Current),
-            open_thread("c2", (2, 2), State::Current),
+            view("c1", (1, 1), Status::Open, State::Current),
+            view("c2", (2, 2), Status::Open, State::Current),
         ];
-        let mut app = app_with(lines(3), &threads, 8);
-        shift_key(&mut app, 'C');
-        key(&mut app, KeyCode::Tab);
-        update(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
-        );
+        let mut app = app_with(numbered(3), &threads, 8);
+        send(&mut app, [shift('C')]);
+        send(&mut app, [press(KeyCode::Tab)]);
+        send(&mut app, [ctrl('s')]);
 
         let rows = box_rows(&draw(&app, W, 8), 3);
 
