@@ -3,6 +3,11 @@
 //! [`update`] does no I/O and reads no clock: it turns an [`Event`] into a
 //! state change and, at most, an [`Effect`] for the driver to perform.
 //!
+//! The driver never patches this state after a write: it re-reads the one
+//! [`View`] and sends it back, so the screen shows what is on disk. After
+//! every event the cursor line is on screen (wrapped rows counted), and in
+//! [`Mode::Input`] the draft's cursor row is in the box.
+//!
 //! This module holds the types, [`update`] and the modifier helper; each
 //! submodule adds an `impl App` block for one concern:
 //!

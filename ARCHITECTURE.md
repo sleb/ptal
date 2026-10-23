@@ -462,338 +462,101 @@ types, so changing them is a `schema_version` bump.
 
 **Role:** the human front end (ratatui; crossterm via `ratatui::crossterm`).
 Depends on `review` and `model` (and the crate-wide `error`), never on
-`store`.
+`store`. Everything but the driver is pure: state in, state or rows out. The
+types, fields and variants are in rustdoc (`cargo doc --open`, start at
+`ptal::tui::app::App`); this section keeps what each part owns, the contract
+others rely on, and the invariants.
 
-Its parts:
-
-- `tui::app`: the types, `update` and the `Mods` and `Scroll` key helpers are
-  in `app/mod.rs` (with the probe test that the key listing matches the
-  handlers); each submodule adds an `impl App` block and its own tests:
-  `state` (opening, re-reads, what the screen asks of the state), `layout`
-  (rows, widths, wrapped rows and the view clamps), `normal` (Normal and
-  Visual keys), `find` (the `/` prompt and `n`/`N`), `threads` (the panel),
-  `input` (the comment box) and `overlay` (help and the review overlay); test
-  helpers only the submodules share are in `app::fixtures`, and those shared
-  across `tui` modules in `tui::test_support`. Together they hold the
-  `App` state (`lines`, their `tables` rows from `tui::table` at
-  `text_width()`, recomputed on open, on resize and when a re-read changes the
-  lines, their `stylings` from `tui::highlight`, computed by
-  `App::highlighted(true)` and again when a re-read changes the lines (the
-  `highlight` flag remembers which), `seen`, the content hash of the lines
-  shown, `cursor`, `top`, terminal `cols` and `rows`, `mode`, `author`, every
-  thread of the file including resolved and outdated ones, the `review`'s
-  `ReviewStatus`, the `changes` since the human's last look (`View.changes`,
-  one `anchor::Change` per hunk; `change(line)` is a line's `ChangeKind`),
-  footer `status`, the active `search` query, the `help` and review overlay
-  listings laid out for `cols`, the `file` label), built only by
-  `App::open(view, author, (cols, rows))` from one `review::View` (its lines,
-  `sha256` as `seen`, threads, review and changes; `revision` is ignored),
-  applied by the same re-read as an `Event::Refreshed` from no text, the
-  cursor at the top, `Mode = Normal | Visual { anchor } | Search { query,
-  anchor, origin, hit } | Panel { selected, scroll } | Input { draft,
-  discard_asked, back, target } | Overlay { kind, back, scroll }` (`kind` is
-  `Overlay::Help | Review`, and its `back` is an `OverlayBack`: `Normal |
-  Panel { selected, scroll }`; `target` is what saving the box writes:
-  `Target::NewThread | Reply(id) | HandOff | Close { verdict, confirm_asked
-  }`) (`draft` is a `tui::draft::Draft`; `back` is the `Back` the box returns
-  to on `esc`: `Normal | Panel { selected, scroll } | Visual { anchor }`), and
-  `update(&mut App, Event) -> Option<Effect>`. In `Visual` the cursor is the
-  selection's moving end and `anchor` its fixed one (0-based file lines), so
-  Normal and Visual share one movement helper and the view clamp keeps the
-  moving end on screen; `selection()` is the ordered `(first, last)` of the
-  two in `Visual` and in a box opened from it (the range stays fixed while
-  typing), else the cursor line alone. That movement helper, the overlays and
-  the panel read their scroll keys through one `Scroll::of(key)` (`Up | Down |
-  HalfUp | HalfDown | Top | Bottom`: `j`/`k`/`g`/`G`, `↓`/`↑` and `End`/`Home`
-  without ctrl, `ctrl+d`/`ctrl+u`, and `PgDn`/`PgUp` with any modifiers); each
-  mode maps the intent to its own move, and the panel takes only `Up` and
-  `Down`. `]`/`[` and `}`/`{` jump with one `nearest(sorted, from, forward)`,
-  over the covered lines and the change starts. `enter` in `Visual` always
-  opens a box for a new thread on the selection, never the panel; a save from
-  it goes to Normal. In `Input`, `enter` inserts a newline and `ctrl+s` (or
-  `ctrl+S`) saves the draft as typed less trailing whitespace and leading
-  blank lines (one that is only whitespace and newlines saves nothing). `esc`
-  or `ctrl+c` returns to `back` at once on a blank draft; otherwise the first
-  sets `discard_asked` and only a second discards, any other key (or a paste)
-  clearing it. A paste in `Input` goes in through `Draft::paste` and clears
-  `status` as a key does; in every other mode it is ignored, `status`
-  included. The box is as tall as its draft's rows at `draft_width()`
-  (terminal columns less the border and one cell for a cursor after a full
-  row), at least 1, capped at `min(10, rows / 2 - 2)` (at least 1), plus its 2
-  border rows; the view shrinks to stay above it. A thread covers its range as
-  `view` maps it to the file as last re-read, whatever its `state`, so an
-  outdated thread sits at its best-guess lines; `Marker = Waiting | Open |
-  Resolved` is derived per line (waiting > open > resolved). Waiting is
-  `Thread::is_waiting_on(author)`. The panel's thread set is recomputed from
-  the threads and the cursor, never cached. `screen_rows()` maps the view to
-  `ScreenRow { line, first, text }`, filling the view height from `top` with
-  each line's rows at `text_width()` (terminal columns minus the gutter, at
-  least 1): its `tables` rows when it has them, in the line's whole-line style
-  only, else the `tui::wrap` rows of the raw line with its styling applied.
-  `text` is a styled ratatui `Line`; styling never changes a row's text, so
-  layout, the clamp and every key behave the same highlighted or not. `render`
-  draws from it, and the view clamp in `update` counts the same rows;
-  `lines()` stays the raw file. `Event` is `Key | Resize | Saved { id, done,
-  view } | ReviewSaved { message, view } | SaveFailed | Refreshed(view) |
-  RefreshFailed(message) | Paste(text)` (the terminal's bracketed paste),
-  where `view` is the one `review::View` the driver read back after the write,
-  or after noticing the other side's writes for `Refreshed`; the app takes its
-  lines, `sha256`, threads, review and changes and ignores `revision`. All
-  three apply it the same way: when the lines changed, the cursor, `top`, a
-  Visual (or a box from Visual) `anchor` and the search prompt's `anchor`,
-  `origin` and `hit` are mapped through an `anchor::Diff` from the old lines
-  to the new (inserted lines above you leave you on the same text; an edited
-  line goes to the best guess), then clamped, so an anchor past a shrunk file
-  is clamped with the cursor; mapping from no lines (opening, or an empty
-  file) starts at the top. Tables and styling are recomputed. The panel, and
-  the panel a reply box returns to (`Back::Panel`), keep their selected thread
-  by id: at its new index on the cursor line, or, when the thread now starts
-  elsewhere, by moving the cursor to its first line; a thread that is gone
-  leaves the index to the clamp, and the panel closes when the line has no
-  threads left. A draft is never touched; a close box's `confirm_asked` is
-  cleared (its open-thread count may be stale), `discard_asked` and `status`
-  are kept. `Refreshed` changes nothing else, and `done` (a
-  `review::ThreadWrite`) picks the footer message and `id` is always the
-  thread id; `Effect` is `Add { start, end, body } | Reply { id, body } |
-  Resolve { id } | Reopen { id } | HandOff { note } | Close { verdict, note }
-  | ReopenReview | Quit`, where `start..=end` is 1-based (`start == end` for
-  one line). The target thread id is captured when `r`, `x` or `o` is pressed,
-  never an index; `x` on a resolved thread and `o` on an open one are refused
-  in `update` with a footer message. `update` does no I/O and reads no clock.
-  `H` opens a box with `Target::HandOff` and `C` one with `Target::Close`;
-  both save on `ctrl+s` even when blank (no note), unlike a comment. In a
-  close box `tab` cycles the verdict (`approved`, `dropped`, `approved`);
-  `ctrl+s` with `approved` and open threads first sets `confirm_asked` and
-  returns nothing, a second `ctrl+s` sends `Close`, and any other key clears
-  it. A close with no verdict is still sent, as `verdict: None`, so the core's
-  `MissingVerdict` is the one rule. `O` sends `ReopenReview` at once. The TUI
-  never checks the turn itself: its state can be a refresh behind, so the core
-  decides and a refusal shows like any failed write. `ReviewSaved` stores the
-  re-read threads, state and changes (a hand-off or close makes the current
-  content the last look, so its changes are empty and the markers clear),
-  returns to Normal and shows `message` in the footer.
-- `tui::draft`: `Draft { text, cursor, goal, scroll }`, pure, no widgets:
-  the comment being typed. `text` holds printable characters, `\t` and
-  `\n` only, so `wrap` drops none of it and rows are byte ranges of it; a
-  zero-width cluster has a range but no cell. `insert` refuses every
-  control character, so a tab is never typed; `paste(text)` inserts at the
-  cursor in one step, making `\r\n`, `\r` and `\n` each a `\n`, keeping
-  `\t` and dropping every other control character, then leaves the cursor
-  after it (on a boundary). A tab is one cluster four cells wide, drawn as
-  four spaces.
-  `cursor` is a byte offset that always sits on a grapheme cluster boundary
-  (`wrap::clusters`, plus each `\n` as its own cluster): `←`/`→`,
-  `backspace` and `delete` move over or remove one whole cluster, and an
-  edit that leaves the cursor inside a cluster (a typed joiner, or a removal
-  that lets two halves of a flag pair up) moves it to that cluster's end. `rows(width)` is each line (split on `\n`) wrapped by
-  `wrap::row_ranges`, as byte ranges of `text`, an empty line or trailing
-  `\n` giving one empty row; `cursor_at(width)` is the cursor's (row,
-  column in cells). An offset at a soft break shows at the start of the next
-  row, and one on hanging whitespace in cell `width`. The width is always
-  passed in, never cached, so `Draft` stays plain data (and `Mode` `Eq`).
-  `scroll` is the first row the box shows; `App` calls
-  `clamp_scroll(width, height)` after every event with the box's width and
-  text rows, so the draft holds where it is scrolled, not how it is laid
-  out.
-  `up(width)`/`down(width)` move by screen row (wrapped rows and lines
-  alike) to the last boundary at or before a sticky goal column (`goal`,
-  in cells, kept across consecutive `↑`/`↓` and cleared by any other edit or
-  move); on a soft-wrapped row that is at most the start of its last
-  cluster. `home`/`end` go to the ends of the cursor's whole line, not its
-  screen row.
-- `tui::panel`: `layout(threads, selected, width) -> Layout { lines,
-  thread_starts }`, pure. Per thread: header (`c3 open`, `c3 open · outdated`,
-  `c3 resolved by claude`), `> ` quote lines, then each comment's
-  `author · YYYY-MM-DD HH:MMZ` and body. Every row is wrapped by
-  `tui::wrap::plain_rows`, one source line at a time, so newlines and blank
-  lines are kept and whitespace shows as written. Text fits the panel by
-  cells; only hanging whitespace at a break is clipped, and a single cluster
-  wider than the room after its indent overflows. `update` clamps scroll
-  from `lines.len()`; `render` draws a slice.
-- `tui::wrap`: `rows(&Line, width) -> Vec<Line>`, pure, the only place the
-  TUI wraps text; `plain_rows(text, width) -> Vec<String>` and
-  `row_count(text, width)` run the same algorithm on unstyled text (table
-  cells, thread panel rows, and the view clamp, which counts rows without
-  building them); `row_ranges(text, width)` gives each row's byte range and
-  `clusters(text)` each drawn cluster's, for the comment draft, whose text
-  has no control characters but tabs: each range, its tabs expanded, is the
-  `plain_rows` row.
-  Breaks after the last whitespace that fits, hard-breaks a word wider than
-  a row, and leaves whitespace at a break hanging on the end of its row, so
-  the rows join back to the displayed line. A tab is one cluster four cells
-  wide (ratatui would drop it), kept in place while segmenting and expanded
-  to four spaces only in the returned rows, so the draft (which keeps its
-  tabs) wraps exactly as its saved text does; other control characters are
-  dropped. Widths are measured as ratatui draws
-  (`styled_graphemes`, `CellWidth`), segmenting the whole line at once, so a
-  grapheme cluster is never split, even across two spans. Every cluster
-  keeps its style (a straddling one takes its first byte's), so a styled
-  line wraps into exactly the rows of its plain text. `width(text)` is the
-  same measure on one unbounded row. `cut(text, room)` and `tail(text,
-  room)` are the only places one-row text is cut to fit: `cut` keeps the
-  start, `tail` the end. `cut` returns the text as drawn (tabs as four
-  spaces, control characters dropped): all of it if its `width` fits, else
-  the longest prefix of whole clusters that leaves a cell for `…`, then `…`,
-  so a wide cluster that would straddle the cut is dropped whole and the
-  result is never wider than `room`. One cell is `…` alone; zero cells is
-  empty. The result is borrowed exactly when it is the text unchanged, so a
-  caller holding an owned copy can keep it. `tail(text, room)` is the same
-  from the other end — all of it if it fits, else `…` and the longest
-  suffix of whole clusters, owned either way — for the search prompt, which
-  keeps the query's end visible.
-- `tui::table`: `align(lines, width) -> Vec<Option<Vec<String>>>`, pure, the
-  only place tables are parsed: one entry per file line, that line's screen
-  rows if it belongs to a well-formed table that lays out in `width`, else
-  `None`. A GFM subset: a header and a `|---|:-:|`
-  delimiter with equal cell counts, a body up to the first blank, pipeless
-  or fence line; `\|` is a pipe in a cell; lines in ```` ``` ```` / `~~~`
-  fences or indented 4+ columns are never tables; a ragged body row leaves
-  the whole block raw. A table that fits keeps its natural column widths;
-  one too wide shares `width` max-min fairly (narrow columns keep their
-  width, the rest split what is left), each column at least
-  `min(natural, MIN_COLUMN)` cells or the whole table is `None`. Cells are
-  wrapped by `wrap::rows` inside their column, padded by `wrap::width`
-  (left, right or center, each piece on its own) and joined by ` │ `; a line
-  takes as many rows as its tallest cell, shorter cells top-aligned. The
-  delimiter is one row of `─` runs joined by `┼`. Every row of a table is
-  equally wide, so the `App` shows a table laid out or raw as a whole.
-- `tui::keys`: the help listing. `HELP: &[Section]` is a `const` table of
-  every key bound in Normal mode and the thread panel (`Entry { keys, what }`,
-  with aliases in one label such as `j/k, ↓/↑`), and `rows(width)` lays it out
-  (keys beside the description, or stacked in a narrow window; nothing is
-  cut). `Mode::Overlay { kind: Help, back, scroll }` shows it full-screen,
-  opened by `?` from Normal or the panel (not from Visual, Search or the box,
-  where `?` is text or unbound); `back` is an `OverlayBack`, `Normal` or
-  `Panel`, and closing returns there untouched; `?`/`esc`/`q`/`ctrl+c` close,
-  `j`/`k`, `ctrl+d`/`ctrl+u`, `PgDn`/`PgUp`, `g`/`G`, `Home`/`End` scroll,
-  clamped in `update`. `i` in Normal opens the other overlay, `kind: Review`:
-  the state as a header, what the latest log entry was, by whom (and which
-  side), when and on which revision, then its whole note, wrapped; it scrolls
-  and closes the same way, with `i` in place of `?`. The handlers are not
-  table-driven; every handler reads a key's modifiers through one private
-  `Mods` helper (`ctrl`, `chord`, `shift`), never `KeyEvent::modifiers`.
-  Terminals report AltGr as ctrl+alt, so `Mods::of` reads a character typed
-  with ctrl+alt as that character with no modifiers: every mode treats it as
-  the plain key and no ctrl chord fires from it. Named keys keep ctrl+alt; a
-  probe test in `tui::app` presses every candidate key in each
-  section's fixture and fails when a key does something unlisted or a listed
-  key does nothing.
-- `tui::search`: `find(line, query) -> Vec<Range<usize>>` and
-  `emphasize(Line, ranges) -> Line`, pure. Matching is smart-case and folds
-  one `char` at a time, so ranges are valid byte ranges of the line (`ß`/`SS`
-  does not match). `Mode::Search` is the `/` prompt, opened from Normal
-  (`anchor: None`) or Visual (`anchor: Some`, so the live jumps extend the
-  selection and `enter`/`esc` return to it). `origin` is the `(cursor, top)`
-  at `/`; every edit to the query re-searches from `origin` (never from the
-  live cursor) for the first matching line strictly after it, wrapping, and
-  moves the cursor there like `]`; `esc` restores `origin`, `enter` keeps the
-  position and sets `App.search` (even if nothing matched). `n`/`N` live in
-  the shared `movement` helper, so Visual gets them; they search the raw file
-  lines (never gutter or comments) and a table line on its laid-out rows,
-  so every jump lands on something highlighted; one stop per line. The file view applies `emphasize` (reverse video, patched over the
-  existing style) to the styled line before wrapping, so wrapped rows carry
-  it; a match split across two wrapped table rows is neither found nor
-  marked. The prompt replaces the footer row: `/query` (its tail, after `…`,
-  when too wide) plus ` [no match]` or ` [wrapped]` only when that fits whole. Backspace on an empty query
-  leaves the prompt. `n`/`N` ignore ctrl/alt chords (an AltGr-typed `n` repeats); the prompt
-  takes AltGr characters as text by the same `Mods` rule as `tui::app`.
-- `tui::render`: `render(&App, &mut Frame)`, pure over state. One file line
-  is one or more screen rows (word-wrapped by `tui::wrap`, tabs shown as four
-  spaces). A well-formed markdown table shows aligned, in place; one too
-  wide for the view wraps its cells inside their columns. Each table line is
-  still one number, glyph and highlight, over all of its rows. Gutter: `●` open, `◆` waiting on you (yellow), `○` resolved (dim),
-  then a change glyph in its own column, `┃` (green) on a line added or
-  edited since the human's last look and `-` (red) where text was removed,
-  then the line number, then `│`; the glyphs and number show on a line's first
-  row only, continuation rows keep just the `│`. Both glyphs are patched over
-  the row's style, so they keep the cursor background. The cursor highlight covers
-  every row of every selected line (`App::selection()`: the cursor line, or
-  the whole `Visual` range, also while its comment box is open), wrapped and
-  table rows included; the moving end gets no separate mark. A highlighted
-  line's text is drawn with its styles patched over the row's, so the cursor
-  `bg` shows under markdown styling; styling sets no backgrounds and never
-  touches the gutter, and `DIM` is dropped on highlighted rows, where faint
-  text on the cursor background is hard to read.
-  Banner: the top row in every mode but an overlay, so the file view
-  starts one row down and its height is the rows left after the banner and
-  the chrome below. It reads `your turn`, `agent's turn` or
-  `closed: <verdict>`, then ` · <author>: <note>` when the latest entry has
-  a note (its first line, with `…` when there are more lines), bold and
-  `wrap::cut` to leave room for the key hint flush right (`H:hand off
-  C:close` on your turn, `C:close` on the agent's, `O:reopen` when closed);
-  a row too narrow for both drops the hint.
-  Footer: path (or the last save message, on one row as on the comment
-  box's border),
-  `L<line>/<total>`, `visual <a>-<b>` in `Visual` (1-based, ascending),
-  `N outdated` (open threads only), `N changes` (hunks since the last
-  look, `1 change` for one, nothing when there are none), `/query` while a
-  search is active, key hints, the whole row `wrap::cut` to the terminal
-  width, so a footer too wide ends in `…`. The search and the hints give way
-  first; when the path and the counts alone don't fit, they are dropped and the path
-  keeps its end after `…` (`wrap::tail`), down to `…` alone, before the counts
-  are cut. A save message in place of the path is not shortened; it keeps its
-  start like the rest of the row. The input box is titled
-  `Comment on line N as <author>`, `Comment on lines A-B as <author>` for a
-  range, `Reply to <id> as <author>`, `Hand off to the agent (note
-  optional)`, or `Close as <verdict or ?> (tab: approved / dropped)`; its
-  bottom border's hint names what saving does (`ctrl+s:hand off`,
-  `tab:verdict ctrl+s:close`), and a close waiting to confirm shows
-  `N open threads stay open: ctrl+s again to approve` there (after a
-  pending error or discard prompt). In `Panel`
-  a bordered box of half the terminal (at least 4 rows), titled
-  `Threads on line N`, sits above the footer and the view shrinks to stay
-  above it. A title too wide for its box is `wrap::cut` to end in `…`
-  before the corner. In `Input` the bordered box
-  replaces the footer (and hides the panel it came from), as tall as
-  `App` says; it draws the draft's `rows(draft_width())` from its `scroll`
-  (tabs expanded to four spaces, as the cursor counts them),
-  so text wraps inside the border exactly as `update` counts it, the cursor
-  is a reversed cell at `cursor_at`, and the bottom border reads
-  `ctrl+s:save enter:newline esc:cancel` (`ctrl+s:save esc:cancel` when
-  that does not fit), or, while `discard_asked`, `esc:discard the draft  any
-  other key:keep it` (`esc:discard other:keep`, then `esc:discard?`, when
-  that does not fit; widths in cells), or, after a failed save, the error
-  message (`status`, red and bold, each run of whitespace and control
-  characters drawn as one space; one that is left with no text keeps the
-  hint) until the next key clears it. `status` wins over the discard
-  prompt, which wins over the hint. Border text (error or hint) that does
-  not fit between the corners is `wrap::cut`, so it ends in `…` and a wide
-  character that would cross the corner is left out whole.
-- `tui` (module root): the driver. `load` returns the one `Reviews::view`
-  (the lines, their hash, all threads, the review's state and the changes
-  since the last look), so they come from the same read of the file, and
-  before the terminal is touched; `open` builds the `App` from that `View`
-  (`App::open`), labels it with the file, and highlights it only when it is
-  markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
-  `color_wanted(NO_COLOR)`, read once at startup); `step(app, event, reviews, file, author)` is the only
-  place effects are performed (`Add` → `Reviews::against(app.seen()).add_thread`, `Reply` →
-  `Reviews::reply`, `Resolve`/`Reopen` → `Reviews::resolve`/`reopen` with no
-  note, then `Reviews::view(file, true)` → `Event::Saved`; `HandOff` →
-  `against(app.seen()).hand_off` as `Side::Human`, `Close` →
-  `against(app.seen()).close`,
-  `ReopenReview` → `Reviews::reopen_review` as `Side::Human`, then the same
-  re-read → `Event::ReviewSaved`, whose message for a hand-off lists the
-  `waiting` threads). A write refused with `FileChanged` re-reads the view
-  at once (`Event::Refreshed`) and then reports the error as `SaveFailed`,
-  so the draft and mode stay, the footer says `the file changed: look
-  again`, and the next save is made against what is now shown.
-  `refresh(app, reviews, file, &mut Watch) -> bool` is the live refresh:
-  it takes `Reviews::stamp` and, only when it differs from the `Watch`'s
-  last one (`None` at first), runs a full `view` and sends
-  `Event::Refreshed`. A stamp or view that fails (an editor's save briefly
-  removing the file) changes nothing and the next check retries; after
-  `REFRESH_FAILURES_SHOWN` failures in a row it sends
-  `Event::RefreshFailed("can't refresh: …")` once, which sets the footer
-  `status`. It never writes. `run` is the loop on a `TerminalSession`: draw, `event::poll`
-  until the next check is due (`POLL_INTERVAL` after the last), `step` the
-  event if one came, and `refresh` once the check is due, whether or not
-  keys arrived, so typing can't starve it. It redraws only after an event
-  or a check that changed the screen, not on every idle tick. Setup turns on raw mode, the
-  alternate screen and bracketed paste (best-effort: a terminal that refuses
-  it still runs, its pastes arriving as keys), so a paste arrives as one
-  `Event::Paste` rather than as keys (a `q` or `ctrl+s` in it is text);
-  the escape sequences are written by `enter_screen`/`leave_screen` over any
-  `Write`.
+- `tui::app`: the state machine. `App::open(view, author, size)` is the one
+  constructor, from a single `review::View`. `update(&mut App, Event) ->
+  Option<Effect>` is the only place keys are handled; it does no I/O and
+  reads no clock. A mode is a variant of `Mode` (Normal, Visual, Search,
+  Panel, Input, Overlay), and the handlers are not table-driven. Contracts:
+  - Effects are requests, never performed here. A thread id for `r`, `x` or
+    `o` is captured when the key is pressed, never an index.
+  - A write's result comes back as an event carrying the one `View` the
+    driver re-read; the app takes its lines, hash, threads, review and
+    changes. `Refreshed` (the other side's writes) applies it the same way
+    and changes nothing else.
+  - A re-read keeps you in place: the cursor, `top`, a selection's anchor and
+    the search prompt's origin are mapped through an `anchor::Diff` of the old
+    lines to the new, then clamped; the panel keeps its thread by id; a draft
+    is never touched; a close box's confirmation is cleared.
+  - The TUI never checks the turn itself: its state can be a refresh behind,
+    so the core decides and a refusal shows like any failed write.
+  - A hand-off or close box saves even when blank; a comment does not. A
+    close with no verdict is still sent, so the core's `MissingVerdict` is
+    the one rule.
+  - A thread covers its range as `view` maps it to the file as last
+    re-read, whatever its state; the gutter marker is the strongest over its
+    threads (waiting, open, resolved).
+  - Keys read modifiers through one `Mods` helper. Terminals report AltGr as
+    ctrl+alt, so a character typed with it is that plain character in every
+    mode and no ctrl chord fires from it.
+  - Scroll intent is read once (`Scroll::of`); each mode maps it to its own
+    move. `]`/`[` and `}`/`{` share one `nearest` helper.
+  - Submodules each add an `impl App` block and their own tests: `state`,
+    `layout`, `normal`, `find`, `threads`, `input`, `overlay`; fixtures
+    shared across `tui` modules are in `tui::test_support`.
+- `tui::draft`: the comment being typed, pure, no widgets. `text` holds
+  printable characters, `\t` and `\n` only, and rows are byte ranges of it.
+  The cursor always sits on a grapheme cluster boundary. Width is passed in,
+  never cached, so `Draft` stays plain data; `scroll` is clamped by `App`
+  after every event. `paste` inserts in one step (line breaks normalized,
+  tabs kept, other control characters dropped).
+- `tui::panel`: `layout(threads, selected, width)`, pure: each thread's
+  header, quote and comments as rows wrapped by `tui::wrap`, newlines and
+  blank lines kept. `update` clamps scroll from the row count; `render`
+  draws a slice.
+- `tui::wrap`: the only place the TUI wraps text, styled (`rows`) or plain
+  (`plain_rows`, `row_count`, `row_ranges`, `clusters`), and `cut` and `tail`
+  are the only places one-row text is cut to fit (`…` marks the cut; a wide
+  cluster is dropped whole). Breaks after the last whitespace that fits,
+  hard-breaks a word wider than a row, keeps whitespace at a break hanging so
+  rows join back to the line, and never splits a grapheme cluster. Widths
+  are measured as ratatui draws.
+- `tui::table`: `align(lines, width)`, pure, the only place tables are
+  parsed: per file line, its screen rows if it belongs to a well-formed GFM
+  table (header, delimiter, body up to the first blank, pipeless or fence
+  line) that lays out in `width`, else `None`. A table too wide shares the
+  width fairly and wraps cells in their columns; every row is equally wide,
+  so a table is shown laid out or raw as a whole.
+- `tui::keys`: the help listing. `HELP` is a `const` table of every key bound
+  in Normal mode and the thread panel; `rows(width)` lays it out. The handlers
+  are the behavior and `HELP` the documentation: a probe test in `tui::app`
+  presses every candidate key and fails on an unlisted key or a dead listed
+  one, and `tests/docs.rs` ties the listing to README and the interface map.
+- `tui::search`: `find` and `emphasize`, pure. Matching is smart-case and folds
+  one `char` at a time, so ranges are valid byte ranges. The `/` prompt
+  re-searches from where it was opened (never from the live cursor), so
+  `esc` restores that place and `enter` keeps the position and sets the
+  active search. `n`/`N` search raw file lines (a table line on its
+  laid-out rows), one stop per line, so every jump lands on something
+  highlighted.
+- `tui::render`: `render(&App, &mut Frame)`, pure over state, with no logic of
+  its own. It draws the rows `App::screen_rows` yields (one file line is one
+  or more rows; the number, glyphs and highlight show on the first), the
+  banner, footer, panel and comment box; the module doc lists the layout
+  contract. Text that must fit is cut with `wrap::cut`/`tail`, never
+  clipped by the buffer.
+- `tui` (module root): the driver, the only part that does I/O. `load`
+  returns the one `Reviews::view` before the terminal is touched; `open`
+  builds the `App` from it and highlights only markdown, with color wanted.
+  `step(app, event, reviews, file, author)` is the only place effects are
+  performed: each write goes through `review` (against `app.seen()` for new
+  threads, hand-offs and closes), is followed by one `view` re-read, and
+  comes back as an event. A write refused with `FileChanged` re-reads at once
+  and then reports the error, so the draft stays and the next save is made
+  against what is now shown.
+  `refresh` is the live refresh: it takes `Reviews::stamp` and only when that
+  differs from the last one runs a full `view` and sends `Refreshed`. A
+  failing check changes nothing and is retried; after `REFRESH_FAILURES_SHOWN`
+  in a row it sends `RefreshFailed` once. It never writes. `run` draws,
+  polls events until the next check is due (`POLL_INTERVAL` after the last),
+  `step`s an event if one came, and `refresh`es when due whether or not keys
+  arrived, so typing can't starve it; it redraws only after something that
+  changed the screen. Setup turns on raw mode, the alternate screen and
+  bracketed paste (best-effort), so a paste is one `Event::Paste`, not keys.
 
 **Invariants**
 - All keys are handled in `update`; `render` holds no logic. The state
@@ -801,34 +564,27 @@ Its parts:
 - The TUI owns no persistent state. Every write goes through `review`; after
   a write it re-reads `view` rather than patching local state. If that re-read
   fails, the threads and change markers are dropped from the screen (a retry
-  would duplicate a comment) but the review state is kept: the one the screen had for a
-  thread write, the write's own for a hand-off, close or reopen.
-- After every event `top <= cursor` and lines `top..=cursor` fit in `height`
-  screen rows (wrapped rows counted), where height is the rows left after the
-  banner and the footer, panel or input box, so the whole cursor line is on
-  screen. The one
-  exception: a cursor line taller than the view sets `top == cursor` and its
-  tail is cut off (`top` is a file line; there is no sub-line scroll). `top`
-  never leaves blank rows below the last line while earlier lines could fill
-  them. Each clamp walks back at most `height` lines. The panel never moves
-  the cursor, so the listed threads are always those of the line shown
-  selected.
-- In `Input`, after every event (resizes included) the draft's `scroll`
-  shows its cursor row among the box's rows and leaves no blank rows below
-  the text, so the box follows the cursor as it grows, scrolls and rewraps.
-- A failed write keeps the draft and mode and shows the error (in `Input`,
-  on the comment box's bottom border in place of the key hint; elsewhere in
-  the footer); nothing is lost silently.
-- The terminal is restored on every exit path: raw mode, the alternate
-  screen and bracketed paste are all undone (paste off before leaving the
-  alternate screen, the reverse of setup, each step tried even if one
-  fails). `TerminalSession` restores on drop (normal return, `?`,
+  would duplicate a comment) but the review state is kept: the one the screen
+  had for a thread write, the write's own for a hand-off, close or reopen.
+- After every event `top <= cursor` and lines `top..=cursor` fit in the
+  view's height in screen rows (wrapped rows counted), so the whole cursor
+  line is on screen. The one exception is a cursor line taller than the view:
+  `top == cursor` and its tail is cut off (`top` is a file line; there is no
+  sub-line scroll). `top` never leaves blank rows below the last line while
+  earlier lines could fill them. The panel never moves the cursor.
+- In `Input`, after every event (resizes included) the draft's `scroll` shows
+  its cursor row and leaves no blank rows below the text.
+- A failed write keeps the draft and mode and shows the error (in `Input`, on
+  the box's bottom border; elsewhere in the footer); nothing is lost
+  silently.
+- The terminal is restored on every exit path: raw mode, the alternate screen
+  and bracketed paste are undone in the reverse of setup, each step tried
+  even if one fails. `TerminalSession` restores on drop (normal return, `?`,
   unwinding), and a chained panic hook restores before the panic message
-  prints. `SIGTERM`/`SIGHUP` skip both and are not
-  handled.
-- Display only; never mutates the reviewed file. The file and its review
-  are re-read on open, after each of the TUI's own writes, and whenever the
-  stamp changes (within `POLL_INTERVAL`); a refresh only reads.
+  prints. `SIGTERM`/`SIGHUP` skip both and are not handled.
+- Display only; never mutates the reviewed file. The file and its review are
+  re-read on open, after each of the TUI's own writes, and whenever the stamp
+  changes (within `POLL_INTERVAL`); a refresh only reads.
 - A new thread, hand-off or close is written against the content on screen
   (`App::seen`), so a hand-off or close records what the human was shown as
   their last look, and a thread lands on the lines they saw.
@@ -836,11 +592,11 @@ Its parts:
 *Deferred within `tui`:* character or column selection; sub-line scrolling of a
 line taller than the view; a hanging indent for wrapped list items; real tab
 stops; inline markup in laid-out table cells (a laid-out table gets only its
-header line's bold); `NO_COLOR` for the TUI's chrome as well;
-GFM padding of ragged table rows; pipes inside inline code in a cell; tables
-inside lists or blockquotes;
-editing threads; notes on resolve/reopen from the TUI; a bell or desktop
-notification when the turn comes back (the banner changes, nothing more).
+header line's bold); `NO_COLOR` for the TUI's chrome as well; GFM padding of
+ragged table rows; pipes inside inline code in a cell; tables inside lists or
+blockquotes; editing threads; notes on resolve/reopen from the TUI; a bell or
+desktop notification when the turn comes back (the banner changes, nothing
+more).
 
 ### `highlight`
 Lives at `tui::highlight`. Depends on nothing else in the crate (only
@@ -946,59 +702,68 @@ hand-off or close.
 - `tui`: unit-test fixtures (key events, apps, views, threads, comments,
   review statuses) are defined once, in `tui::test_support`; `tests/tui.rs`
   can't see `cfg(test)` items, and the few helpers it has of its own (`key`,
-  `draw`, `screen`) are named like their unit counterparts. Scripted key events through `update` assert on state (including the search prompt, `n`/`N` and Visual search, and the help probe that ties `tui::keys::HELP` to the key handlers; `tests/docs.rs` ties the same listing to README's keys and the interface map, while the footer hints are pinned by the `tui::render` snapshots instead); `TestBackend`
-  snapshots (inline expected strings) cover Normal, Visual, Panel and Input
-  rendering, gutter glyphs and styles (including the selection highlight on
-  wrapped and table rows, before and after a resize, and the comment box
-  wrapping, growing and scrolling its draft); `tui::draft` has examples of
-  its rows and cursor cell by width, of cluster and row moves and of paste
-  normalization (tabs as 4-cell clusters), plus a
-  property over a fixed multi-line draft (one line tab-indented) that every cluster boundary is
-  reachable by `↓` then `→` and editable there; the driver's
-  `enter_screen`/`leave_screen` are checked for the bracketed-paste escape
-  sequences (`ESC[?2004h`/`ESC[?2004l`, off before leaving the alternate
-  screen) written to a `Vec<u8>`; `tui::wrap` has examples plus a property test
-  over a fixed corpus (ASCII, CJK, emoji, tabs, long words) and widths
-  1..=12: rows join back to the line and each fits the width; `tui::panel`
-  has examples plus a property over a fixed corpus (ASCII, CJK, emoji ZWJ,
-  combining marks, tabs, newlines) as quotes, authors and bodies, and widths
-  5..=20: every row, trailing whitespace trimmed, fits the panel by cells
-  unless it holds a single cluster wider than the room after its indent;
-  `tui::table` has examples (GFM subset, fences, indentation, ragged blocks,
-  alignment, wide characters, wrapped cells, column-width allocation) plus
-  properties: allocated widths fit, respect the minimums and use all the
-  space when short; over a fixed corpus and view widths 1..=60, one entry per
-  line, every row of a table equally wide and within the view with `│` in
-  the same columns, and no cell text lost;
-  `tui::highlight` has examples per element (nesting, emphasis across a line
-  break, unclosed fences, quoted lists) plus a property over a fixed corpus:
-  one styling per line, spans in bounds and on `char` boundaries, and the
-  styled line's text is the raw line; `tui::app` applies re-reads (lines
-inserted above the cursor, an edited cursor line, a shrink mid-selection,
-drafts in every box kept, the close confirm cleared, the panel kept by
-thread id, banner, markers, tables and styling recomputed, the search
-origin mapped) and checks that screen rows,
-  the clamp and key effects are identical with highlighting on and off;
-  `tests/tui.rs` runs scripted rounds through `step` against a real
-  `Reviews` (single-line and Visual range comments checked through the real
-  `ptal comments`; a thread moving with lines inserted above it, then
-  outdated once its line is edited; a hand-off, a hand-back seen after the
-  next write, closing with and without a verdict, the approve confirmation,
-  reopening, refusals keeping the draft, and the state after a reload; live
-  refresh: the agent's replies, resolves, threads and file edits shown by
-  `refresh` with the cursor and a draft kept, a CLI hand-back flipping the
-  banner, no refresh and no write when nothing changed, a refresh that can't
-  read changing nothing, and a hand-off, comment or close against an unseen
-  edit refused with `file_changed` and then made against what is shown;
-  and both front ends writing at once: the TUI adding comments through
-  `step` while separate `ptal reply` processes answer and the file is
-  rewritten between them, after which every comment is there exactly once,
-  ids are unique, `review.json` parses and every revision has its
-  snapshot); the
-  banner and the review overlay are covered in `tui::render` and `tui::app`;
-  the terminal guard and panic hook are tested with injected
-  `restore` functions (`tests/panic_hook.rs` is its own process because the
-  panic hook is global). A real-terminal check (pty) is manual.
+  `draw`, `screen`) are named like their unit counterparts. By module:
+  - `tui::app`: scripted key events through `update` assert on state
+    (including the search prompt, `n`/`N` and Visual search). Re-reads are
+    applied for lines inserted above the cursor, an edited cursor line, a
+    shrink mid-selection, drafts in every box kept, the close confirm
+    cleared, the panel kept by thread id, banner, markers, tables and
+    styling recomputed, and the search origin mapped. Screen rows, the clamp
+    and key effects are identical with highlighting on and off. The help
+    probe ties `tui::keys::HELP` to the key handlers.
+  - `tests/docs.rs`: ties the same listing to README's keys and the interface
+    map, and keeps every interface-map cell short. The footer hints are
+    pinned by the `tui::render` snapshots instead.
+  - `tui::render`: `TestBackend` snapshots (inline expected strings) cover
+    Normal, Visual, Panel and Input rendering, gutter glyphs and styles
+    (including the selection highlight on wrapped and table rows, before and
+    after a resize, and the comment box wrapping, growing and scrolling its
+    draft); the banner and the review overlay are covered here and in
+    `tui::app`.
+  - `tui::draft`: examples of its rows and cursor cell by width, of cluster
+    and row moves and of paste normalization (tabs as 4-cell clusters), plus
+    a property over a fixed multi-line draft (one line tab-indented) that
+    every cluster boundary is reachable by `↓` then `→` and editable there.
+  - `tui::wrap`: examples plus a property test over a fixed corpus (ASCII,
+    CJK, emoji, tabs, long words) and widths 1..=12: rows join back to the
+    line and each fits the width.
+  - `tui::panel`: examples plus a property over a fixed corpus (ASCII, CJK,
+    emoji ZWJ, combining marks, tabs, newlines) as quotes, authors and
+    bodies, and widths 5..=20: every row, trailing whitespace trimmed, fits
+    the panel by cells unless it holds a single cluster wider than the room
+    after its indent.
+  - `tui::table`: examples (GFM subset, fences, indentation, ragged blocks,
+    alignment, wide characters, wrapped cells, column-width allocation) plus
+    properties: allocated widths fit, respect the minimums and use all the
+    space when short; over a fixed corpus and view widths 1..=60, one entry
+    per line, every row of a table equally wide and within the view with `│`
+    in the same columns, and no cell text lost.
+  - `tui::highlight`: examples per element (nesting, emphasis across a line
+    break, unclosed fences, quoted lists) plus a property over a fixed
+    corpus: one styling per line, spans in bounds and on `char` boundaries,
+    and the styled line's text is the raw line.
+  - Driver: `enter_screen`/`leave_screen` are checked for the bracketed-paste
+    escape sequences (`ESC[?2004h`/`ESC[?2004l`, off before leaving the
+    alternate screen) written to a `Vec<u8>`; the terminal guard and panic
+    hook are tested with injected `restore` functions (`tests/panic_hook.rs`
+    is its own process because the panic hook is global).
+  - `tests/tui.rs`: scripted rounds through `step` against a real `Reviews`.
+    Single-line and Visual range comments are checked through the real
+    `ptal comments`; a thread moves with lines inserted above it, then is
+    outdated once its line is edited; a hand-off, a hand-back seen after the
+    next write, closing with and without a verdict, the approve
+    confirmation, reopening, refusals keeping the draft, and the state after
+    a reload. Live refresh: the agent's replies, resolves, threads and file
+    edits shown by `refresh` with the cursor and a draft kept, a CLI
+    hand-back flipping the banner, no refresh and no write when nothing
+    changed, a refresh that can't read changing nothing, and a hand-off,
+    comment or close against an unseen edit refused with `file_changed` and
+    then made against what is shown. Both front ends writing at once: the TUI
+    adding comments through `step` while separate `ptal reply` processes
+    answer and the file is rewritten between them, after which every comment
+    is there exactly once, ids are unique, `review.json` parses and every
+    revision has its snapshot.
+  - A real-terminal check (pty) is manual.
 
 ## Distribution
 
