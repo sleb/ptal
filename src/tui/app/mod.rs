@@ -525,23 +525,20 @@ enum Scroll {
 }
 
 impl Scroll {
-    /// The intent of `key`, if it scrolls. The letters are plain keys only
-    /// (ctrl+j is not `j`), the named keys take any modifiers.
+    /// The intent of `key`, if it scrolls. Every key but the half pages is
+    /// a plain one (ctrl+j is not `j`, and ctrl+↓ is a terminal's word jump,
+    /// not `↓`); `PgDn` and `PgUp` take any modifiers.
     fn of(key: KeyEvent) -> Option<Self> {
         let ctrl = Mods::of(key).ctrl();
         Some(match key.code {
-            KeyCode::Char('k') if !ctrl => Scroll::Up,
-            KeyCode::Char('j') if !ctrl => Scroll::Down,
+            KeyCode::Char('k') | KeyCode::Up if !ctrl => Scroll::Up,
+            KeyCode::Char('j') | KeyCode::Down if !ctrl => Scroll::Down,
             KeyCode::Char('u') if ctrl => Scroll::HalfUp,
             KeyCode::Char('d') if ctrl => Scroll::HalfDown,
-            KeyCode::Char('g') if !ctrl => Scroll::Top,
-            KeyCode::Char('G') if !ctrl => Scroll::Bottom,
-            KeyCode::Up => Scroll::Up,
-            KeyCode::Down => Scroll::Down,
             KeyCode::PageUp => Scroll::HalfUp,
             KeyCode::PageDown => Scroll::HalfDown,
-            KeyCode::Home => Scroll::Top,
-            KeyCode::End => Scroll::Bottom,
+            KeyCode::Char('g') | KeyCode::Home if !ctrl => Scroll::Top,
+            KeyCode::Char('G') | KeyCode::End if !ctrl => Scroll::Bottom,
             _ => return None,
         })
     }
@@ -612,6 +609,39 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_arrows_scroll_nothing_in_any_mode() {
+        let ctrl_key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL));
+        let named = [KeyCode::Down, KeyCode::Up, KeyCode::Home, KeyCode::End];
+        let normal = || {
+            let mut a = app(20, 10);
+            send(&mut a, [ch('j'), ch('j')]);
+            a
+        };
+        let help = || {
+            let mut a = app(5, 4);
+            send(&mut a, [ch('?'), ch('j')]);
+            a
+        };
+        let panel = || {
+            let mut a = panel_app(&[chatty("c1", (2, 2), 8)], 12);
+            send(&mut a, [ch('j'), press(KeyCode::Enter), ch('j')]);
+            a
+        };
+        for (name, fixture) in [
+            ("normal", &normal as &dyn Fn() -> App),
+            ("help", &help),
+            ("panel", &panel),
+        ] {
+            for code in named {
+                let mut a = fixture();
+                let before = (a.mode.clone(), at(&a));
+                send(&mut a, [ctrl_key(code)]);
+                assert_eq!((a.mode.clone(), at(&a)), before, "{name}: ctrl+{code:?}");
+            }
+        }
+    }
+
+    #[test]
     fn scroll_of_maps_each_key_plain_and_with_ctrl() {
         use KeyModifiers as K;
         let of = |code, m| Scroll::of(KeyEvent::new(code, m));
@@ -619,9 +649,9 @@ mod tests {
         // (key, plain, with ctrl)
         let table = [
             (c('j'), Some(Scroll::Down), None),
-            (KeyCode::Down, Some(Scroll::Down), Some(Scroll::Down)),
+            (KeyCode::Down, Some(Scroll::Down), None),
             (c('k'), Some(Scroll::Up), None),
-            (KeyCode::Up, Some(Scroll::Up), Some(Scroll::Up)),
+            (KeyCode::Up, Some(Scroll::Up), None),
             (c('d'), None, Some(Scroll::HalfDown)),
             (
                 KeyCode::PageDown,
@@ -631,9 +661,9 @@ mod tests {
             (c('u'), None, Some(Scroll::HalfUp)),
             (KeyCode::PageUp, Some(Scroll::HalfUp), Some(Scroll::HalfUp)),
             (c('g'), Some(Scroll::Top), None),
-            (KeyCode::Home, Some(Scroll::Top), Some(Scroll::Top)),
+            (KeyCode::Home, Some(Scroll::Top), None),
             (c('G'), Some(Scroll::Bottom), None),
-            (KeyCode::End, Some(Scroll::Bottom), Some(Scroll::Bottom)),
+            (KeyCode::End, Some(Scroll::Bottom), None),
             (c('x'), None, None),
             (KeyCode::Enter, None, None),
         ];
