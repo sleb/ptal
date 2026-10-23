@@ -14,13 +14,8 @@ impl App {
     /// Move to the nearest covered line strictly after (or before) the
     /// cursor; stay put when there is none.
     fn jump_to_covered(&mut self, forward: bool) {
-        let covered = |line: &usize| self.marker(*line).is_some();
-        let target = if forward {
-            (self.cursor + 1..self.lines.len()).find(covered)
-        } else {
-            (0..self.cursor).rev().find(covered)
-        };
-        if let Some(line) = target {
+        let covered = (0..self.lines.len()).filter(|&line| self.marker(line).is_some());
+        if let Some(line) = nearest(covered, self.cursor, forward) {
             self.move_to(line);
         }
     }
@@ -28,16 +23,12 @@ impl App {
     /// Move to the start of the nearest change strictly after (or before)
     /// the cursor; stay put when there is none.
     fn jump_to_change(&mut self, forward: bool) {
+        // Sorted already: `changes` is one hunk each, in file order.
         let starts = self
             .changes
             .iter()
             .map(|change| (change.range.start as usize).saturating_sub(1));
-        let target = if forward {
-            starts.into_iter().find(|&line| line > self.cursor)
-        } else {
-            starts.rev().find(|&line| line < self.cursor)
-        };
-        if let Some(line) = target {
+        if let Some(line) = nearest(starts, self.cursor, forward) {
             self.move_to(line);
         }
     }
@@ -74,6 +65,23 @@ impl App {
             self.cursor = self.cursor.saturating_sub(step);
         }
         self.clamp_view();
+    }
+}
+
+/// The first of `sorted` strictly after `from` (`forward`), or the last
+/// strictly before it; `None` when there is none that way.
+///
+/// `]`/`[` and `}`/`{` both jump with it, over the covered lines and the
+/// change starts.
+fn nearest(
+    mut sorted: impl DoubleEndedIterator<Item = usize>,
+    from: usize,
+    forward: bool,
+) -> Option<usize> {
+    if forward {
+        sorted.find(|&line| line > from)
+    } else {
+        sorted.rev().find(|&line| line < from)
     }
 }
 
@@ -317,6 +325,22 @@ mod tests {
         );
 
         assert_eq!(at(&a), (0, 0));
+    }
+
+    #[test]
+    fn nearest_is_strictly_after_or_before_and_none_past_the_ends() {
+        let set = || [2, 5, 9].into_iter();
+
+        assert_eq!(nearest(set(), 5, true), Some(9), "itself is skipped");
+        assert_eq!(nearest(set(), 5, false), Some(2));
+        assert_eq!(nearest(set(), 6, true), Some(9), "from between two");
+        assert_eq!(nearest(set(), 6, false), Some(5));
+        assert_eq!(nearest(set(), 0, true), Some(2), "from before the first");
+        assert_eq!(nearest(set(), 0, false), None);
+        assert_eq!(nearest(set(), 12, false), Some(9), "from after the last");
+        assert_eq!(nearest(set(), 12, true), None);
+        assert_eq!(nearest(std::iter::empty(), 3, true), None, "an empty set");
+        assert_eq!(nearest(std::iter::empty(), 3, false), None);
     }
 
     // --- ] and [ ---
