@@ -288,3 +288,140 @@ fn long_cells_are_found_by_row_and_column() {
     assert_eq!(long_cells(table, 2), ["Do it / CLI: 3 words"]);
     assert!(long_cells(table, 3).is_empty());
 }
+
+/// The most words a prose paragraph or list item of the README may have.
+const MAX_PROSE_WORDS: usize = 120;
+
+/// The prose units of markdown `text`: each blank-line-separated paragraph and
+/// each list item, as one string. Fenced code, tables and headings are skipped.
+fn prose_units(text: &str) -> Vec<String> {
+    let mut units: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_fence = false;
+    let flush = |units: &mut Vec<String>, current: &mut String| {
+        if !current.is_empty() {
+            units.push(std::mem::take(current));
+        }
+    };
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            flush(&mut units, &mut current);
+            in_fence = !in_fence;
+            continue;
+        }
+        let trimmed = line.trim_start();
+        let is_item = trimmed.starts_with("- ")
+            || trimmed
+                .split_once(". ")
+                .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+        if in_fence || line.starts_with('|') || line.starts_with('#') || line.trim().is_empty() {
+            flush(&mut units, &mut current);
+        } else {
+            if is_item {
+                flush(&mut units, &mut current);
+            }
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(line.trim());
+        }
+    }
+    flush(&mut units, &mut current);
+    units
+}
+
+/// `text` with fenced code blocks and table rows removed.
+fn without_code_and_tables(text: &str) -> String {
+    let mut in_fence = false;
+    let mut kept = Vec::new();
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+        } else if !in_fence && !line.starts_with('|') {
+            kept.push(line);
+        }
+    }
+    kept.join("\n")
+}
+
+/// The banned phrases in `text` as whole words, compared without case.
+fn banned_words(text: &str, banned: &[&str]) -> Vec<String> {
+    let lower = text.to_lowercase();
+    let is_word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    banned
+        .iter()
+        .filter(|phrase| {
+            let phrase = phrase.to_lowercase();
+            lower.match_indices(&phrase).any(|(at, _)| {
+                !is_word(lower[..at].chars().next_back())
+                    && !is_word(lower[at + phrase.len()..].chars().next())
+            })
+        })
+        .map(|phrase| format!("{phrase:?}"))
+        .collect()
+}
+
+#[test]
+fn readme_has_no_status_or_roadmap_bookkeeping() {
+    let readme = read("README.md");
+    let prose = without_code_and_tables(&readme);
+    let banned = [
+        "**Status",
+        "Planned",
+        "crit",
+        "deliberately",
+        "Why not a PR",
+        "nested replies",
+        "is built",
+        "are built",
+    ];
+    let found = banned_words(&prose, &banned);
+    assert!(found.is_empty(), "README.md still says {found:?}");
+}
+
+#[test]
+fn banned_words_match_whole_words_only() {
+    assert!(banned_words("a critical bug", &["crit"]).is_empty());
+    assert_eq!(banned_words("like Crit does", &["crit"]), ["\"crit\""]);
+}
+
+#[test]
+fn readme_paragraphs_are_short() {
+    let long: Vec<String> = prose_units(&read("README.md"))
+        .into_iter()
+        .filter(|unit| unit.split_whitespace().count() > MAX_PROSE_WORDS)
+        .map(|unit| unit.chars().take(60).collect())
+        .collect();
+    assert!(
+        long.is_empty(),
+        "README paragraphs over {MAX_PROSE_WORDS} words; split them:\n{}",
+        long.join("\n")
+    );
+}
+
+#[test]
+fn prose_units_split_on_blank_lines_items_and_skip_code_and_tables() {
+    let text = "# Head\n\none two\nthree\n\n```sh\nnot prose\n```\n| a | b |\n|---|---|\n- item one\n  more\n- item two\n1. first\nlast para\n";
+    assert_eq!(
+        prose_units(text),
+        [
+            "one two three",
+            "- item one more",
+            "- item two",
+            "1. first last para"
+        ]
+    );
+}
+
+#[test]
+fn readme_agent_section_links_the_reference_docs() {
+    let readme = read("README.md");
+    let agents = section(&readme, "### For agents", "## Troubleshooting");
+    for expected in ["ptal --help", "docs/interfaces.md", "docs/protocol.md"] {
+        assert!(agents.contains(expected), "For agents lacks {expected:?}");
+    }
+    assert!(
+        !readme.contains("**Turns.**"),
+        "the Turns paragraph is back"
+    );
+}

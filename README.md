@@ -2,41 +2,15 @@
 
 [![crates.io](https://img.shields.io/crates/v/ptal.svg)](https://crates.io/crates/ptal)
 
-*Please take a look.* A keyboard-driven terminal UI for reviewing a single text
+*Please take a look.* A keyboard-driven terminal UI for reviewing a text
 file, usually a throwaway plan or design doc (`.md`) that you and a coding
-agent are iterating on together and that will never be committed.
+agent iterate on together.
 
 You read the file, leave threaded comments on lines, and hand off. The agent
 reads your comments through a small JSON CLI, edits the file, replies,
-resolves threads, and hands back. ptal's screen follows along as the agent
-writes and marks what changed since you handed off, and when the plan is done
-you close the review as `approved` or `dropped`.
-Comments, replies, resolved state and whose turn it is persist across rounds
-and revisions.
-
-> **Status:** the agent CLI (`comments`, `add`, `reply`, `resolve`, `reopen`,
-> `handoff`, `wait`) and the TUI are built. In the TUI: scroll a file (long
-> lines wrap, markdown tables align, markdown structure is highlighted),
-> search, comment on a line or a selected range (multi-line, paste works),
-> read, reply to, resolve and reopen threads, hand the turn to the agent,
-> close a review with a verdict and reopen it; `?` lists the keys. Threads
-> follow the file as the agent edits it, the gutter marks what changed since
-> your last look, and the screen refreshes live. Agents block on `ptal wait`
-> for their turn. See [ARCHITECTURE.md](ARCHITECTURE.md).
-
-## Why not a PR?
-
-For code, open a PR. ptal is for the things you wouldn't check in: scratch
-plans, specs-in-progress, notes. It is inspired by
-[crit](https://github.com/kevindutra/crit) and deliberately smaller:
-
-- One file per review. No code-review mode, no multi-file tabs.
-- No built-in multiplexer integration: ptal never creates panes. Its help
-  tells your agent to open `ptal plan.md` in a pane beside it, or you run
-  it yourself in any terminal.
-- Agent-agnostic. The contract is JSON on stdout, not a plugin.
-- Threads are flat conversations that can be resolved and reopened (nested replies are deferred).
-- Comments live in your user data directory, never in your repo.
+resolves threads, and hands back. When the plan is done you close the review
+as `approved` or `dropped`. Comments, replies, resolved state and whose turn
+it is persist across rounds and revisions.
 
 ## Install
 
@@ -52,9 +26,8 @@ ptal plan.md            # open the TUI
 
 ### Keys
 
-Keys typed with AltGr work as the same key pressed plain; `ctrl+` keys need ctrl without alt.
-
-**Available**, by mode:
+Keys are listed by mode. Keys typed with AltGr work as the same key pressed
+plain; `ctrl+` keys need ctrl without alt.
 
 Normal mode:
 
@@ -127,93 +100,102 @@ The top row is the review's banner: `your turn`, `agent's turn` or
 `closed: approved`, the latest note's first line, and the keys for what you
 can do now.
 
-Long lines wrap at word boundaries onto continuation rows; the line number and
-thread marker show on a line's first row, and `j` / `k` move by file line,
-not by screen row. Markdown tables show with aligned columns; one too wide
-for the window wraps its cells inside their columns, still one cursor stop
-per file line. A malformed table, or a window too narrow for it, shows as
-written. In a markdown file (`.md`, `.markdown` or `.mdx`) headings,
-emphasis, strikethrough, inline code, code blocks, list markers, block
-quotes and links are highlighted, in your terminal theme's colors and never
-hiding a character; set `NO_COLOR` (to any non-empty value) to turn it off.
-Other files show plain.
-One-row text too wide for the window — the footer, a box's title or border
-message — is cut and ends in `…`; the search prompt instead keeps the end of
-a long query, after a leading `…`. In the footer the search and key hints go first; a
-path too long to leave room for the line position and counts keeps its end,
-after a leading `…`, so those stay visible.
+### Reading and navigation
 
-A comment can span several paragraphs: in the comment box `enter` starts a
-new line and `ctrl+s` saves (leading blank lines and trailing whitespace are
-dropped). With text in the box, `esc` asks first; a second `esc` discards the
-draft and any other key keeps it. Text wraps inside the box, which grows with
-it up to 10 rows (and never past half the terminal), then scrolls to follow
-the cursor. Pasting into the box keeps the text's line breaks and tab
-indentation (a tab shows as four spaces and is saved as a tab); a paste
-never saves or closes the box, and outside the box a paste is ignored. If a
-save fails, the box stays open with your draft and shows the error on its
-bottom border.
+- Long lines wrap at word boundaries onto continuation rows. The line number
+  and thread marker show on a line's first row, and `j` / `k` move by file
+  line, not by screen row.
+- Markdown tables show with aligned columns, still one cursor stop per file
+  line. One too wide for the window wraps its cells inside their columns. A
+  malformed table, or a window too narrow for it, shows as written.
+- In a markdown file (`.md`, `.markdown` or `.mdx`) headings, emphasis,
+  strikethrough, inline code, code blocks, list markers, block quotes and
+  links are highlighted in your terminal theme's colors, never hiding a
+  character. Set `NO_COLOR` (to any non-empty value) to turn it off. Other
+  files show plain.
+- One-row text too wide for the window (the footer, a box's title or border
+  message) is cut and ends in `…`. The search prompt instead keeps the end
+  of a long query, after a leading `…`.
+- In the footer the search and key hints go first. A path too long to leave
+  room for the line position and counts keeps its end, after a leading `…`.
+- The top row is the review's banner: `your turn`, `agent's turn` or
+  `closed: approved`, the latest note's first line, and the keys for what you
+  can do now.
+- The TUI needs an interactive terminal. Without one it exits `1` with a
+  `not_a_terminal` JSON error.
 
-Comments are written as `$USER`. The gutter marks lines inside a thread: `●`
-open, `◆` open and waiting on you (its last comment is not yours), `○`
-resolved. The thread panel shows each thread's status, `outdated` state,
-quoted text and comments; resolved threads are dimmed. Threads follow the
-file as it changes: lines inserted or deleted above a thread move it, and it
-becomes `outdated` once one of its own lines is edited or removed, shown at a
-best guess with its original quote. The footer counts open outdated threads
-(`N outdated`).
+### Comments and threads
 
-The gutter also shows what changed since your last look, which is your
-latest hand-off or close: `┃` (green) on lines added or edited since then,
-`-` (red) where text was removed. The footer counts them (`N changes`) and
-`}` / `{` jump between them. Opening ptal is not a look, so the markers stay
-until you hand off or close again; nothing is marked before your first one.
+- A comment can span several paragraphs: `enter` starts a new line and
+  `ctrl+s` saves. Leading blank lines and trailing whitespace are dropped.
+- With text in the box, `esc` asks first; a second `esc` discards the draft
+  and any other key keeps it.
+- Text wraps inside the box, which grows with it up to 10 rows (and never
+  past half the terminal), then scrolls to follow the cursor.
+- Pasting keeps the text's line breaks and tab indentation (a tab shows as
+  four spaces and is saved as a tab). A paste never saves or closes the box,
+  and outside the box it is ignored.
+- If a save fails, the box stays open with your draft and shows the error on
+  its bottom border.
+- Comments are written as `$USER`.
+- The gutter marks lines inside a thread: `●` open, `◆` open and waiting on
+  you (its last comment is not yours), `○` resolved.
+- The thread panel shows each thread's status, `outdated` state, quoted text
+  and comments. Resolved threads are dimmed.
+- Threads follow the file as it changes: lines inserted or deleted above a
+  thread move it. It becomes `outdated` once one of its own lines is edited
+  or removed, and shows at a best guess with its original quote.
+- The footer counts open outdated threads (`N outdated`).
 
-The screen keeps itself current: a few times a second ptal checks whether the
-file or its review changed, and shows the agent's replies, resolves, new
-threads, hand-backs and edits to the file without a restart. The cursor
-stays on the text it was on, and a half-typed comment or note is kept. If
-the file changed after the screen last showed it, a new comment, hand-off
-or close is refused (`the file changed: look again`), the screen refreshes,
-and `ctrl+s` again saves against what you now see.
+### Change markers
 
-The TUI needs an interactive terminal: run without one it
-exits `1` with a `not_a_terminal` JSON error.
+- The gutter shows what changed since your last look, which is your latest
+  hand-off or close: `┃` (green) on lines added or edited, `-` (red) where
+  text was removed.
+- The footer counts them (`N changes`), and `}` / `{` jump between them.
+- Opening ptal is not a look, so the markers stay until you hand off or
+  close again. Nothing is marked before your first hand-off or close.
 
-**Planned**
+### Live refresh
 
-| Key | Action |
-|---|---|
-| `e` | Edit your own comment |
-| `s` | Toggle the comment sidebar |
-| `R` | Show / hide resolved threads |
+- A few times a second ptal checks whether the file or its review changed. It
+  shows the agent's replies, resolves, new threads, hand-backs and edits to
+  the file without a restart.
+- The cursor stays on the text it was on, and a half-typed comment or note
+  is kept.
+- If the file changed after the screen last showed it, a new comment,
+  hand-off or close is refused (`the file changed: look again`). The screen
+  refreshes, and `ctrl+s` again saves against what you now see.
+
+### Hand-off and close
+
+- A review is on your turn or the agent's, or closed.
+- `H` hands the turn to the agent with an optional note. The agent's
+  `ptal wait` returns with it, and `ptal comments` shows `"turn": "agent"`.
+- The agent hands back with `ptal handoff`.
+- `C` closes with a verdict: `approved` (go ahead) or `dropped` (don't).
+  Either side can reopen a closed review (`O` in the TUI).
+- The turn is a signal, not a lock: both sides can comment at any time.
 
 ### For agents
 
-Everything an agent needs to use the tool is on the CLI. `ptal --help` is the
-one page to read: the turn loop, the concepts (threads, turns and the verdict,
-revisions), exit codes and environment. Each `ptal <command> --help` has that
-command's output shape, the errors it can return, and examples. How you want reviews to run (when
-to resolve, when to ask, when to publish) is yours to put in your own skill or
-prompt. Output is JSON when stdout is not a terminal (or always, with
-`--json`).
+Everything an agent needs is on the CLI, and the contract is JSON on stdout,
+so any agent works. ptal never creates panes. For the full reference see
+`ptal --help` (the turn loop, concepts, exit codes, environment), each
+`ptal <command> --help` (output shape, errors, examples),
+[docs/interfaces.md](docs/interfaces.md) and
+[docs/protocol.md](docs/protocol.md).
 
 ```sh
-ptal comments plan.md          # open threads: id, status, state, line range, quote, comments
-ptal comments plan.md --all    # include resolved
+ptal comments plan.md          # open threads (--all includes resolved)
 ptal add plan.md --lines 12-14 "Why not X?" --as claude
 ptal reply plan.md c3 "Which of the two do you mean?" --as claude
 ptal resolve plan.md c3 --as claude --note "Done, see step 2."
-ptal reopen plan.md c3 --as scott --note "Not fixed."
-ptal handoff plan.md --as claude --note "Addressed all but c4."   # your turn, human
-ptal wait plan.md              # block until it's the agent's turn or the review closes
-ptal wait plan.md --timeout 300   # ...or give up after 5 minutes: reason "timeout"
-ptal reopen plan.md --as claude   # a closed review, when asked to revise again
-ptal --help                    # the agent guide: the turn loop, concepts, exit codes
-ptal comments --help           # one command's output shape, errors and examples
+ptal handoff plan.md --as claude --note "Addressed all but c4."
+ptal wait plan.md --timeout 300   # block until your turn, closed, or "timeout"
 ```
 
-The loop `ptal --help` walks through:
+The loop:
 
 0. Once per review, open it for the human: in a terminal multiplexer, a
    pane beside the agent running `exec ptal '<absolute file>'`; otherwise
@@ -229,28 +211,11 @@ The loop `ptal --help` walks through:
 Run `ptal wait` in the background if your agent's command tool can; otherwise
 pass a `--timeout` below the tool's time limit and loop.
 
-Writes require `--as <name>` (or `PTAL_AUTHOR`) so every message is attributed.
-Failures print nothing on stdout and one JSON error line on stderr; exit `2`
-means the invocation can be fixed, `1` is a runtime failure (see
-[docs/interfaces.md](docs/interfaces.md#exit-codes)). A skill or prompt for
-your agent of choice is just: *"open `ptal <file>` for me in a pane, run
-`ptal wait <file>`, then `ptal comments`,
-edit the file to address each thread, `ptal resolve` it, `ptal handoff`, and
-wait again."*
-
-**Planned, not built:** `ptal schema` (JSON Schema for all output).
-
-The full command and key map, agent and human side by side, is in
-[docs/interfaces.md](docs/interfaces.md).
-How a review runs between you and the agent (threads, revisions, turns,
-closing with a verdict) is in [docs/protocol.md](docs/protocol.md).
-
-**Turns.** A review is on your turn or the agent's, or closed. You hand off
-with `H` in the TUI; the agent's `ptal wait` returns with your note (and
-`ptal comments` shows `"turn": "agent"`), and it hands back with `ptal handoff`. You close with `C` and a
-verdict (`approved`: go ahead; `dropped`: don't), and either side can reopen
-a closed review. The turn is a signal, not a lock: both sides can comment at
-any time.
+Writes require `--as <name>` (or `PTAL_AUTHOR`) so every message is
+attributed. Output is JSON when stdout is not a terminal, or always with
+`--json`. Failures print nothing on stdout and one JSON error line on stderr;
+exit `2` means the invocation can be fixed, `1` is a runtime failure (see
+[docs/interfaces.md](docs/interfaces.md#exit-codes)).
 
 ## Troubleshooting
 
