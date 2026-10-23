@@ -281,7 +281,7 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
   `review.json`'s bytes (`ReviewReader::bytes`), so a poller can tell that
   either changed without a full `view`. Hashes, not mtimes: mtime
   granularity can miss a same-second, same-length write. Never writes.
-- `wait(file, timeout?, &dyn Ticker) -> Waited { reason, review }` — blocks
+- `wait(file, timeout?, &impl Ticker) -> Waited { reason, review }` — blocks
   until it is not the human's turn: `Woke::Turn` on the agent's turn,
   `Woke::Closed` when closed, `Woke::Timeout` once `timeout` passes on the
   ticker's clock. Level-triggered on the state, checked before the first
@@ -294,7 +294,7 @@ Operations (on `Reviews`, which holds a `Store` and an injected `Clock`):
   or newer review) ends the wait at once. A wait that times out without ever
   reading `review.json` fails with the last read's `Io` error rather than
   reporting a made-up state. `Ticker {
-  now, sleep }` is injected like the clock (`SystemTicker` for real), so
+  now, sleep }` is injected like the clock, as a generic (`SystemTicker` for real), so
   tests hand off from inside a fake `sleep`. Polling, not file watching:
   `review.json` and editors' saves replace files by rename, which breaks
   per-file watches, and the files are a few KB.
@@ -424,7 +424,7 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   A wait that never read the review fails with `io` (exit `1`).
   It takes no `--as` (a read) and no `--side` (only the agent waits). One
   blocking call per turn, not a stream: an agent's command tool reads a
-  command's output when it exits. The ticker comes from `Env.ticker`
+  command's output when it exits. The ticker comes from `Env.ticker`, the `T` of `Env<C, T>`
   (`SystemTicker` in `main`), so in-process tests never sleep.
 - Threads carry no `waiting_on` field. A thread is waiting on an agent when
   `Thread::is_waiting_on` its `--as` name (open, last comment by someone

@@ -83,7 +83,7 @@ impl Failure {
 
 /// Everything `run` needs from the process, injected so tests can drive every
 /// path in-process.
-pub struct Env<C: Clock> {
+pub struct Env<C: Clock, T: Ticker> {
     /// Review operations (store and clock). `None` when no data directory
     /// could be resolved; only commands that need the store then fail, with
     /// `no_data_dir`, so `--help`, `--version` and usage errors still work.
@@ -100,8 +100,8 @@ pub struct Env<C: Clock> {
     pub stderr_is_tty: bool,
     /// Whether the TUI may highlight text: [`color_wanted`] of `NO_COLOR`.
     pub color: bool,
-    /// The clock `wait` measures its timeout on and sleeps with.
-    pub ticker: Box<dyn Ticker>,
+    /// The ticker `wait` measures its timeout on and sleeps with.
+    pub ticker: T,
 }
 
 // Help text. The top level is the loop and the concepts; each command's
@@ -645,12 +645,12 @@ fn render_text(threads: &[ThreadView]) -> String {
 
 /// Parse `args` (including the program name), execute, and return the exit
 /// status. Data goes to `out`, errors to `err`.
-pub fn run<C, I, T>(args: I, env: &Env<C>, out: &mut dyn Write, err: &mut dyn Write) -> u8
-where
-    C: Clock,
-    I: IntoIterator<Item = T>,
-    T: Into<OsString> + Clone,
-{
+pub fn run<C: Clock, T: Ticker>(
+    args: impl IntoIterator<Item = impl Into<OsString>>,
+    env: &Env<C, T>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> u8 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
     let json_flag = json_requested(&args);
     let cli = match Cli::try_parse_from(&args) {
@@ -699,9 +699,9 @@ fn json_requested(args: &[OsString]) -> bool {
 /// JSON envelope) and return its exit status. `readable` overrides the
 /// terminal text. A stderr that cannot be written leaves nowhere to report,
 /// so the status is just a runtime error.
-fn report<C: Clock>(
+fn report<C: Clock, T: Ticker>(
     failure: &Failure,
-    env: &Env<C>,
+    env: &Env<C, T>,
     json: bool,
     err: &mut dyn Write,
     readable: Option<String>,
@@ -719,9 +719,9 @@ fn report<C: Clock>(
 }
 
 /// Execute an agent command and print its result to `out`.
-fn run_command<C: Clock>(
+fn run_command<C: Clock, T: Ticker>(
     command: &Command,
-    env: &Env<C>,
+    env: &Env<C, T>,
     out: &mut dyn Write,
     json: bool,
 ) -> Result<(), Failure> {
@@ -751,7 +751,7 @@ fn run_command<C: Clock>(
 
 /// Open the interactive view. Everything that can be refused is refused
 /// here, before the terminal is touched.
-fn launch_tui<C: Clock>(file: &Path, env: &Env<C>) -> Result<(), Failure> {
+fn launch_tui<C: Clock, T: Ticker>(file: &Path, env: &Env<C, T>) -> Result<(), Failure> {
     if !(env.stdin_is_tty && env.stdout_is_tty) {
         return Err(Failure::NotATerminal);
     }
@@ -771,7 +771,7 @@ fn launch_tui<C: Clock>(file: &Path, env: &Env<C>) -> Result<(), Failure> {
     tui::run(app, reviews, file, author).map_err(Failure::Terminal)
 }
 
-fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure> {
+fn dispatch<C: Clock, T: Ticker>(command: &Command, env: &Env<C, T>) -> Result<Output, Failure> {
     let reviews = env
         .reviews
         .as_ref()
@@ -844,11 +844,7 @@ fn dispatch<C: Clock>(command: &Command, env: &Env<C>) -> Result<Output, Failure
         }
         Command::Wait { file, timeout } => {
             let timeout = timeout.map(std::time::Duration::from_secs);
-            Ok(Output::Waited(reviews.wait(
-                file,
-                timeout,
-                env.ticker.as_ref(),
-            )?))
+            Ok(Output::Waited(reviews.wait(file, timeout, &env.ticker)?))
         }
     }
 }
@@ -887,7 +883,7 @@ pub fn main() -> ExitCode {
         stdout_is_tty,
         stderr_is_tty,
         color: color_wanted(std::env::var_os("NO_COLOR").as_deref()),
-        ticker: Box::new(SystemTicker),
+        ticker: SystemTicker,
     };
     let code = run(
         std::env::args_os(),
@@ -1073,7 +1069,16 @@ mod tests {
     }
 
     impl Fixture {
-        fn env(&self, author: Option<&str>, tty: bool) -> Env<fn() -> String> {
+        fn env(&self, author: Option<&str>, tty: bool) -> Env<fn() -> String, SystemTicker> {
+            self.env_with(author, tty, SystemTicker)
+        }
+
+        fn env_with<T: Ticker>(
+            &self,
+            author: Option<&str>,
+            tty: bool,
+            ticker: T,
+        ) -> Env<fn() -> String, T> {
             let clock: fn() -> String = || NOW.to_string();
             Env {
                 reviews: Some(Reviews::with_clock(Store::new(&self.data), clock)),
@@ -1083,7 +1088,7 @@ mod tests {
                 stdout_is_tty: tty,
                 stderr_is_tty: tty,
                 color: true,
-                ticker: Box::new(SystemTicker),
+                ticker,
             }
         }
 
@@ -1093,7 +1098,7 @@ mod tests {
             self.run_with(args, &self.env(None, false))
         }
 
-        fn run_with(&self, args: &[&str], env: &Env<fn() -> String>) -> Out {
+        fn run_with(&self, args: &[&str], env: &Env<fn() -> String, impl Ticker>) -> Out {
             let path = self.file.to_str().unwrap();
             let argv = std::iter::once("ptal")
                 .chain(args.iter().copied())
@@ -1107,7 +1112,7 @@ mod tests {
             }
         }
 
-        fn env_without_store(&self, tty: bool) -> Env<fn() -> String> {
+        fn env_without_store(&self, tty: bool) -> Env<fn() -> String, SystemTicker> {
             Env {
                 reviews: None,
                 ..self.env(None, tty)
@@ -2343,11 +2348,7 @@ c2  open  outdated  lines 3-4
 
         assert_eq!(out.code, 2);
         assert!(out.stderr.contains("--side"), "{}", out.stderr);
-        assert!(
-            out.stderr.contains("cannot be used with"),
-            "{}",
-            out.stderr
-        );
+        assert!(out.stderr.contains("cannot be used with"), "{}", out.stderr);
     }
 
     #[test]
@@ -2673,13 +2674,9 @@ c2  open  outdated  lines 3-4
     }
 
     impl Fixture {
-        fn wait_env(&self, tty: bool) -> Env<fn() -> String> {
-            Env {
-                ticker: Box::new(InstantTicker(std::cell::Cell::new(
-                    std::time::Instant::now(),
-                ))),
-                ..self.env(None, tty)
-            }
+        fn wait_env(&self, tty: bool) -> Env<fn() -> String, InstantTicker> {
+            let ticker = InstantTicker(std::cell::Cell::new(std::time::Instant::now()));
+            self.env_with(None, tty, ticker)
         }
     }
 
