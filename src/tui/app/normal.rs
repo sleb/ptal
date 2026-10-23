@@ -3,7 +3,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use super::{App, Back, Effect, Mode, Mods, Overlay, Scroll, Target};
+use super::{App, Back, Effect, Mode, Mods, Overlay, OverlayBack, Scroll, Target};
 
 impl App {
     pub(super) fn move_to(&mut self, cursor: usize) {
@@ -136,8 +136,8 @@ pub(super) fn normal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     }
     let ctrl = Mods::of(key).ctrl();
     match key.code {
-        KeyCode::Char('?') if !ctrl => app.open_overlay(Overlay::Help, Back::Normal),
-        KeyCode::Char('i') if !ctrl => app.open_overlay(Overlay::Review, Back::Normal),
+        KeyCode::Char('?') if !ctrl => app.open_overlay(Overlay::Help, OverlayBack::Normal),
+        KeyCode::Char('i') if !ctrl => app.open_overlay(Overlay::Review, OverlayBack::Normal),
         KeyCode::Char('H') if !ctrl => app.mode = Mode::input(Back::Normal, Target::HandOff),
         KeyCode::Char('C') if !ctrl => {
             let close = Target::Close {

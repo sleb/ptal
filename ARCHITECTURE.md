@@ -480,7 +480,8 @@ Its parts:
   `Mode = Normal | Visual { anchor } |
   Search { query, anchor, origin, hit } |
   Panel { selected, scroll } | Input { draft, discard_asked, back, target } |
-  Overlay { kind, back, scroll }` (`kind` is `Overlay::Help | Review`;
+  Overlay { kind, back, scroll }` (`kind` is `Overlay::Help | Review`, and
+  its `back` is an `OverlayBack`: `Normal | Panel { selected, scroll }`;
   `target` is what saving the box writes: `Target::NewThread | Reply(id) |
   HandOff | Close { verdict, confirm_asked }`)
   (`draft` is a `tui::draft::Draft`;
@@ -653,8 +654,8 @@ Its parts:
   (keys beside the description, or stacked in a narrow window; nothing is
   cut). `Mode::Overlay { kind: Help, back, scroll }` shows it full-screen,
   opened by `?` from Normal or the panel (not from Visual, Search or the
-  box, where `?` is text or unbound); `back` is `Normal` or `Panel` and
-  closing returns there untouched; `?`/`esc`/`q`/`ctrl+c` close, `j`/`k`,
+  box, where `?` is text or unbound); `back` is an `OverlayBack`, `Normal`
+  or `Panel`, and closing returns there untouched; `?`/`esc`/`q`/`ctrl+c` close, `j`/`k`,
   `ctrl+d`/`ctrl+u`, `PgDn`/`PgUp`, `g`/`G`, `Home`/`End` scroll, clamped in
   `update`. `i` in Normal opens the other overlay, `kind: Review`: the state
   as a header, what the latest log entry was, by whom (and which side), when

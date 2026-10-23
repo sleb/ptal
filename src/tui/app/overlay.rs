@@ -7,7 +7,7 @@ use crate::model::{Event as LogEvent, ReviewState, Side};
 use crate::review::ReviewStatus;
 use crate::tui::{keys, wrap};
 
-use super::{App, Back, Effect, Mode, Mods, Overlay, Scroll};
+use super::{App, Effect, Mode, Mods, Overlay, OverlayBack, Scroll};
 
 impl App {
     /// The help listing laid out for the window.
@@ -38,7 +38,7 @@ impl App {
     }
 
     /// Open overlay `kind` from `back`.
-    pub(super) fn open_overlay(&mut self, kind: Overlay, back: Back) {
+    pub(super) fn open_overlay(&mut self, kind: Overlay, back: OverlayBack) {
         self.mode = Mode::Overlay {
             kind,
             back,
@@ -104,7 +104,7 @@ pub(super) fn review_rows(review: &ReviewStatus, width: usize) -> Vec<keys::Row>
 }
 
 /// Leave an overlay for `back`.
-fn close(app: &mut App, back: Back) -> Option<Effect> {
+fn close(app: &mut App, back: OverlayBack) -> Option<Effect> {
     app.mode = back.mode();
     None
 }
@@ -170,7 +170,7 @@ mod tests {
                 a.mode,
                 Mode::Overlay {
                     kind: Overlay::Help,
-                    back: Back::Normal,
+                    back: OverlayBack::Normal,
                     ..
                 }
             ));
@@ -203,7 +203,7 @@ mod tests {
                 a.mode,
                 Mode::Overlay {
                     kind: Overlay::Help,
-                    back: Back::Panel { .. },
+                    back: OverlayBack::Panel { .. },
                     ..
                 }
             ));
@@ -288,7 +288,7 @@ mod tests {
                 a.mode,
                 Mode::Overlay {
                     kind: Overlay::Review,
-                    back: Back::Normal,
+                    back: OverlayBack::Normal,
                     ..
                 }
             ));

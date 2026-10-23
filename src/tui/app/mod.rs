@@ -94,13 +94,11 @@ pub enum Mode {
         target: Target,
     },
     /// Reading a full-screen overlay, which replaces the whole screen.
-    ///
-    /// `back` is only ever Normal or the panel, and is where closing returns.
     Overlay {
         /// What the overlay shows.
         kind: Overlay,
-        /// Where the overlay was opened from.
-        back: Back,
+        /// Where the overlay was opened from, and closing returns.
+        back: OverlayBack,
         /// First visible row of its listing.
         scroll: usize,
     },
@@ -204,6 +202,30 @@ impl Back {
             Back::Normal => Mode::Normal,
             Back::Panel { selected, scroll } => Mode::Panel { selected, scroll },
             Back::Visual { anchor } => Mode::Visual { anchor },
+        }
+    }
+}
+
+/// Where a [`Mode::Overlay`] returns to when it closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayBack {
+    /// Normal mode.
+    Normal,
+    /// The panel at this view.
+    Panel {
+        /// The selected thread's index.
+        selected: usize,
+        /// The panel's scroll.
+        scroll: usize,
+    },
+}
+
+impl OverlayBack {
+    /// The mode closing returns to.
+    fn mode(self) -> Mode {
+        match self {
+            OverlayBack::Normal => Mode::Normal,
+            OverlayBack::Panel { selected, scroll } => Mode::Panel { selected, scroll },
         }
     }
 }
