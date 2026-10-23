@@ -44,39 +44,29 @@ use crate::review::{Clock, POLL_INTERVAL, ReviewStatus, Reviews, Stamp, ThreadWr
 use app::{App, Effect, Event, update};
 use render::render;
 
-/// A file, its threads, the review's state and its changes since the last
-/// look, read but not yet sized for a terminal.
-///
-/// Loading is split from [`Loaded::into_app`] so that a missing file is
-/// reported before the terminal is queried or touched.
-pub struct Loaded {
-    view: View,
-}
-
 /// Read `file`, all its threads (resolved ones included), the review's
-/// state and what changed since the human's last look.
+/// state and what changed since the human's last look, as one [`View`].
+///
+/// Loading is split from [`open`] so that a missing file is reported before
+/// the terminal is queried or touched.
 ///
 /// # Errors
 /// [`crate::Error::FileUnreadable`] plus any store error.
-pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<Loaded> {
+pub fn load<C: Clock>(reviews: &Reviews<C>, file: &Path) -> Result<View> {
     // One read: the lines shown are the ones the threads are mapped to.
-    Ok(Loaded {
-        view: reviews.view(file, true)?,
-    })
+    reviews.view(file, true)
 }
 
-impl Loaded {
-    /// A fresh [`App`] over this file on a terminal of `size` (cols, rows),
-    /// its markdown structure highlighted when `file` is markdown
-    /// ([`highlight::is_markdown`]) and `color` is wanted.
-    pub fn into_app(self, file: &Path, author: &str, size: (u16, u16), color: bool) -> App {
-        App::open(self.view, author, size)
-            .labeled(file.display().to_string())
-            .highlighted(color && highlight::is_markdown(file))
-    }
+/// A fresh [`App`] over `view` of `file` on a terminal of `size` (cols,
+/// rows), its markdown structure highlighted when `file` is markdown
+/// ([`highlight::is_markdown`]) and `color` is wanted.
+pub fn open(view: View, file: &Path, author: &str, size: (u16, u16), color: bool) -> App {
+    App::open(view, author, size)
+        .labeled(file.display().to_string())
+        .highlighted(color && highlight::is_markdown(file))
 }
 
-/// Terminal (columns, rows), for sizing [`Loaded::into_app`] before the
+/// Terminal (columns, rows), for sizing [`open`] before the
 /// session starts.
 ///
 /// # Errors
@@ -160,7 +150,7 @@ pub fn install_restore_hook(restore: impl Fn() + Send + Sync + 'static) {
 
 /// Run the interactive session on the real terminal until the user quits.
 ///
-/// `app` comes from [`load`] and [`Loaded::into_app`]. All of ptal's writes go through `reviews`.
+/// `app` comes from [`load`] and [`open`]. All of ptal's writes go through `reviews`.
 ///
 /// # Errors
 /// The terminal could not be set up, drawn to, or read from.
@@ -421,13 +411,11 @@ mod tests {
 
     /// Whether `path`, opened with `color`, shows its `# Title` bold.
     fn heading_is_bold(path: &str, color: bool) -> bool {
-        let loaded = Loaded {
-            view: View {
-                lines: vec!["# Title".into()],
-                ..View::default()
-            },
+        let view = View {
+            lines: vec!["# Title".into()],
+            ..View::default()
         };
-        let app = loaded.into_app(Path::new(path), "scott", (40, 5), color);
+        let app = open(view, Path::new(path), "scott", (40, 5), color);
         let row = &app.screen_rows()[0].text;
         row.spans.iter().all(|span| {
             row.style

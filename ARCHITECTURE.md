@@ -742,11 +742,11 @@ Its parts:
   prompt, which wins over the hint. Border text (error or hint) that does
   not fit between the corners is `wrap::cut`, so it ends in `…` and a wide
   character that would cross the corner is left out whole.
-- `tui` (module root): the driver. `load` takes the lines, their hash, all
-  threads, the review's state and the changes since the last look from one
-  `Reviews::view` (`Reread: From<View>`), so they come from the same read of
-  the file; `Loaded::into_app` builds an empty `App` and applies that
-  `Reread` (`with_reread`), and highlights the file only when it is
+- `tui` (module root): the driver. `load` returns the one `Reviews::view`
+  (the lines, their hash, all threads, the review's state and the changes
+  since the last look), so they come from the same read of the file, and
+  before the terminal is touched; `open` builds the `App` from that `View`
+  (`App::open`), labels it with the file, and highlights it only when it is
   markdown (`highlight::is_markdown`) and `color` is wanted (`cli` passes
   `color_wanted(NO_COLOR)`, read once at startup); `step(app, event, reviews, file, author)` is the only
   place effects are performed (`Add` → `Reviews::against(app.seen()).add_thread`, `Reply` →
