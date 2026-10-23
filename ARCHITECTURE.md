@@ -717,8 +717,12 @@ hand-off or close.
   - `tests/docs.rs`: ties the same listing to README's key tables and the
     interface map, keeps every interface-map cell short, and holds README's
     prose to no status or roadmap words, paragraphs of at most 120 words, and
-    a `For agents` section that links the reference docs. The footer hints are
-    pinned by the `tui::render` snapshots instead.
+    a `For agents` section that links the reference docs and the skill. It
+    also runs the built binary against `skills/ptal-review/SKILL.md`: the
+    commands, flags and JSON fields the skill names must exist in the help,
+    `ptal skill` must print the file byte for byte, and the contributor
+    skills must stay `internal` so `npx skills` lists only `ptal-review`. The
+    footer hints are pinned by the `tui::render` snapshots instead.
   - `tui::render`: `TestBackend` snapshots (inline expected strings) cover
     Normal, Visual, Panel and Input rendering, gutter glyphs and styles
     (including the selection highlight on wrapped and table rows, before and
@@ -774,7 +778,8 @@ hand-off or close.
 
 The crate is publishable; the procedure is [docs/releasing.md](docs/releasing.md).
 The `include` allowlist in `Cargo.toml` is the source of truth for what ships
-(`src/`, the integration tests, `Cargo.toml`, `Cargo.lock`, `README.md`, `LICENSE`); the
+(`src/`, the integration tests, `Cargo.toml`, `Cargo.lock`, `README.md`, `LICENSE`,
+`skills/`, which `ptal skill` embeds); the
 test files are listed one by one, so a new one is added by hand or it does not
 ship. `tests/docs.rs` is left out on purpose: it reads `docs/`, `AGENTS.md` and
 `.agents/skills/`, which the package does not hold. `docs/`,
