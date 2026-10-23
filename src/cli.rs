@@ -26,18 +26,24 @@ const EXIT_CALLER: u8 = 2;
 const EXIT_RUNTIME: u8 = 1;
 
 /// A failure the CLI reports: a core error, or one only the CLI can detect.
-#[derive(Debug)]
+/// Its [`Display`](std::fmt::Display) is the human-readable message.
+#[derive(Debug, thiserror::Error)]
 pub enum Failure {
     /// The invocation itself is malformed (clap, `--lines` syntax).
+    #[error("{0}")]
     Usage(String),
     /// A write command had neither `--as` nor `PTAL_AUTHOR`.
+    #[error("no author: pass --as <name> or set PTAL_AUTHOR")]
     MissingAuthor,
     /// `ptal <file>` needs an interactive terminal on stdin and stdout.
+    #[error("the interactive view needs a terminal; agents should use `ptal comments`")]
     NotATerminal,
     /// The terminal failed while the TUI was running.
-    Terminal(io::Error),
+    #[error("terminal error: {0}")]
+    Terminal(#[source] io::Error),
     /// The core refused or failed.
-    Core(Error),
+    #[error(transparent)]
+    Core(#[from] Error),
 }
 
 impl Failure {
@@ -67,20 +73,6 @@ impl Failure {
                 Error::Corrupt { .. } => ("corrupt", EXIT_RUNTIME),
                 Error::NoDataDir => ("no_data_dir", EXIT_RUNTIME),
             },
-        }
-    }
-
-    /// Human-readable description.
-    pub fn message(&self) -> String {
-        match self {
-            Failure::Usage(message) => message.clone(),
-            Failure::MissingAuthor => "no author: pass --as <name> or set PTAL_AUTHOR".to_string(),
-            Failure::NotATerminal => {
-                "the interactive view needs a terminal; agents should use `ptal comments`"
-                    .to_string()
-            }
-            Failure::Terminal(error) => format!("terminal error: {error}"),
-            Failure::Core(error) => error.to_string(),
         }
     }
 }
@@ -684,7 +676,7 @@ where
         Err(failure) => {
             let (_, code) = failure.classify();
             let text = if env.stderr_is_tty && !json {
-                format!("error: {}\n", failure.message())
+                format!("error: {}\n", failure.to_string())
             } else {
                 error_line(&failure)
             };
@@ -852,16 +844,10 @@ fn error_line(failure: &Failure) -> String {
     format!("{}\n", error_json(failure))
 }
 
-impl From<Error> for Failure {
-    fn from(error: Error) -> Self {
-        Failure::Core(error)
-    }
-}
-
 /// The one-line JSON error envelope written to stderr.
 pub fn error_json(failure: &Failure) -> String {
     let (code, _) = failure.classify();
-    serde_json::json!({ "error": { "code": code, "message": failure.message() } }).to_string()
+    serde_json::json!({ "error": { "code": code, "message": failure.to_string() } }).to_string()
 }
 
 /// Entry point for the `ptal` binary: read the process environment, run, and
@@ -980,6 +966,29 @@ mod tests {
         for (failure, code, exit) in all_failures() {
             assert_eq!(failure.classify(), (code, exit), "{failure:?}");
         }
+    }
+
+    #[test]
+    fn failures_display_their_documented_messages_and_are_errors() {
+        fn assert_error<E: std::error::Error>(_: &E) {}
+        let core = Failure::Core(Error::NotFound("c9".into()));
+        assert_error(&core);
+
+        assert_eq!(Failure::Usage("bad".into()).to_string(), "bad");
+        assert_eq!(
+            Failure::MissingAuthor.to_string(),
+            "no author: pass --as <name> or set PTAL_AUTHOR"
+        );
+        assert_eq!(
+            Failure::NotATerminal.to_string(),
+            "the interactive view needs a terminal; agents should use `ptal comments`"
+        );
+        assert_eq!(
+            Failure::Terminal(io_err()).to_string(),
+            "terminal error: boom"
+        );
+        assert_eq!(core.to_string(), "thread c9 not found");
+        assert!(std::error::Error::source(&Failure::Terminal(io_err())).is_some());
     }
 
     #[test]
