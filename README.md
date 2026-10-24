@@ -270,8 +270,34 @@ don't reuse the human's `$USER`.
 
 ## Where data lives
 
-`$XDG_DATA_HOME/ptal/` (default `~/.local/share/ptal/`, on macOS too). Override
-with `PTAL_DATA_DIR`. Nothing is written next to the reviewed file.
+The data directory is `$PTAL_DATA_DIR` if set, else `$XDG_DATA_HOME/ptal`,
+else `~/.local/share/ptal/` (on macOS too). Nothing is written next to the
+reviewed file.
+
+Each reviewed file gets its own directory there, named `<slug>-<hash8>`: the
+file's name, then eight hex digits of a hash of its canonical absolute path.
+
+```text
+<data>/plan.md-1a2b3c4d/
+  review.json   threads, state and the full path of the file
+  review.lock   advisory lock held while ptal writes
+  revisions/    the bytes of each revision the review has seen
+```
+
+A review is identified by the file's canonical path, so a symlink and its
+target share one. If you rename or move the file, or reach it by a different
+real path, ptal starts a new review; the old comments are still on disk but no
+longer attach to the file.
+
+ptal never deletes anything, so throwaway reviews pile up. To remove one,
+find its directory by the file's name and delete it; to remove all, delete the
+data directory:
+
+```sh
+grep -l plan.md ~/.local/share/ptal/*/review.json   # which directory is it?
+rm -r ~/.local/share/ptal/plan.md-1a2b3c4d          # one review
+rm -r ~/.local/share/ptal                           # every review
+```
 
 ## Building
 

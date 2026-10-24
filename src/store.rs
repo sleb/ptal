@@ -588,6 +588,16 @@ mod tests {
     }
 
     #[test]
+    fn renamed_file_maps_to_a_different_dir() {
+        let fx = fixture();
+        let before = fx.store.review_dir(&fx.file).unwrap();
+        let renamed = fx.file.with_file_name("renamed.md");
+        fs::rename(&fx.file, &renamed).unwrap();
+
+        assert_ne!(fx.store.review_dir(&renamed).unwrap(), before);
+    }
+
+    #[test]
     fn same_name_in_different_directories_maps_to_different_dirs() {
         let fx = fixture();
         let other_dir = fx.file.parent().unwrap().join("sub");

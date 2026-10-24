@@ -702,3 +702,25 @@ fn readme_install_covers_crates_io_and_prebuilt_binaries() {
         assert!(install.contains(&item), "Install lacks {item:?}");
     }
 }
+
+#[test]
+fn readme_data_section_matches_the_store() {
+    let readme = read("README.md");
+    let data = section(&readme, "## Where data lives", "## Building");
+    for expected in [
+        "PTAL_DATA_DIR",
+        "XDG_DATA_HOME",
+        "<slug>-<hash8>",
+        "review.json",
+        "review.lock",
+        "revisions/",
+        "canonical",
+        "rename",
+        "rm -r",
+    ] {
+        assert!(
+            data.contains(expected),
+            "Where data lives lacks {expected:?}"
+        );
+    }
+}
