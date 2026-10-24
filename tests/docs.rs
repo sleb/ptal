@@ -9,7 +9,7 @@
 //! `ptal-review` skill. README Install, Troubleshooting and Where data lives
 //! are checked against the release workflow's targets, the real error codes
 //! and messages, and the store's file names; the README links `CHANGELOG.md`, and
-//! every file it links ships in the release archive.
+//! every file it links ships in the release archive and in the crate package.
 //! The skill (`skills/ptal-review/SKILL.md`, printed by `ptal skill`) is held
 //! to the built binary: every command, flag and JSON field it names exists, it
 //! stays short, and it links the reference docs instead of restating them.
@@ -665,6 +665,34 @@ fn readme_links_ship_in_the_release_archive() {
     assert!(
         missing.is_empty(),
         "README links these, but the release archive does not ship them: {missing:?}"
+    );
+}
+
+/// The top-level names the `include` allowlist in `Cargo.toml` ships.
+fn crate_include_roots(manifest: &str) -> HashSet<String> {
+    manifest
+        .lines()
+        .find_map(|line| line.strip_prefix("include = ["))
+        .and_then(|rest| rest.split(']').next())
+        .unwrap_or("")
+        .split(',')
+        .map(|entry| entry.trim().trim_matches('"').trim_start_matches('/'))
+        .filter_map(|entry| entry.split('/').next())
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn readme_relative_links_ship_in_the_crate_package() {
+    let shipped = crate_include_roots(&read("Cargo.toml"));
+    let mut missing: Vec<String> = relative_link_roots(&read("README.md"))
+        .into_iter()
+        .filter(|root| !shipped.contains(root))
+        .collect();
+    missing.sort();
+    assert!(
+        missing.is_empty(),
+        "README links these, but the crate package does not ship them: {missing:?}"
     );
 }
 
