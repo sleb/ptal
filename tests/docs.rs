@@ -674,7 +674,7 @@ fn an_unshipped_readme_link_is_reported() {
         "      - name: Archive\n        run: |\n          cp -R docs \"$NAME/\"\n      - uses: x\n";
     assert_eq!(
         unshipped_links(
-            "[x](nope/y.md) [d](docs/a.md#b) [u](https://x.io/y)",
+            "[x](nope/y.md) [d](./docs/a.md#b) [t](docs/a.md \"t\") [m](mailto:a@b.c) [u](https://x.io/y)",
             workflow
         ),
         ["nope"]
