@@ -122,5 +122,6 @@ Each item links the issue that holds its detail.
 - TUI text layout: sub-line scroll, hanging indent, real tab stops, ragged table rows, pipes in code cells, tables in lists, character selection, `NO_COLOR` for the TUI chrome (#131).
 - TUI table cells: inline markup (#107).
 - TUI: thread editing, resolve/reopen notes, sidebar and resolved toggles, turn-back notification (#132).
+- Late comments: every comment records the round and turn it was written in, so one written after its side handed off shows as late (#143).
 - Highlight: code blocks by language, non-markdown files, front matter, a toggle key (#134); themes (#49).
 - Distribution: Windows, musl, signing, installers (#136).

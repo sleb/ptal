@@ -2,16 +2,7 @@
 
 How a ptal review runs between you and an agent: who acts when, what each
 side can do, and how a review ends. The command and key for each operation
-are in [interfaces.md](interfaces.md). The scenarios and reasoning these
-definitions were worked out from are in `docs/review-interactions.md` at
-commit `0365930` (removed since).
-
-> **Status.** Threads, comments, replies, resolving and reopening are built,
-> and so are revisions and threads that follow edits, turns, hand-offs,
-> closing and reopening a review, waiting for a turn, live refresh, and
-> changes since your last look (TUI only). Rounds are not a stored or shown
-> concept, and late comments are not built. Each section below says which it
-> is.
+are in [interfaces.md](interfaces.md).
 
 ## The shape of a review
 
@@ -30,8 +21,6 @@ hand off; the agent revises and answers, hands back; until you close it.
 
 ## Threads and comments
 
-*Built.*
-
 - A **thread** is a conversation anchored to a line or a range of lines.
   Either side starts one; its first comment says what it is about.
 - A **comment** is one message in a thread, with an author and a time.
@@ -49,8 +38,6 @@ hand off; the agent revises and answers, hands back; until you close it.
   why; the agent does the same.
 
 ## Revisions
-
-*Built.*
 
 - A **revision** is one version of the file's content. ptal never edits
   the file; it notices a new revision when someone writes something (a
@@ -76,8 +63,6 @@ hand off; the agent revises and answers, hands back; until you close it.
   it is the same review.
 
 ## Turns
-
-*Built.*
 
 - One side at a time has the **turn**: the side expected to act next. A
   review starts on your turn.
@@ -105,8 +90,6 @@ hand off; the agent revises and answers, hands back; until you close it.
 
 ## Closing and the verdict
 
-*Built.*
-
 - Only you **close** a review, at any time, even during the agent's turn.
   A closed review has no turn: nothing more is expected in it.
 - A close always carries a **verdict**, which tells the agent what to do
@@ -125,9 +108,7 @@ hand off; the agent revises and answers, hands back; until you close it.
 
 ## Rounds
 
-*Derived from the hand-offs; nothing extra is stored. Changes since your
-last look are built (TUI only); rounds are not shown anywhere, and late
-comments are planned.*
+*Derived from the hand-offs; nothing extra is stored and rounds are not shown.*
 
 - A **round** is one of your turns plus the agent turn that answers it.
   Round 1 starts with the review; each hand-back or reopen starts the next.
@@ -137,8 +118,6 @@ comments are planned.*
   from the revision on your latest hand-off or close to the file now.
   Opening the TUI is not a look (reads never write), and a reopen is not
   one either. The TUI marks these changes in the gutter.
-- *Planned:* every comment belongs to the round and turn it was written
-  in, so a late comment, written after its side handed off, shows as late.
 
 ## Glossary
 
