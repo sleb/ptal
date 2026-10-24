@@ -6,14 +6,41 @@ workflow publishes that section as the GitHub Release notes. See
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-24
+
+Mostly docs, plus one new command, `ptal skill`. The review store format and
+the shapes of successful JSON output are unchanged.
+
+**CLI behavior changes** (edge cases, not the normal path):
+
+- `skill` is now a command name. A file named `skill` needs `./skill` to open
+  in the TUI, like the other command names.
+
+**New**
+
+- `ptal skill` prints an agent skill for the review loop (markdown), the same
+  file `npx skills add sleb/ptal` installs. The crate embeds
+  `skills/ptal-review/SKILL.md` for it, so it is now in the package.
+
+**Docs**
+
 - README: install options (crates.io, prebuilt archives with checksum
   verification), where data lives (one directory per file; a rename or move
   starts a new review; how to remove reviews), troubleshooting for the common
-  errors, and a link to this changelog. The release archives now include the
-  docs README links to.
-- `ptal skill` prints an agent skill for the review loop (markdown), the same
-  file `npx skills add sleb/ptal` installs. A file named `skill` now needs
-  `./skill` to open in the TUI, like the other command names.
+  errors, and a link to this changelog.
+- `ARCHITECTURE.md` has an end-to-end view, and the per-component invariants,
+  contracts and test claims moved to `docs/components/`. Future work is listed
+  in one `Deferred` section.
+- README, `ARCHITECTURE.md`, `docs/protocol.md` and `docs/interfaces.md` no
+  longer carry built/planned status bookkeeping, and the contributor docs
+  (`AGENTS.md`, the ptal-plan skill) stop asking for it.
+
+**Build and release**
+
+- The release archives now include the docs README links to.
+- The gate runs `knap lint .` to check markdown links and anchors.
+- The package `include` list, the CI and release workflows changed, and the
+  `scripts/` dry-run files were removed.
 
 ## 0.3.1 - 2026-10-23
 
