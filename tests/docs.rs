@@ -6,10 +6,12 @@
 //! no milestone-status bookkeeping, and one definition of done. README's prose
 //! is held to the same: no status or roadmap words, no paragraph over 120
 //! words, and a `For agents` section that links the reference docs and the
-//! `ptal-review` skill. That skill (`skills/ptal-review/SKILL.md`, printed by
-//! `ptal skill`) is held to the built binary: every command, flag and JSON
-//! field it names exists, it stays short, and it links the reference docs
-//! instead of restating them.
+//! `ptal-review` skill. README Install, Troubleshooting and Where data lives
+//! are checked against the release workflow's targets, the real error codes
+//! and messages, and the store's file names; the README links `CHANGELOG.md`.
+//! The skill (`skills/ptal-review/SKILL.md`, printed by `ptal skill`) is held
+//! to the built binary: every command, flag and JSON field it names exists, it
+//! stays short, and it links the reference docs instead of restating them.
 //!
 //! These read the repo at run time, so the file is not part of the published
 //! package.
@@ -441,6 +443,175 @@ fn readme_agent_section_links_the_reference_docs() {
         !readme.contains("**Turns.**"),
         "the Turns paragraph is back"
     );
+}
+
+/// The `target:` values of the build matrix in `.github/workflows/release.yml`.
+fn release_targets() -> Vec<String> {
+    read(".github/workflows/release.yml")
+        .lines()
+        .filter_map(|line| line.split_once("target: ").map(|(_, rest)| rest))
+        .filter(|rest| {
+            rest.contains("-apple-") || rest.contains("-linux-") || rest.contains("-windows-")
+        })
+        .filter_map(|rest| rest.split([',', ' ']).next())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The first-column targets of the README's prebuilt-binaries table.
+fn readme_table_targets(install: &str) -> Vec<String> {
+    install
+        .lines()
+        .filter_map(|line| line.strip_prefix("| `"))
+        .filter_map(|rest| rest.split('`').next())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The `version = "..."` after `needle`, e.g. a `--version 0.24.0` flag.
+fn version_after<'a>(text: &'a str, needle: &str) -> Option<&'a str> {
+    let rest = text.split(needle).nth(1)?;
+    rest.split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .next()
+}
+
+#[test]
+fn release_targets_are_parsed_from_the_workflow() {
+    let targets = release_targets();
+    assert!(!targets.is_empty(), "no targets parsed from release.yml");
+    assert!(targets.contains(&"x86_64-unknown-linux-gnu".to_string()));
+}
+
+#[test]
+fn readme_install_covers_crates_io_and_prebuilt_binaries() {
+    let readme = read("README.md");
+    let install = section(&readme, "## Install", "## Usage");
+    let mut expected: Vec<String> = [
+        "cargo install ptal --locked",
+        "SHA256SUMS",
+        "shasum -a 256 -c",
+        "sha256sum",
+        "mkdir -p ~/.local/bin",
+        "rustup.rs",
+        "glibc",
+        "Windows",
+    ]
+    .map(String::from)
+    .into();
+    expected.extend(release_targets());
+    for want in expected {
+        assert!(install.contains(&want), "Install lacks {want:?}");
+    }
+    assert!(
+        !install.contains("--ignore-missing"),
+        "--ignore-missing is not portable"
+    );
+}
+
+#[test]
+fn readme_target_table_lists_exactly_the_release_targets() {
+    let readme = read("README.md");
+    let install = section(&readme, "## Install", "## Usage");
+    let mut listed = readme_table_targets(install);
+    let mut built = release_targets();
+    listed.sort();
+    built.sort();
+    assert_eq!(listed, built);
+}
+
+#[test]
+fn readme_names_the_declared_minimum_rust_version() {
+    let manifest = read("Cargo.toml");
+    let msrv = version_after(&manifest, "rust-version = \"").expect("rust-version in Cargo.toml");
+    let readme = read("README.md");
+    let install = section(&readme, "## Install", "## Usage");
+    assert!(
+        install.contains(&format!("{msrv} or newer")),
+        "Install does not name Rust {msrv}"
+    );
+}
+
+#[test]
+fn readme_data_section_matches_the_store() {
+    let readme = read("README.md");
+    let data = section(&readme, "## Where data lives", "## Building");
+    for want in [
+        "PTAL_DATA_DIR",
+        "XDG_DATA_HOME",
+        "<slug>-<hash8>",
+        "review.json",
+        "review.lock",
+        "revisions/",
+        "canonical",
+        "rename",
+        "rm -r",
+    ] {
+        assert!(data.contains(want), "Where data lives lacks {want:?}");
+    }
+    // The `<slug>-<hash8>` format itself is pinned by a unit test in
+    // src/store.rs. The documented file names are the ones the store writes.
+    let store = read("src/store.rs");
+    for file in [
+        "const REVIEW_FILE: &str = \"review.json\"",
+        "const LOCK_FILE: &str = \"review.lock\"",
+        "const REVISIONS_DIR: &str = \"revisions\"",
+    ] {
+        assert!(store.contains(file), "src/store.rs lost {file:?}");
+    }
+    // The removal recipe matches the stored path field, which is pretty-printed.
+    assert!(data.contains("\"path\": \""));
+}
+
+#[test]
+fn readme_troubleshooting_matches_the_binary() {
+    use ptal::cli::Failure;
+    use ptal::error::Error;
+    let readme = read("README.md");
+    let troubleshooting = section(&readme, "## Troubleshooting", "## Where data lives");
+    let cli = read("src/cli.rs");
+    for (code, message) in [
+        ("not_a_terminal", Failure::NotATerminal.to_string()),
+        ("missing_author", Failure::MissingAuthor.to_string()),
+        ("locked", Error::Locked.to_string()),
+        ("file_changed", Error::FileChanged.to_string()),
+    ] {
+        assert!(
+            troubleshooting.contains(&format!("`{code}`")),
+            "Troubleshooting lacks the code {code}"
+        );
+        assert!(
+            troubleshooting.contains(&message),
+            "Troubleshooting lacks the message {message:?}"
+        );
+        assert!(
+            cli.contains(&format!("\"{code}\"")),
+            "src/cli.rs no longer has the code {code}"
+        );
+    }
+    // The TUI reads `$USER` only; the README must not send its users to
+    // `PTAL_AUTHOR`.
+    assert!(troubleshooting.contains("export USER=<name>"));
+    assert!(!troubleshooting.contains("export PTAL_AUTHOR"));
+    assert!(cli.contains("std::env::var(\"USER\")"));
+}
+
+#[test]
+fn knap_is_pinned_to_one_version_in_ci_and_the_docs() {
+    let needle = "cargo install knap --locked --version ";
+    let ci_yml = read(".github/workflows/ci.yml");
+    let agents_md = read("AGENTS.md");
+    let ci = version_after(&ci_yml, needle);
+    let agents = version_after(&agents_md, needle);
+    assert!(
+        ci.is_some_and(|v| !v.is_empty()),
+        "ci.yml does not pin knap"
+    );
+    assert_eq!(ci, agents);
+}
+
+#[test]
+fn readme_links_the_changelog() {
+    assert!(read("README.md").contains("](CHANGELOG.md)"));
 }
 
 // ---- the ptal-review skill -------------------------------------------------

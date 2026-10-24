@@ -35,14 +35,14 @@ Produce an execution plan for one GitHub issue in this repo, in the shape of the
 
 ## Working agreements
 
-`AGENTS.md`'s working agreements and five-command green gate bind every plan and every step; read them there. The definition of done for a step is that gate. Point at the source rather than copying it: a copy drifts, and a drifting copy is what this skill used to be.
+`AGENTS.md`'s working agreements and six-command green gate bind every plan and every step; read them there. The definition of done for a step is that gate. Point at the source rather than copying it: a copy drifts, and a drifting copy is what this skill used to be.
 
 ## Plan template
 
 ```markdown
 ## Execution plan
 
-Working agreements: `AGENTS.md`'s working agreements bind every step — strict TDD, fearless refactoring, docs stay true, one interface map, `/rust-skills` for Rust code — and its five-command green gate is the definition of done. Read `AGENTS.md`; this plan does not restate them.
+Working agreements: `AGENTS.md`'s working agreements bind every step — strict TDD, fearless refactoring, docs stay true, one interface map, `/rust-skills` for Rust code — and its six-command green gate is the definition of done. Read `AGENTS.md`; this plan does not restate them.
 
 ### Overview
 - **Today:** <what is wrong or missing, in one or two lines>

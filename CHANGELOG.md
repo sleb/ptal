@@ -6,6 +6,10 @@ workflow publishes that section as the GitHub Release notes. See
 
 ## Unreleased
 
+- README: install options (crates.io, prebuilt archives with checksum
+  verification), where data lives (one directory per file; a rename or move
+  starts a new review; how to remove reviews), troubleshooting for the common
+  errors, and a link to this changelog.
 - `ptal skill` prints an agent skill for the review loop (markdown), the same
   file `npx skills add sleb/ptal` installs. A file named `skill` now needs
   `./skill` to open in the TUI, like the other command names.
