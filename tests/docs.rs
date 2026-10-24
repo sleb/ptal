@@ -724,3 +724,39 @@ fn readme_data_section_matches_the_store() {
         );
     }
 }
+
+#[test]
+fn readme_troubleshooting_matches_the_binary() {
+    use ptal::Error;
+    use ptal::cli::Failure;
+
+    let readme = read("README.md");
+    let troubleshooting = section(&readme, "## Troubleshooting", "## Where data lives");
+    let cli_failures = [
+        Failure::NotATerminal,
+        Failure::MissingAuthor,
+        Failure::Core(Error::Locked),
+    ];
+    for failure in &cli_failures {
+        let message = failure.to_string();
+        assert!(
+            troubleshooting.contains(&message),
+            "Troubleshooting lacks the message {message:?}"
+        );
+        let (code, _) = failure.classify();
+        assert!(
+            troubleshooting.contains(&format!("`{code}`")),
+            "Troubleshooting lacks the code `{code}`"
+        );
+    }
+    // `file_changed` is a TUI footer message; no CLI command reports it.
+    let message = Error::FileChanged.to_string();
+    assert!(
+        troubleshooting.contains(&message),
+        "Troubleshooting lacks the message {message:?}"
+    );
+    assert!(
+        troubleshooting.contains("renamed"),
+        "Troubleshooting lacks the vanished-comments entry"
+    );
+}

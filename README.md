@@ -268,6 +268,28 @@ thread is waiting on you when its last comment's author is not your `--as`
 name (exact match). Use one stable name per agent (set `PTAL_AUTHOR`), and
 don't reuse the human's `$USER`.
 
+**"the interactive view needs a terminal; agents should use `ptal comments`"
+(`not_a_terminal`, exit 1).** Something ran `ptal <file>` without a terminal,
+usually an agent. Only the human opens the TUI; the agent uses the commands
+under [For agents](#for-agents).
+
+**"no author: pass --as <name> or set PTAL_AUTHOR" (`missing_author`, exit
+2).** For the TUI this means `$USER` is unset, as in some containers. Run
+`export USER=<name>` first. For a command, pass `--as` or set `PTAL_AUTHOR`.
+
+**"review is locked by another process" (`locked`, exit 1).** Another ptal
+held the review's lock for over 5 seconds; the TUI shows the same text in its
+footer. Retry. If no ptal is running and it persists, some process still holds
+the lock: end it. Don't delete `review.lock`.
+
+**"the file changed: look again".** The TUI shows this in its footer when the
+file changed on disk after the screen last read it, and your comment or
+hand-off was not saved. The screen has re-read the file; repeat the key.
+
+**My comments vanished after I renamed or moved the file.** A review belongs
+to the file's canonical path, so the renamed file starts a new one. The old
+comments are still on disk; see [Where data lives](#where-data-lives).
+
 ## Where data lives
 
 The data directory is `$PTAL_DATA_DIR` if set, else `$XDG_DATA_HOME/ptal`,
