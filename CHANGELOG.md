@@ -6,6 +6,11 @@ workflow publishes that section as the GitHub Release notes. See
 
 ## Unreleased
 
+## 0.3.2 - 2026-10-24
+
+Mostly docs. The one new command is `ptal skill`; the review store format and
+existing CLI and TUI behavior are unchanged.
+
 - README: install options (crates.io, prebuilt archives with checksum
   verification), where data lives (one directory per file; a rename or move
   starts a new review; how to remove reviews), troubleshooting for the common
@@ -14,6 +19,13 @@ workflow publishes that section as the GitHub Release notes. See
 - `ptal skill` prints an agent skill for the review loop (markdown), the same
   file `npx skills add sleb/ptal` installs. A file named `skill` now needs
   `./skill` to open in the TUI, like the other command names.
+- `ARCHITECTURE.md` has an end-to-end view, and the per-component invariants,
+  contracts and test claims moved to `docs/components/`. Future work is listed
+  in one `Deferred` section.
+- README, `ARCHITECTURE.md`, `docs/protocol.md` and `docs/interfaces.md` no
+  longer carry built/planned status bookkeeping, and the contributor docs
+  (`AGENTS.md`, the ptal-plan skill) stop asking for it.
+- The gate now runs `knap lint .` to check markdown links and anchors.
 
 ## 0.3.1 - 2026-10-23
 
