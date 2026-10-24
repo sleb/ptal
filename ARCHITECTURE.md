@@ -84,7 +84,7 @@ Each component doc has a `Tests` section with its claims. The layers:
   - the help listing against README's key tables and the interface map, with short interface-map cells;
   - README prose: no status or roadmap words, paragraphs of at most 120 words, and a `For agents` section linking the reference docs and the skill;
   - the built binary against `skills/ptal-review/SKILL.md`, and the contributor skills staying `internal`;
-  - `ARCHITECTURE.md` and the component docs: no status words or local deferrals, one issue-linked `## Deferred`, prose units of at most 120 words, each component doc's shape, and links to every component doc.
+  - `ARCHITECTURE.md` and the component docs: no status words or local deferrals, future work only in the final issue-linked list, prose units of at most 120 words, each component doc's shape, and links to every component doc.
 - A real-terminal check (pty) is manual.
 
 ## Distribution
