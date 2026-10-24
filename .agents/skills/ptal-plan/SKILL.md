@@ -1,6 +1,8 @@
 ---
 name: ptal-plan
 description: Draft an execution plan for a ptal GitHub issue (story), review it with the user, then publish it to the issue as a comment. Use when the user says "/ptal-plan <issue#>" or asks to plan the next story.
+metadata:
+  internal: true
 ---
 
 # ptal-plan

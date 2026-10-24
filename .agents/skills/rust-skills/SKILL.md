@@ -9,6 +9,7 @@ description: >
   Invoke with /rust-skills.
 license: MIT
 metadata:
+  internal: true
   author: leonardomso
   version: "1.5.1"
   sources:

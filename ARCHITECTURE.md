@@ -35,7 +35,7 @@ Dependencies point downward only. `model` depends on nothing in the crate.
 | `model` | Built: `Review`, `Revision`, `Thread`, `Status`, `Comment`, `Anchor`, `State`, the review log (`Entry`, `Event`, `Side`, `Verdict`), its derived `ReviewState`, and the human's last look (`Review::last_look`) |
 | `store` | Built: data dir, atomic `review.json`, lock, schema check, `revisions/` snapshots |
 | `review` | Built: `add_thread`, `view` (anchors mapped across revisions, the review's state, changes since the human's last look), `resolve`, `reply`, `reopen`, `hand_off`, `close`, `reopen_review`, `wait`, `against` (writes against the content shown), `stamp` |
-| `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff`, `wait` |
+| `cli` | Built: `comments` (with the review's state), `add`, `resolve`, `reply`, `reopen` (a thread, or the review), `handoff`, `wait`, `skill` |
 | `tui` | Built: the interactive review (modes, thread panel, comment box, search, review banner and overlay, hand-off, close, reopen, `?` help), live refresh, gutter markers, wrapped lines, aligned tables, markdown highlighting; the full surface is [docs/interfaces.md](docs/interfaces.md) |
 | `highlight` | Built (markdown structure, `tui::highlight`) |
 | `anchor` | Built: `map_range`, `Diff` (with `Diff::changes`), `clamp` (Myers line diff via `similar`) |
@@ -378,7 +378,7 @@ with the process facts (store, clock, ticker, `PTAL_AUTHOR`, TTY flags) injected
 `Env`, so every path is testable in-process; `main` only fills `Env` from the
 real process.
 
-Commands: `comments`, `add`, `resolve`, `reply`, `reopen`, `handoff`, `wait`. Bare `ptal <file>` launches the TUI
+Commands: `comments`, `add`, `resolve`, `reply`, `reopen`, `handoff`, `wait`, `skill`. Bare `ptal <file>` launches the TUI
 (`args_conflicts_with_subcommands`; a file named like a subcommand is written
 `./name`). `run` splits into `run_command` and `launch_tui`; the latter
 refuses everything it can before the terminal is touched: no TTY on stdin and
@@ -387,7 +387,9 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
 
 **Contract**
 - **stdout** is data only: JSON when not a TTY (or `--json`), a readable
-  rendering when a TTY. **stderr** is diagnostics. Never mixed; on failure
+  rendering when a TTY. The one exception is `skill`, which always prints
+  the markdown of `skills/ptal-review/SKILL.md` (embedded with
+  `include_str!`) and needs no data dir. **stderr** is diagnostics. Never mixed; on failure
   stdout is empty. `--help` and `--version` go to stdout with exit `0`. A
   failed stdout write is `Failure::Stdout` (`io`, exit `1`); a closed pipe
   (`BrokenPipe`) ends quietly with the command's own status.
@@ -453,7 +455,9 @@ The TUI's author is `$USER` (via `Env.user`), never `PTAL_AUTHOR`.
   subcommand is named there, and every subcommand's help says what it prints
   and has an example. It states facts about the tool (what a command does, what a field
   means), not policy, and names no particular multiplexer: when to resolve, what to ask, how to hand over to the
-  human belong to the user's own skill or prompt, which ptal does not ship.
+  human are policy: they belong to the user's skill or prompt. ptal ships one
+  as an example, `skills/ptal-review/SKILL.md` (`ptal skill`), whose
+  `Your choices` section the user edits; the help stays policy-free.
 
 *Deferred:* `ptal schema`; output shapes are the `model`
 types, so changing them is a `schema_version` bump.
@@ -715,8 +719,12 @@ hand-off or close.
   - `tests/docs.rs`: ties the same listing to README's key tables and the
     interface map, keeps every interface-map cell short, and holds README's
     prose to no status or roadmap words, paragraphs of at most 120 words, and
-    a `For agents` section that links the reference docs. The footer hints are
-    pinned by the `tui::render` snapshots instead.
+    a `For agents` section that links the reference docs and the skill. It
+    also runs the built binary against `skills/ptal-review/SKILL.md`: the
+    commands, flags and JSON fields the skill names must exist in the help,
+    `ptal skill` must print the file byte for byte, and the contributor
+    skills must stay `internal` so `npx skills` lists only `ptal-review`. The
+    footer hints are pinned by the `tui::render` snapshots instead.
   - `tui::render`: `TestBackend` snapshots (inline expected strings) cover
     Normal, Visual, Panel and Input rendering, gutter glyphs and styles
     (including the selection highlight on wrapped and table rows, before and
@@ -772,7 +780,8 @@ hand-off or close.
 
 The crate is publishable; the procedure is [docs/releasing.md](docs/releasing.md).
 The `include` allowlist in `Cargo.toml` is the source of truth for what ships
-(`src/`, the integration tests, `Cargo.toml`, `Cargo.lock`, `README.md`, `LICENSE`); the
+(`src/`, the integration tests, `Cargo.toml`, `Cargo.lock`, `README.md`, `LICENSE`,
+`skills/`, which `ptal skill` embeds); the
 test files are listed one by one, so a new one is added by hand or it does not
 ship. `tests/docs.rs` is left out on purpose: it reads `docs/`, `AGENTS.md` and
 `.agents/skills/`, which the package does not hold. `docs/`,

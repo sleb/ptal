@@ -248,6 +248,19 @@ The loop:
 Run `ptal wait` in the background if your agent's command tool can; otherwise
 pass a `--timeout` below the tool's time limit and loop.
 
+To give your agent this loop as a skill, install
+[`skills/ptal-review/SKILL.md`](skills/ptal-review/SKILL.md) with
+`npx skills add sleb/ptal --skill ptal-review`, or save the copy built into
+your binary (other agents: their skills directory):
+
+```sh
+mkdir -p ~/.claude/skills/ptal-review
+ptal skill > ~/.claude/skills/ptal-review/SKILL.md
+```
+
+A saved skill is a snapshot: run `ptal skill` again after upgrading ptal.
+Edit its `Your choices` section to set what you want the agent to do.
+
 Writes require `--as <name>` (or `PTAL_AUTHOR`) so every message is
 attributed. Output is JSON when stdout is not a terminal, or always with
 `--json`. Failures print nothing on stdout and one JSON error line on stderr;
