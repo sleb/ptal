@@ -8,7 +8,8 @@
 //! words, and a `For agents` section that links the reference docs and the
 //! `ptal-review` skill. README Install, Troubleshooting and Where data lives
 //! are checked against the release workflow's targets, the real error codes
-//! and messages, and the store's file names; the README links `CHANGELOG.md`.
+//! and messages, and the store's file names; the README links `CHANGELOG.md`, and
+//! every file it links ships in the release archive.
 //! The skill (`skills/ptal-review/SKILL.md`, printed by `ptal skill`) is held
 //! to the built binary: every command, flag and JSON field it names exists, it
 //! stays short, and it links the reference docs instead of restating them.
@@ -612,6 +613,72 @@ fn knap_is_pinned_to_one_version_in_ci_and_the_docs() {
 #[test]
 fn readme_links_the_changelog() {
     assert!(read("README.md").contains("](CHANGELOG.md)"));
+}
+
+/// Top-level path segments of the relative link targets in `text`; anchors
+/// and absolute URLs are ignored.
+fn relative_link_roots(text: &str) -> HashSet<String> {
+    text.split("](")
+        .skip(1)
+        .filter_map(|rest| rest.split(')').next())
+        .filter_map(|target| target.split([' ', '#']).next())
+        .map(|path| path.trim_start_matches("./"))
+        .filter(|path| !path.is_empty() && !path.contains(':'))
+        .filter_map(|path| path.split('/').next())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The file names the `cp` lines of the workflow's `Archive` step ship (the
+/// last word of each line is the destination).
+fn archive_copy_list(workflow: &str) -> HashSet<String> {
+    let step = workflow
+        .split("- name: Archive")
+        .nth(1)
+        .and_then(|rest| rest.split("- uses:").next())
+        .unwrap_or("");
+    step.lines()
+        .filter_map(|line| line.trim().strip_prefix("cp "))
+        .flat_map(|args| {
+            let mut words: Vec<&str> = args.split_whitespace().filter(|w| *w != "-R").collect();
+            words.pop();
+            words
+        })
+        .filter_map(|word| word.trim_matches('"').rsplit('/').next())
+        .map(str::to_string)
+        .collect()
+}
+
+fn unshipped_links(readme: &str, workflow: &str) -> Vec<String> {
+    let shipped = archive_copy_list(workflow);
+    let mut missing: Vec<String> = relative_link_roots(readme)
+        .into_iter()
+        .filter(|root| !shipped.contains(root))
+        .collect();
+    missing.sort();
+    missing
+}
+
+#[test]
+fn readme_links_ship_in_the_release_archive() {
+    let missing = unshipped_links(&read("README.md"), &read(".github/workflows/release.yml"));
+    assert!(
+        missing.is_empty(),
+        "README links these, but the release archive does not ship them: {missing:?}"
+    );
+}
+
+#[test]
+fn an_unshipped_readme_link_is_reported() {
+    let workflow =
+        "      - name: Archive\n        run: |\n          cp -R docs \"$NAME/\"\n      - uses: x\n";
+    assert_eq!(
+        unshipped_links(
+            "[x](nope/y.md) [d](./docs/a.md#b) [t](docs/a.md \"t\") [m](mailto:a@b.c) [u](https://x.io/y)",
+            workflow
+        ),
+        ["nope"]
+    );
 }
 
 // ---- the ptal-review skill -------------------------------------------------
