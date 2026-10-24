@@ -21,7 +21,8 @@ it is persist across rounds and revisions.
 cargo install ptal --locked
 ```
 
-`--locked` builds with the dependency versions ptal was tested with.
+`--locked` builds with the dependency versions ptal was tested with. This
+needs a Rust toolchain, 1.89 or newer; get one from [rustup.rs](https://rustup.rs).
 
 ### Prebuilt binaries
 
@@ -40,10 +41,14 @@ Download the archive for your target and `SHA256SUMS` into one directory,
 then verify, extract and put `ptal` on your `PATH`:
 
 ```sh
-shasum -a 256 -c SHA256SUMS --ignore-missing   # expect: OK for your archive
+grep ptal-X.Y.Z-<target>.tar.gz SHA256SUMS | shasum -a 256 -c   # expect: OK
 tar -xzf ptal-X.Y.Z-<target>.tar.gz
+mkdir -p ~/.local/bin
 install ptal-X.Y.Z-<target>/ptal ~/.local/bin/
 ```
+
+On Linux without `shasum`, use `sha256sum -c` in its place. Make sure
+`~/.local/bin` is on your `PATH`.
 
 The Linux binaries link the glibc of the build machine and may not run on
 older distributions; use crates.io there. There is no Windows build.
@@ -271,7 +276,8 @@ the screen or the agent last read it, so the write was refused. Read again
 
 **`missing_author`: no author: pass --as <name> or set PTAL_AUTHOR.** The TUI
 signs comments with `$USER` and exits with this when it is unset. Run
-`export USER=<name>`, or `export PTAL_AUTHOR=<name>`.
+`export USER=<name>`. (`PTAL_AUTHOR` and `--as` apply to the write commands,
+not the TUI.)
 
 **My comments vanished after I renamed or moved the file.** A review belongs
 to the file's path, so the renamed file started a new, empty review. The old
@@ -296,8 +302,11 @@ one review. A rename or move gives the file a new path and so a new, empty
 review. A copy is a new file too.
 
 ptal never deletes a review, so throwaway ones pile up. To remove one, delete
-its directory: `grep -l plan.md <data dir>/*/review.json` finds it, then
-`rm -r <data dir>/<slug>-<hash8>`. To remove them all, `rm -r <data dir>`.
+its directory. `<data dir>` is `$PTAL_DATA_DIR`, else `$XDG_DATA_HOME/ptal`,
+else `~/.local/share/ptal`. `review.json` records the file's full path, so
+`grep -lF '"path": "/full/path/to/plan.md"' <data dir>/*/review.json` finds
+it; check the match, then `rm -r <data dir>/<slug>-<hash8>`. To remove them
+all, `rm -r <data dir>`.
 
 ## Building
 

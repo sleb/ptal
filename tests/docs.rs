@@ -446,16 +446,36 @@ fn readme_agent_section_links_the_reference_docs() {
 fn release_targets() -> Vec<String> {
     read(".github/workflows/release.yml")
         .lines()
-        .filter_map(|line| line.trim().strip_prefix("- { target: "))
-        .filter_map(|rest| rest.split(',').next())
+        .filter_map(|line| line.split_once("target: ").map(|(_, rest)| rest))
+        .filter(|rest| {
+            rest.contains("-apple-") || rest.contains("-linux-") || rest.contains("-windows-")
+        })
+        .filter_map(|rest| rest.split([',', ' ']).next())
         .map(str::to_string)
         .collect()
+}
+
+/// The first-column targets of the README's prebuilt-binaries table.
+fn readme_table_targets(install: &str) -> Vec<String> {
+    install
+        .lines()
+        .filter_map(|line| line.strip_prefix("| `"))
+        .filter_map(|rest| rest.split('`').next())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The `version = "..."` after `needle`, e.g. a `--version 0.24.0` flag.
+fn version_after<'a>(text: &'a str, needle: &str) -> Option<&'a str> {
+    let rest = text.split(needle).nth(1)?;
+    rest.split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .next()
 }
 
 #[test]
 fn release_targets_are_parsed_from_the_workflow() {
     let targets = release_targets();
-    assert_eq!(targets.len(), 4, "{targets:?}");
+    assert!(!targets.is_empty(), "no targets parsed from release.yml");
     assert!(targets.contains(&"x86_64-unknown-linux-gnu".to_string()));
 }
 
@@ -467,6 +487,9 @@ fn readme_install_covers_crates_io_and_prebuilt_binaries() {
         "cargo install ptal --locked",
         "SHA256SUMS",
         "shasum -a 256 -c",
+        "sha256sum",
+        "mkdir -p ~/.local/bin",
+        "rustup.rs",
         "glibc",
         "Windows",
     ]
@@ -476,6 +499,33 @@ fn readme_install_covers_crates_io_and_prebuilt_binaries() {
     for want in expected {
         assert!(install.contains(&want), "Install lacks {want:?}");
     }
+    assert!(
+        !install.contains("--ignore-missing"),
+        "--ignore-missing is not portable"
+    );
+}
+
+#[test]
+fn readme_target_table_lists_exactly_the_release_targets() {
+    let readme = read("README.md");
+    let install = section(&readme, "## Install", "## Usage");
+    let mut listed = readme_table_targets(install);
+    let mut built = release_targets();
+    listed.sort();
+    built.sort();
+    assert_eq!(listed, built);
+}
+
+#[test]
+fn readme_names_the_declared_minimum_rust_version() {
+    let manifest = read("Cargo.toml");
+    let msrv = version_after(&manifest, "rust-version = \"").expect("rust-version in Cargo.toml");
+    let readme = read("README.md");
+    let install = section(&readme, "## Install", "## Usage");
+    assert!(
+        install.contains(&format!("{msrv} or newer")),
+        "Install does not name Rust {msrv}"
+    );
 }
 
 #[test]
@@ -487,6 +537,7 @@ fn readme_data_section_matches_the_store() {
         "XDG_DATA_HOME",
         "<slug>-<hash8>",
         "review.json",
+        "review.lock",
         "revisions/",
         "canonical",
         "rename",
@@ -494,10 +545,18 @@ fn readme_data_section_matches_the_store() {
     ] {
         assert!(data.contains(want), "Where data lives lacks {want:?}");
     }
+    // The `<slug>-<hash8>` format itself is pinned by a unit test in
+    // src/store.rs. The documented file names are the ones the store writes.
     let store = read("src/store.rs");
-    for file in ["review.json", "review.lock", "revisions"] {
+    for file in [
+        "const REVIEW_FILE: &str = \"review.json\"",
+        "const LOCK_FILE: &str = \"review.lock\"",
+        "const REVISIONS_DIR: &str = \"revisions\"",
+    ] {
         assert!(store.contains(file), "src/store.rs lost {file:?}");
     }
+    // The removal recipe matches the stored path field, which is pretty-printed.
+    assert!(data.contains("\"path\": \""));
 }
 
 #[test]
@@ -526,6 +585,25 @@ fn readme_troubleshooting_matches_the_binary() {
             "src/cli.rs no longer has the code {code}"
         );
     }
+    // The TUI reads `$USER` only; the README must not send its users to
+    // `PTAL_AUTHOR`.
+    assert!(troubleshooting.contains("export USER=<name>"));
+    assert!(!troubleshooting.contains("export PTAL_AUTHOR"));
+    assert!(cli.contains("std::env::var(\"USER\")"));
+}
+
+#[test]
+fn knap_is_pinned_to_one_version_in_ci_and_the_docs() {
+    let needle = "cargo install knap --locked --version ";
+    let ci_yml = read(".github/workflows/ci.yml");
+    let agents_md = read("AGENTS.md");
+    let ci = version_after(&ci_yml, needle);
+    let agents = version_after(&agents_md, needle);
+    assert!(
+        ci.is_some_and(|v| !v.is_empty()),
+        "ci.yml does not pin knap"
+    );
+    assert_eq!(ci, agents);
 }
 
 #[test]

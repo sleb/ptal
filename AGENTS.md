@@ -29,7 +29,7 @@ Plan stories with `/ptal-plan <issue#>`; the approved plan is posted as a commen
 
 ## Commands
 
-`knap lint .` checks markdown links and anchors; install it with `cargo install knap --locked`.
+`knap lint .` checks markdown links and anchors; install it with `cargo install knap --locked --version 0.24.0`.
 
 ```sh
 cargo build
@@ -40,7 +40,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo package --locked
-knap lint .                       # markdown links and anchors; cargo install knap --locked
+knap lint .                       # markdown links and anchors; cargo install knap --locked --version 0.24.0
 ```
 
 ## Architecture
