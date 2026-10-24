@@ -8,7 +8,7 @@ workflow publishes that section as the GitHub Release notes. See
 
 ## 0.4.1 - 2026-10-24
 
-Packaging fix only; no code changes.
+Packaging fix only; no code changes. The published crate's file set differs from 0.4.0 (see below).
 
 - The crate package now ships `CHANGELOG.md`, `ARCHITECTURE.md` and `docs/`, so README's relative links resolve in an unpacked crate.
 
