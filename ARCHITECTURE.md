@@ -94,7 +94,7 @@ The crate is publishable; the procedure is [docs/releasing.md](docs/releasing.md
 ### What ships
 - The `include` allowlist in `Cargo.toml` is the source of truth for what ships: `src/`, the integration tests, `Cargo.toml`, `Cargo.lock`, `README.md`, `CHANGELOG.md`, `ARCHITECTURE.md`, `docs/`, `LICENSE`, and `skills/`, which `ptal skill` embeds.
 - The test files are listed one by one, so a new one is added by hand or it does not ship.
-- `tests/docs.rs` is left out on purpose: it reads `docs/`, `AGENTS.md` and `.agents/skills/`, which the package does not hold.
+- `tests/docs.rs` is left out on purpose: it reads `AGENTS.md` and `.agents/skills/`, which the package does not hold.
 - The crate package leaves out agent/editor directories. README's relative links resolve in the crate, the release archive and on GitHub; `tests/docs.rs` checks both lists.
 - The release archives have their own list, the `Archive` step in `release.yml`: `ptal`, `LICENSE`, `README.md`, `CHANGELOG.md`, `ARCHITECTURE.md`, `docs/` and `skills/`, so README's relative links resolve in an extracted archive.
 - The allowlist is reviewed against the previous tag's package list before every publish.

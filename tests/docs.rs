@@ -615,15 +615,23 @@ fn readme_links_the_changelog() {
     assert!(read("README.md").contains("](CHANGELOG.md)"));
 }
 
-/// Top-level path segments of the relative link targets in `text`; anchors
-/// and absolute URLs are ignored.
-fn relative_link_roots(text: &str) -> HashSet<String> {
+/// Paths of the relative link targets in `text`, without anchors or titles;
+/// absolute URLs are ignored.
+fn relative_link_paths(text: &str) -> Vec<String> {
     text.split("](")
         .skip(1)
         .filter_map(|rest| rest.split(')').next())
         .filter_map(|target| target.split([' ', '#']).next())
         .map(|path| path.trim_start_matches("./"))
         .filter(|path| !path.is_empty() && !path.contains(':'))
+        .map(|path| path.trim_end_matches('/').to_string())
+        .collect()
+}
+
+/// Top-level path segments of the relative link targets in `text`.
+fn relative_link_roots(text: &str) -> HashSet<String> {
+    relative_link_paths(text)
+        .iter()
         .filter_map(|path| path.split('/').next())
         .map(str::to_string)
         .collect()
@@ -668,31 +676,63 @@ fn readme_links_ship_in_the_release_archive() {
     );
 }
 
-/// The top-level names the `include` allowlist in `Cargo.toml` ships.
-fn crate_include_roots(manifest: &str) -> HashSet<String> {
-    manifest
-        .lines()
-        .find_map(|line| line.strip_prefix("include = ["))
-        .and_then(|rest| rest.split(']').next())
-        .unwrap_or("")
-        .split(',')
-        .map(|entry| entry.trim().trim_matches('"').trim_start_matches('/'))
-        .filter_map(|entry| entry.split('/').next())
-        .map(str::to_string)
+/// The entries of the `include` array in `Cargo.toml`, without the leading
+/// `/`. Panics if the array is missing; it may span lines.
+fn crate_includes(manifest: &str) -> Vec<String> {
+    let rest = manifest
+        .split("include = [")
+        .nth(1)
+        .expect("Cargo.toml has no `include = [` array");
+    let array = rest.split(']').next().unwrap_or("");
+    array
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(|entry| entry.trim_start_matches('/').to_string())
         .collect()
+}
+
+/// Whether the allowlist `includes` ships `path`: an exact entry, a `dir/**`
+/// entry at or above it, or a plain directory entry above it.
+fn is_packaged(includes: &[String], path: &str) -> bool {
+    includes
+        .iter()
+        .any(|entry| match entry.strip_suffix("/**") {
+            Some(dir) => path == dir || path.starts_with(&format!("{dir}/")),
+            None => path == entry || path.starts_with(&format!("{entry}/")),
+        })
+}
+
+fn unpackaged_links(readme: &str, manifest: &str) -> Vec<String> {
+    let includes = crate_includes(manifest);
+    let mut missing: Vec<String> = relative_link_paths(readme)
+        .into_iter()
+        .filter(|path| !is_packaged(&includes, path))
+        .collect();
+    missing.sort();
+    missing.dedup();
+    missing
 }
 
 #[test]
 fn readme_relative_links_ship_in_the_crate_package() {
-    let shipped = crate_include_roots(&read("Cargo.toml"));
-    let mut missing: Vec<String> = relative_link_roots(&read("README.md"))
-        .into_iter()
-        .filter(|root| !shipped.contains(root))
-        .collect();
-    missing.sort();
+    let missing = unpackaged_links(&read("README.md"), &read("Cargo.toml"));
     assert!(
         missing.is_empty(),
         "README links these, but the crate package does not ship them: {missing:?}"
+    );
+}
+
+#[test]
+fn an_unpackaged_readme_link_is_reported() {
+    let manifest =
+        "include = [\n  \"/README.md\",\n  \"/docs/components/**\", # note\n  \"/skills/**\"\n]\n";
+    assert_eq!(
+        unpackaged_links(
+            "[a](README.md) [b](docs/new.md#x) [c](./docs/components/cli.md) [d](skills/) [e](nope/y.md) [u](https://x.io/y)",
+            manifest
+        ),
+        ["docs/new.md", "nope/y.md"]
     );
 }
 
