@@ -14,7 +14,7 @@ Work is tracked in GitHub: a **milestone issue** holds the scope and design deci
 
 1. **Strict TDD.** Failing test first (seen failing for the right reason), minimum code to pass, then refactor green. No production code without a test that demanded it.
 2. **Fearless refactoring.** Single user, no compatibility burden. If something is wrong, delete and rewrite it. No shims, deprecated aliases, or migration code for formats nobody has; `schema_version` stays `1` until real data exists.
-3. **Docs stay true.** Each change lands with the docs that describe it (rustdoc, `ARCHITECTURE.md`, `README.md`). Docs describe what exists; unbuilt design is listed only in `ARCHITECTURE.md`'s `## Deferred` section.
+3. **Docs stay true.** Each change lands with the docs that describe it (rustdoc, `ARCHITECTURE.md`, `docs/components/`, `README.md`). Docs describe what exists; unbuilt design is listed only in `ARCHITECTURE.md`'s `## Deferred` section.
 4. **One interface map.** `docs/interfaces.md` lists every CLI command and TUI key side by side. Any change to the user-facing surface (command, flag, key, mode) updates that table in the same change.
 
 5. **Rust skills.** Any step that writes, reviews, or refactors Rust code uses `/rust-skills`.
@@ -45,4 +45,4 @@ knap lint .                       # markdown links and anchors; cargo install kn
 
 ## Architecture
 
-See `ARCHITECTURE.md` (layering and dependency rules, per-component invariants and contracts, "Cross-cutting rules", "Testing strategy"). It is the single source of truth; don't restate it here. If a rule matters and is missing from it, add it there.
+See `ARCHITECTURE.md` (layering and dependency rules, "Cross-cutting rules", testing overview) and `docs/components/` (per-component invariants, contracts and test claims). They are the single source of truth; don't restate them here. If a rule matters and is missing from them, add it there.
