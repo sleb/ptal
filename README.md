@@ -15,9 +15,40 @@ it is persist across rounds and revisions.
 
 ## Install
 
+### crates.io
+
 ```sh
-cargo install ptal
+cargo install ptal --locked
 ```
+
+`--locked` builds with the dependency versions ptal is tested with.
+
+### Prebuilt binaries
+
+Each [GitHub release](https://github.com/sleb/ptal/releases) has an archive
+per target, plus `SHA256SUMS`:
+
+| Target | Platform |
+|---|---|
+| `aarch64-apple-darwin` | macOS, Apple silicon |
+| `x86_64-apple-darwin` | macOS, Intel |
+| `x86_64-unknown-linux-gnu` | Linux, x86-64 |
+| `aarch64-unknown-linux-gnu` | Linux, ARM64 |
+
+Download the archive for your target and `SHA256SUMS` into one directory,
+then verify, unpack and put `ptal` on your `PATH`:
+
+```sh
+shasum -a 256 -c SHA256SUMS --ignore-missing   # expect: OK for your archive
+tar -xzf ptal-X.Y.Z-<target>.tar.gz
+cp ptal-X.Y.Z-<target>/ptal ~/.local/bin/
+```
+
+The Linux archives come from GitHub's Ubuntu runners and link their glibc,
+so they may not run on older distributions; use crates.io there. There is no
+Windows build.
+
+What changed between versions: [CHANGELOG.md](CHANGELOG.md).
 
 ## Usage
 

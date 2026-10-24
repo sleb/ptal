@@ -665,3 +665,40 @@ fn contributor_skills_are_hidden_from_npx() {
         }
     }
 }
+
+// ---- README: install, data, troubleshooting --------------------------------
+
+/// The `target:` values in the matrix of `.github/workflows/release.yml`.
+fn release_targets() -> Vec<String> {
+    read(".github/workflows/release.yml")
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("- { target: "))
+        .map(|rest| rest.split(',').next().unwrap_or(rest).trim().to_string())
+        .collect()
+}
+
+#[test]
+fn release_targets_are_parsed() {
+    let targets = release_targets();
+    assert_eq!(targets.len(), 4, "{targets:?}");
+    assert!(targets.contains(&"x86_64-unknown-linux-gnu".to_string()));
+}
+
+#[test]
+fn readme_install_covers_crates_io_and_prebuilt_binaries() {
+    let readme = read("README.md");
+    let install = section(&readme, "## Install", "## Usage");
+    let mut expected: Vec<String> = [
+        "cargo install ptal --locked",
+        "SHA256SUMS",
+        "shasum -a 256 -c",
+        "glibc",
+        "Windows",
+    ]
+    .map(String::from)
+    .into();
+    expected.extend(release_targets());
+    for item in expected {
+        assert!(install.contains(&item), "Install lacks {item:?}");
+    }
+}
