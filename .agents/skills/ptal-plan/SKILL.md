@@ -15,7 +15,7 @@ Produce an execution plan for one GitHub issue in this repo, in the shape of the
    - `gh issue view <n> --json title,body,comments` — scope, acceptance criteria, out of scope.
    - The parent issue it references ("Part of #N") — the milestone issue's design decisions table and out-of-scope list bind this story.
    - Dependency issues ("Depends on #M") and their plans/comments — reuse their decisions; don't re-decide.
-   - `ARCHITECTURE.md` and `README.md` — note where the milestone issue narrows the architecture.
+   - `ARCHITECTURE.md`, `docs/components/` and `README.md` — note where the milestone issue narrows the architecture.
    - The code that exists now (`src/`, `tests/`, `Cargo.toml`) — plans must build on what is actually there, not what the docs say should be.
    - Project instruction files if present (`AGENTS.md`, `CLAUDE.md`, or equivalent for the running agent).
 2. **Draft the plan** to the scratchpad as `plan-<n>.md` using the template below.

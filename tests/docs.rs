@@ -836,3 +836,159 @@ fn contributor_skills_are_hidden_from_npx() {
         }
     }
 }
+
+/// The components with a doc of their own under `docs/components/`.
+const COMPONENTS: [&str; 7] = [
+    "model",
+    "anchor",
+    "store",
+    "review",
+    "cli",
+    "tui",
+    "highlight",
+];
+
+/// `(path, text)` for `ARCHITECTURE.md` and each component doc.
+fn architecture_docs() -> Vec<(String, String)> {
+    let mut docs = vec![("ARCHITECTURE.md".to_string(), read("ARCHITECTURE.md"))];
+    for name in COMPONENTS {
+        let path = format!("docs/components/{name}.md");
+        let text = read(&path);
+        docs.push((path, text));
+    }
+    docs
+}
+
+/// The text of `ARCHITECTURE.md` before its `## Deferred` section.
+fn architecture_body() -> String {
+    let text = read("ARCHITECTURE.md");
+    let end = text.find("\n## Deferred\n").expect("no ## Deferred");
+    text[..end].to_string()
+}
+
+#[test]
+fn architecture_has_no_status_bookkeeping() {
+    for (path, text) in architecture_docs() {
+        let found = banned_phrases(&text, &["built:", "deferred within", "not built"]);
+        assert!(found.is_empty(), "{path} still says {found:?}");
+        let words = banned_words(&without_code(&text), &["planned"]);
+        assert!(words.is_empty(), "{path} still says {words:?}");
+        assert!(
+            !headings(&text).iter().any(|h| h == "status"),
+            "{path} has a status section"
+        );
+    }
+}
+
+#[test]
+fn deferred_work_is_listed_only_in_the_architecture_deferred_section() {
+    let body = architecture_body();
+    let mut prose: Vec<(String, String)> = vec![("ARCHITECTURE.md".into(), body)];
+    prose.extend(architecture_docs().into_iter().skip(1));
+    for (path, text) in prose {
+        let found = banned_words(&text, &["deferred", "deferral"]);
+        assert!(found.is_empty(), "{path} has a local deferral: {found:?}");
+    }
+}
+
+#[test]
+fn deferred_is_one_short_list_of_issue_links_at_the_end() {
+    let text = read("ARCHITECTURE.md");
+    assert_eq!(text.matches("\n## Deferred\n").count(), 1);
+    let at = text.find("\n## Deferred\n").unwrap();
+    let section = &text[at + 1..];
+    assert!(
+        !section[3..].contains("\n## "),
+        "## Deferred is not the last section"
+    );
+    assert!(section.lines().count() <= 40, "## Deferred is too long");
+    let items: Vec<&str> = section.lines().filter(|l| l.starts_with("- ")).collect();
+    assert!(!items.is_empty(), "## Deferred has no items");
+    for item in &items {
+        let linked = item.contains("https://github.com/")
+            || item
+                .split('#')
+                .skip(1)
+                .any(|rest| rest.chars().next().is_some_and(|c| c.is_ascii_digit()));
+        assert!(linked, "deferred item has no issue link: {item}");
+    }
+    let lower = section.to_lowercase();
+    for expected in ["multi-file", "git-diff"] {
+        assert!(lower.contains(expected), "## Deferred lacks {expected:?}");
+    }
+}
+
+#[test]
+fn architecture_frames_one_file_as_todays_scope() {
+    let text = read("ARCHITECTURE.md").to_lowercase();
+    assert!(!text.contains("one file at a time"));
+    assert!(text.contains("today a review covers one file"));
+}
+
+#[test]
+fn architecture_prose_is_short() {
+    for (path, text) in architecture_docs() {
+        let long: Vec<String> = prose_units(&text)
+            .into_iter()
+            .filter(|unit| unit.split_whitespace().count() > MAX_PROSE_WORDS)
+            .collect();
+        assert!(
+            long.is_empty(),
+            "{path} has paragraphs over {MAX_PROSE_WORDS} words; split them:\n{}",
+            long.join("\n")
+        );
+    }
+}
+
+#[test]
+fn component_docs_start_with_a_role_and_have_invariants_and_a_contract() {
+    for name in COMPONENTS {
+        let path = format!("docs/components/{name}.md");
+        let text = read(&path);
+        let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+        assert_eq!(lines.next(), Some(format!("# `{name}`").as_str()), "{path}");
+        assert!(
+            lines.next().is_some_and(|l| l.starts_with("**Role:**")),
+            "{path} does not start with its role"
+        );
+        let found = headings(&text);
+        for expected in ["invariants", "contract"] {
+            assert!(
+                found.iter().any(|h| h == expected),
+                "{path} lacks {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn architecture_links_every_component_doc() {
+    let text = read("ARCHITECTURE.md");
+    for name in COMPONENTS {
+        let link = format!("(docs/components/{name}.md)");
+        assert!(text.contains(&link), "ARCHITECTURE.md does not link {link}");
+    }
+}
+
+#[test]
+fn architecture_keeps_the_cross_layer_explanations() {
+    let text = read("ARCHITECTURE.md");
+    for expected in [
+        "## Key idea: revisions and anchoring",
+        "## Cross-cutting rules",
+        "**Single write path.**",
+        "### Change markers",
+        "## Testing strategy",
+        "## Distribution",
+    ] {
+        assert!(
+            text.contains(expected),
+            "ARCHITECTURE.md lacks {expected:?}"
+        );
+    }
+    assert!(text.contains("`cli`") && text.contains("`tui`"));
+    let store = read("docs/components/store.md");
+    assert!(store.contains("## Atomicity and locking"));
+    let tui = read("docs/components/tui.md");
+    assert!(tui.contains("## Live refresh"));
+}
