@@ -6,6 +6,10 @@ workflow publishes that section as the GitHub Release notes. See
 
 ## Unreleased
 
+## 0.4.1 - 2026-10-24
+
+Packaging fix only; no code changes.
+
 - The crate package now ships `CHANGELOG.md`, `ARCHITECTURE.md` and `docs/`, so README's relative links resolve in an unpacked crate.
 
 ## 0.4.0 - 2026-10-24
