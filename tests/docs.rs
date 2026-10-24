@@ -614,6 +614,71 @@ fn readme_links_the_changelog() {
     assert!(read("README.md").contains("](CHANGELOG.md)"));
 }
 
+/// Top-level path segments of the relative link targets in `text`; anchors
+/// and absolute URLs are ignored.
+fn relative_link_roots(text: &str) -> HashSet<String> {
+    text.split("](")
+        .skip(1)
+        .filter_map(|rest| rest.split(')').next())
+        .map(|target| target.split('#').next().unwrap_or(""))
+        .filter(|path| !path.is_empty() && !path.contains("://"))
+        .filter_map(|path| path.split('/').next())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The file names the `cp` lines of the workflow's `Archive` step ship (the
+/// last word of each line is the destination).
+fn archive_copy_list(workflow: &str) -> HashSet<String> {
+    let step = workflow
+        .split("- name: Archive")
+        .nth(1)
+        .and_then(|rest| rest.split("- uses:").next())
+        .unwrap_or("");
+    step.lines()
+        .filter_map(|line| line.trim().strip_prefix("cp "))
+        .flat_map(|args| {
+            let mut words: Vec<&str> = args.split_whitespace().filter(|w| *w != "-R").collect();
+            words.pop();
+            words
+        })
+        .filter_map(|word| word.trim_matches('"').rsplit('/').next())
+        .map(str::to_string)
+        .collect()
+}
+
+fn unshipped_links(readme: &str, workflow: &str) -> Vec<String> {
+    let shipped = archive_copy_list(workflow);
+    let mut missing: Vec<String> = relative_link_roots(readme)
+        .into_iter()
+        .filter(|root| !shipped.contains(root))
+        .collect();
+    missing.sort();
+    missing
+}
+
+#[test]
+fn readme_links_ship_in_the_release_archive() {
+    let missing = unshipped_links(&read("README.md"), &read(".github/workflows/release.yml"));
+    assert!(
+        missing.is_empty(),
+        "README links these, but the release archive does not ship them: {missing:?}"
+    );
+}
+
+#[test]
+fn an_unshipped_readme_link_is_reported() {
+    let workflow =
+        "      - name: Archive\n        run: |\n          cp -R docs \"$NAME/\"\n      - uses: x\n";
+    assert_eq!(
+        unshipped_links(
+            "[x](nope/y.md) [d](docs/a.md#b) [u](https://x.io/y)",
+            workflow
+        ),
+        ["nope"]
+    );
+}
+
 // ---- the ptal-review skill -------------------------------------------------
 
 const SKILL_PATH: &str = "skills/ptal-review/SKILL.md";

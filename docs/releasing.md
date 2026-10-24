@@ -100,7 +100,7 @@ The tag triggers `release.yml`:
 | Job | Does |
 |---|---|
 | `verify tag` | Fails unless the tag is `v<Cargo.toml version>`, `CHANGELOG.md` has a `## X.Y.Z - ` section, and the commit is on `main`. |
-| `build <target>` | `cargo build --release --locked` for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`; archives `ptal-X.Y.Z-<target>.tar.gz` (`ptal`, `LICENSE`, `README.md` in one directory). |
+| `build <target>` | `cargo build --release --locked` for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`; archives `ptal-X.Y.Z-<target>.tar.gz` (`ptal`, `LICENSE`, `README.md`, `CHANGELOG.md`, `ARCHITECTURE.md`, `docs/`, `skills/` in one directory, so README's links resolve). |
 | `checksums and release` | Writes `SHA256SUMS`, then `gh release create` with the CHANGELOG section as notes and the archives attached. |
 
 Linux binaries link the runner's glibc and may not run on old distros; those

@@ -74,7 +74,8 @@ jobs:
           NAME: ptal-${{ needs.verify.outputs.version }}-${{ matrix.target }}
         run: |
           mkdir "$NAME"
-          cp "target/${{ matrix.target }}/release/ptal" LICENSE README.md "$NAME/"
+          cp "target/${{ matrix.target }}/release/ptal" LICENSE README.md CHANGELOG.md ARCHITECTURE.md "$NAME/"
+          cp -R docs skills "$NAME/"
           tar czf "$NAME.tar.gz" "$NAME"
       - uses: actions/upload-artifact@v7
         with:
