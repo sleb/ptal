@@ -2,9 +2,7 @@
 
 **Role:** the agent-facing front end (`src/cli.rs`, clap derive). It parses args, calls [`review`](review.md), and prints. See [ARCHITECTURE.md](../../ARCHITECTURE.md) for the layering and [docs/interfaces.md](../interfaces.md) for the full command and key map.
 
-## Owns
-
-### Structure
+## Structure
 - The whole flow is `run(args, &Env, out, err) -> u8`.
 - The process facts are injected via `Env`: store, clock, ticker, `PTAL_AUTHOR` and TTY flags. Every path is therefore testable in-process, and `main` only fills `Env` from the real process.
 - The ticker comes from `Env.ticker`, the `T` of `Env<C, T>` (`SystemTicker` in `main`), so in-process tests never sleep.
@@ -78,8 +76,6 @@
 - ptal ships one as an example, `skills/ptal-review/SKILL.md` (`ptal skill`), whose `Your choices` section the user edits. The help stays policy-free.
 
 ## Invariants
-- stdout is data only and stderr diagnostics, never mixed.
-- The CLI never invents an author and never reads `$USER` for writes.
 - Output shapes are the `model` types, so changing them is a `schema_version` bump.
 - No business rule lives here; the CLI maps arguments to `review` calls and errors to exit codes.
 

@@ -1,10 +1,6 @@
 # `review`
 
-**Role:** the application core and the **only write path**. Each operation is a transaction through `store`, and each validates its inputs before committing. See [ARCHITECTURE.md](../../ARCHITECTURE.md) for the layering.
-
-## Owns
-
-`Reviews` holds a `Store` and an injected `Clock`. Both front ends call it; it prints nothing and knows no terminal.
+**Role:** the application core and the **only write path**. `Reviews` holds a `Store` and an injected `Clock`. Each operation is a transaction through `store`, and each validates its inputs before committing. See [ARCHITECTURE.md](../../ARCHITECTURE.md) for the layering.
 
 ## Operations
 

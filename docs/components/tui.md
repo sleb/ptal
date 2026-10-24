@@ -72,9 +72,8 @@ The types, fields and variants are in rustdoc (`cargo doc --open`, start at `pta
 - The file and its review are re-read on open, after each of the TUI's own writes, and whenever the stamp changes (within `POLL_INTERVAL`).
 
 ## Layout and rendering
-- `render` holds no logic; the rows it draws come from `App::screen_rows`.
-- The cursor line is always whole on screen (see the scroll invariant below).
-- The panel never moves the cursor.
+- The rows `render` draws come from `App::screen_rows`.
+- The cursor line is whole on screen except when taller than the view; see the scroll invariants below.
 - Gutter glyphs mark threads and, separately, the changes since the human's last look; see Change markers in [ARCHITECTURE.md](../../ARCHITECTURE.md#change-markers).
 - Tables are laid out by `tui::table`, wrapped lines by `tui::wrap`, and markdown styling by [`highlight`](highlight.md).
 

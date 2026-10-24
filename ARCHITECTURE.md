@@ -80,7 +80,11 @@ Each component doc has a `Tests` section with its claims. The layers:
 - **Unit tests** beside the code pin each rule: one test per rule in `review`, golden JSON in `model` and `cli`, exhaustive properties in `anchor`, snapshots and properties in `tui`.
 - **Injected clock and ticker** make time deterministic; tests hand off from inside a fake `sleep`.
 - **Integration tests** in `tests/` exercise the layers together: `core.rs` (concurrent writers, a whole turn round), `cli.rs` (the built binary), `tui.rs` (scripted rounds through `step`), `panic_hook.rs` (the global hook, in its own process).
-- **Docs tests** in `tests/docs.rs` tie the help listing, README, the interface map, the skill and the contributor docs to the code.
+- **Docs tests** in `tests/docs.rs` tie the docs to the code:
+  - the help listing against README's key tables and the interface map, with short interface-map cells;
+  - README prose: no status or roadmap words, paragraphs of at most 120 words, and a `For agents` section linking the reference docs and the skill;
+  - the built binary against `skills/ptal-review/SKILL.md`, and the contributor skills staying `internal`;
+  - `ARCHITECTURE.md` and the component docs: no status words or local deferrals, one issue-linked `## Deferred`, prose units of at most 120 words, each component doc's shape, and links to every component doc.
 - A real-terminal check (pty) is manual.
 
 ## Distribution

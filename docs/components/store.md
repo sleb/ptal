@@ -36,7 +36,6 @@ The data dir is `$PTAL_DATA_DIR`, else `$XDG_DATA_HOME/ptal`, else `~/.local/sha
 ## Invariants
 - Snapshots kept by a transaction are written after its closure returns `Ok` and **before** `review.json` is renamed, all under the lock. A reader that sees `rN` in `review.json` always finds its snapshot.
 - An `Err` from the closure writes nothing, snapshots included.
-- Identity, atomicity, locking and snapshot rules above hold for every write.
 
 ## Contract
 - `with_review(file, |&mut Review, &mut Snapshots| -> Result<R>) -> Result<R>` is the only mutation primitive.
