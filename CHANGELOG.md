@@ -6,6 +6,8 @@ workflow publishes that section as the GitHub Release notes. See
 
 ## Unreleased
 
+- The crate package now ships `CHANGELOG.md`, `ARCHITECTURE.md` and `docs/`, so README's relative links resolve in an unpacked crate.
+
 ## 0.4.0 - 2026-10-24
 
 Mostly docs, plus one new command, `ptal skill`. The review store format and
