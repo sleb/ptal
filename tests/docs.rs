@@ -9,7 +9,10 @@
 //! `ptal-review` skill. That skill (`skills/ptal-review/SKILL.md`, printed by
 //! `ptal skill`) is held to the built binary: every command, flag and JSON
 //! field it names exists, it stays short, and it links the reference docs
-//! instead of restating them.
+//! instead of restating them. README's Install names the release workflow's
+//! targets, its Where data lives names the store's layout, its Troubleshooting
+//! quotes the real error messages and codes, and every relative link in it
+//! points at something the release archive copies.
 //!
 //! These read the repo at run time, so the file is not part of the published
 //! package.
@@ -758,5 +761,51 @@ fn readme_troubleshooting_matches_the_binary() {
     assert!(
         troubleshooting.contains("renamed"),
         "Troubleshooting lacks the vanished-comments entry"
+    );
+}
+
+/// The first path segment of each relative link target in markdown `text`.
+fn relative_link_roots(text: &str) -> HashSet<String> {
+    text.split("](")
+        .skip(1)
+        .filter_map(|rest| rest.split(')').next())
+        .filter(|target| !target.starts_with('#') && !target.contains("://"))
+        .map(|target| {
+            let path = target.split('#').next().unwrap_or(target);
+            path.split('/').next().unwrap_or(path).to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn relative_link_roots_skip_urls_and_bare_anchors() {
+    let text = "[a](docs/x.md#y) [b](https://e.com/z) [c](#top) [d](LICENSE)";
+    let roots = relative_link_roots(text);
+    assert_eq!(
+        roots,
+        HashSet::from(["docs".to_string(), "LICENSE".to_string()])
+    );
+}
+
+#[test]
+fn readme_links_the_changelog() {
+    assert!(read("README.md").contains("](CHANGELOG.md)"));
+}
+
+#[test]
+fn readme_links_ship_in_the_release_archive() {
+    let release = read(".github/workflows/release.yml");
+    let copied: HashSet<&str> = release
+        .lines()
+        .filter(|line| line.trim_start().starts_with("cp "))
+        .flat_map(str::split_whitespace)
+        .collect();
+    let missing: Vec<String> = relative_link_roots(&read("README.md"))
+        .into_iter()
+        .filter(|root| !copied.contains(root.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "README links these but the release archive does not copy them: {missing:?}"
     );
 }

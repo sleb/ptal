@@ -9,6 +9,11 @@ workflow publishes that section as the GitHub Release notes. See
 - `ptal skill` prints an agent skill for the review loop (markdown), the same
   file `npx skills add sleb/ptal` installs. A file named `skill` now needs
   `./skill` to open in the TUI, like the other command names.
+- README covers installing prebuilt binaries (with checksum verification), the
+  per-file layout of the data directory and how to clean it up, and
+  troubleshooting for the common errors. Release archives now also hold
+  `CHANGELOG.md`, `ARCHITECTURE.md`, `docs/` and `skills/`, so README's links
+  resolve there.
 
 ## 0.3.1 - 2026-10-23
 
