@@ -95,7 +95,8 @@ The crate is publishable; the procedure is [docs/releasing.md](docs/releasing.md
 - The `include` allowlist in `Cargo.toml` is the source of truth for what ships: `src/`, the integration tests, `Cargo.toml`, `Cargo.lock`, `README.md`, `LICENSE`, and `skills/`, which `ptal skill` embeds.
 - The test files are listed one by one, so a new one is added by hand or it does not ship.
 - `tests/docs.rs` is left out on purpose: it reads `docs/`, `AGENTS.md` and `.agents/skills/`, which the package does not hold.
-- `docs/`, `ARCHITECTURE.md`, `CHANGELOG.md` and agent/editor directories are deliberately excluded. README links to them are relative, which GitHub and crates.io (via `repository`) resolve against the repo.
+- The crate package leaves out `docs/`, `ARCHITECTURE.md`, `CHANGELOG.md` and agent/editor directories. README links to them are relative, which GitHub and crates.io (via `repository`) resolve against the repo.
+- The release archives have their own list, the `Archive` step in `release.yml`: `ptal`, `LICENSE`, `README.md`, `CHANGELOG.md`, `ARCHITECTURE.md`, `docs/` and `skills/`, so README's relative links resolve in an extracted archive.
 - The allowlist is reviewed against the previous tag's package list before every publish.
 - `rust-version` is the floor declared by the dependency tree, checked by hand and not enforced in CI.
 

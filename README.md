@@ -28,7 +28,9 @@ needs a Rust toolchain, 1.89 or newer; get one from [rustup.rs](https://rustup.r
 
 Each [GitHub Release](https://github.com/sleb/ptal/releases) has a
 `ptal-<version>-<target>.tar.gz` archive per target, and a `SHA256SUMS` file
-covering them:
+covering them. Each archive holds the binary, `LICENSE`, this README, the
+changelog, `ARCHITECTURE.md`, `docs/` and `skills/`, so the links here resolve
+offline:
 
 | Target | Platform |
 |---|---|
