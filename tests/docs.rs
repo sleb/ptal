@@ -8,7 +8,8 @@
 //! words, and a `For agents` section that links the reference docs and the
 //! `ptal-review` skill. README Install, Troubleshooting and Where data lives
 //! are checked against the release workflow's targets, the real error codes
-//! and messages, and the store's file names; the README links `CHANGELOG.md`.
+//! and messages, and the store's file names; the README links `CHANGELOG.md`, and
+//! every file it links ships in the release archive.
 //! The skill (`skills/ptal-review/SKILL.md`, printed by `ptal skill`) is held
 //! to the built binary: every command, flag and JSON field it names exists, it
 //! stays short, and it links the reference docs instead of restating them.
