@@ -23,7 +23,7 @@ Work is tracked in GitHub: a **milestone issue** holds the scope and design deci
 7. **PR review comments.** CI reviews a PR once, when it is opened; pushes do not re-review. After addressing a review comment, reply on its thread saying what changed (naming the commit) or why not (won't fix, deferred to an issue), and resolve the thread, before merging. The review follows up on each reply: it accepts a won't-fix or deferral, answers questions, and checks a claimed fix, reopening the thread if the fix falls short; wait for those follow-ups before merging.
 8. **Watch the PR.** Right after opening a PR, subscribe to it for the rest of the session (in Claude Code, a `Monitor` that polls `gh` about once a minute and re-arms when it expires). Report new reviews, review comments, threads that become unresolved, check results, and the PR being merged or closed. Track items by ID, not by their text (a push moves comments to new lines), and skip your own replies. The watch only reports what is new, so read what is already on the PR when you start it. Stop the watch as soon as the PR is merged or closed: have the polling script exit on that state, and if it is still running after the merge, stop it (`TaskStop`) before ending the turn. Don't leave a monitor running past the merge.
 
-Green gate for every step: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`, `cargo package --locked`.
+Green gate for every step: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`, `cargo package --locked`, `knap lint .`.
 
 Plan stories with `/ptal-plan <issue#>`; the approved plan is posted as a comment on the issue and is the execution script.
 
@@ -38,6 +38,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo package --locked
+knap lint .                       # broken doc links and anchors; cargo install knap --locked
 ```
 
 ## Architecture

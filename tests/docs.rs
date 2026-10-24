@@ -246,13 +246,13 @@ fn ptal_plan_skill_defers_agreements_to_agents() {
         !agreements.contains("cargo"),
         "the skill restates gate commands in Working agreements: {agreements}"
     );
-    // "five-command" is a claim about AGENTS.md's gate, so it must match it.
-    if text.contains("five-command") {
+    // "six-command" is a claim about AGENTS.md's gate, so it must match it.
+    if text.contains("six-command") {
         let commands = gate_commands();
         assert_eq!(
             commands.len(),
-            5,
-            "the skill says five-command, AGENTS.md's gate has {}: {commands:?}",
+            6,
+            "the skill says six-command, AGENTS.md's gate has {}: {commands:?}",
             commands.len()
         );
     }

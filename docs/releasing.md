@@ -25,6 +25,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo package --locked
+knap lint .                                 # expect: 0 problem(s)
 ```
 
 Every story issue in the milestone is closed with its acceptance criteria
