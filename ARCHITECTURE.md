@@ -23,7 +23,7 @@ This document is the end-to-end view: the layering, how comments follow edits, t
 ```
 
 - Dependencies point downward only. `model` depends on nothing in the crate.
-- `tui` and `cli` never read or write through `store` or `anchor` directly.
+- `tui` and `cli` never use `store` directly. They use `anchor` only for read-only mapping (the TUI keeps its cursor in place across a re-read) and never to change data.
 - `cli` only constructs the `Store` (in `main` and in tests) to build `Reviews`.
 
 ## Key idea: revisions and anchoring
@@ -115,7 +115,7 @@ Each item links the issue that holds its detail.
 - Severity or categories, and `sync` (#141).
 - Data model: nested replies, edit, delete, `ptal schema`, the review log's history (#133).
 - Views: inline and side-by-side diffs, older revisions, mark as seen, `as_of` (#135).
-- TUI text layout: sub-line scroll, hanging indent, real tab stops, ragged table rows, pipes in code cells, tables in lists, character selection (#131).
+- TUI text layout: sub-line scroll, hanging indent, real tab stops, ragged table rows, pipes in code cells, tables in lists, character selection, `NO_COLOR` for the TUI chrome (#131).
 - TUI table cells: inline markup (#107).
 - TUI: thread editing, resolve/reopen notes, sidebar and resolved toggles, turn-back notification (#132).
 - Highlight: code blocks by language, non-markdown files, front matter, a toggle key (#134); themes (#49).

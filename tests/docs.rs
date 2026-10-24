@@ -859,6 +859,14 @@ fn architecture_docs() -> Vec<(String, String)> {
     docs
 }
 
+/// `(path, text)` for each component doc.
+fn component_docs() -> Vec<(String, String)> {
+    architecture_docs()
+        .into_iter()
+        .filter(|(path, _)| path != "ARCHITECTURE.md")
+        .collect()
+}
+
 /// The text of `ARCHITECTURE.md` before its `## Deferred` section.
 fn architecture_body() -> String {
     let text = read("ARCHITECTURE.md");
@@ -884,7 +892,7 @@ fn architecture_has_no_status_bookkeeping() {
 fn deferred_work_is_listed_only_in_the_architecture_deferred_section() {
     let body = architecture_body();
     let mut prose: Vec<(String, String)> = vec![("ARCHITECTURE.md".into(), body)];
-    prose.extend(architecture_docs().into_iter().skip(1));
+    prose.extend(component_docs());
     for (path, text) in prose {
         let found = banned_words(&text, &["deferred", "deferral"]);
         assert!(found.is_empty(), "{path} has a local deferral: {found:?}");
