@@ -914,10 +914,10 @@ fn deferred_is_one_short_list_of_issue_links_at_the_end() {
     assert!(!items.is_empty(), "## Deferred has no items");
     for item in &items {
         let linked = item.contains("https://github.com/")
-            || item
-                .split('#')
-                .skip(1)
-                .any(|rest| rest.chars().next().is_some_and(|c| c.is_ascii_digit()));
+            || item.split("(#").skip(1).any(|rest| {
+                let digits = rest.chars().take_while(char::is_ascii_digit).count();
+                digits > 0 && rest[digits..].starts_with(')')
+            });
         assert!(linked, "deferred item has no issue link: {item}");
     }
     let lower = section.to_lowercase();
