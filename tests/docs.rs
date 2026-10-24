@@ -1000,3 +1000,64 @@ fn architecture_keeps_the_cross_layer_explanations() {
     let tui = read("docs/components/tui.md");
     assert!(tui.contains("## Live refresh"));
 }
+
+#[test]
+fn protocol_has_no_status_or_history() {
+    let text = read("docs/protocol.md");
+    let banned = [
+        "built",
+        "planned",
+        "review-interactions",
+        "0365930",
+        "removed since",
+        "> **Status",
+    ];
+    let found = banned_words(&text, &banned);
+    assert!(found.is_empty(), "docs/protocol.md still says {found:?}");
+    assert!(
+        !headings(&text).iter().any(|heading| heading == "status"),
+        "docs/protocol.md has a status section"
+    );
+}
+
+#[test]
+fn late_comments_are_deferred_once() {
+    let architecture = read("ARCHITECTURE.md");
+    let deferred = &architecture[architecture.find("## Deferred").expect("## Deferred")..];
+    let count = |text: &str| text.to_lowercase().matches("late comment").count();
+    assert_eq!(count(deferred), 1, "ARCHITECTURE.md ## Deferred");
+    assert_eq!(count(&architecture), 1, "ARCHITECTURE.md outside Deferred");
+    assert_eq!(count(&read("docs/protocol.md")), 0, "docs/protocol.md");
+}
+
+#[test]
+fn interfaces_has_no_built_or_for_now_phrasing() {
+    let text = read("docs/interfaces.md");
+    let found = banned_phrases(
+        &text,
+        &["for now", "is built", "not built", "what is built"],
+    );
+    assert!(found.is_empty(), "docs/interfaces.md still says {found:?}");
+}
+
+#[test]
+fn interfaces_no_arguments_sentence_covers_terminal_and_not() {
+    let text = read("docs/interfaces.md").replace('\n', " ");
+    let at = text
+        .find("With no arguments")
+        .expect("no-arguments sentence");
+    let sentence = &text[at..];
+    let sentence = &sentence[..sentence.find(". The").expect("sentence end")];
+    for needle in [
+        "exits `2`",
+        "terminal",
+        "stderr",
+        "JSON `usage` error",
+        "stdout",
+    ] {
+        assert!(
+            sentence.contains(needle),
+            "{needle:?} missing from {sentence:?}"
+        );
+    }
+}

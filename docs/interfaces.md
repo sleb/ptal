@@ -2,8 +2,8 @@
 
 ptal has two front ends over one core (`review`). This page lists each
 operation once, with the way an agent does it and the way a human does it, so
-the CLI and the TUI cannot drift apart. It covers what is built; anything not
-listed is not built.
+the CLI and the TUI cannot drift apart. It lists every operation, command and
+key.
 
 > **Rule: every change to the user-facing surface updates this table.** Adding,
 > renaming, or removing a CLI command or flag, or a TUI key or mode, edits the
@@ -220,7 +220,9 @@ the TUI runs. A failed write of the result to stdout (including `--help` and
 
 `ptal <file>` opens the TUI. A first argument that is exactly `comments`,
 `add`, `resolve`, `reply`, `reopen`, `handoff`, `wait` or `help` is the subcommand; to open a file with one of those names,
-write `./comments`. With no arguments, `ptal` prints help and exits `2`. The
+write `./comments`. With no arguments, `ptal` exits `2`: on a terminal it prints help to stderr
+and nothing to stdout; otherwise it prints a JSON `usage` error on stdout whose
+message is the help. The
 `--json` flag is accepted with a file and has no effect on the TUI. Unlike
 the agent commands, the TUI takes its author from `$USER` only (never
 `PTAL_AUTHOR`); an unset or blank `$USER` is `missing_author`, reported before
@@ -236,7 +238,9 @@ the terminal is taken over.
   agent reads the verdict and note from `comments`.
 - **Navigation and quitting** are TUI-only; the agent has no cursor.
 - **The TUI reads threads, adds threads on a line or a line range, replies,
-  resolves and reopens.** Notes on resolve/reopen are CLI-only for now, and so is a note on reopening a review (`O` takes none); hand-offs and closes take a note on both sides. A thread covers its range
+  resolves and reopens.** Notes on resolve and reopen are CLI-only, and so is
+  a note on reopening a review (`O` takes none); hand-offs and closes take a
+  note on both sides. A thread covers its range
   as mapped to the file now, whatever its state, so an outdated thread
   carries the same gutter glyph at its best-guess lines and opens from them;
   the panel labels it `outdated` and shows its original quote.
