@@ -1005,14 +1005,16 @@ fn architecture_keeps_the_cross_layer_explanations() {
 fn protocol_has_no_status_or_history() {
     let text = read("docs/protocol.md");
     let banned = [
-        "built",
-        "planned",
+        "*Built.*",
+        "*Planned:*",
         "review-interactions",
         "0365930",
         "removed since",
         "> **Status",
+        "are built",
+        "not built",
     ];
-    let found = banned_words(&text, &banned);
+    let found = banned_phrases(&text, &banned);
     assert!(found.is_empty(), "docs/protocol.md still says {found:?}");
     assert!(
         !headings(&text).iter().any(|heading| heading == "status"),
@@ -1023,10 +1025,18 @@ fn protocol_has_no_status_or_history() {
 #[test]
 fn late_comments_are_deferred_once() {
     let architecture = read("ARCHITECTURE.md");
-    let deferred = &architecture[architecture.find("## Deferred").expect("## Deferred")..];
+    let start = architecture.find("## Deferred").expect("## Deferred");
     let count = |text: &str| text.to_lowercase().matches("late comment").count();
-    assert_eq!(count(deferred), 1, "ARCHITECTURE.md ## Deferred");
-    assert_eq!(count(&architecture), 1, "ARCHITECTURE.md outside Deferred");
+    assert_eq!(
+        count(&architecture[start..]),
+        1,
+        "ARCHITECTURE.md ## Deferred"
+    );
+    assert_eq!(
+        count(&architecture[..start]),
+        0,
+        "ARCHITECTURE.md outside Deferred"
+    );
     assert_eq!(count(&read("docs/protocol.md")), 0, "docs/protocol.md");
 }
 
@@ -1041,23 +1051,25 @@ fn interfaces_has_no_built_or_for_now_phrasing() {
 }
 
 #[test]
-fn interfaces_no_arguments_sentence_covers_terminal_and_not() {
+fn interfaces_no_arguments_sentence_matches_the_binary() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_ptal"))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty(), "bare ptal wrote to stdout");
+    assert!(String::from_utf8(out.stderr).unwrap().contains("\"usage\""));
+
     let text = read("docs/interfaces.md").replace('\n', " ");
     let at = text
         .find("With no arguments")
         .expect("no-arguments sentence");
-    let sentence = &text[at..];
-    let sentence = &sentence[..sentence.find(". The").expect("sentence end")];
-    for needle in [
-        "exits `2`",
-        "terminal",
-        "stderr",
-        "JSON `usage` error",
-        "stdout",
-    ] {
+    let sentence = text[at..].split(". ").next().unwrap();
+    for needle in ["exits `2`", "terminal", "stderr", "JSON `usage` error"] {
         assert!(
             sentence.contains(needle),
             "{needle:?} missing from {sentence:?}"
         );
     }
+    assert!(!sentence.contains("on stdout"), "{sentence:?}");
 }

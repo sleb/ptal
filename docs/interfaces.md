@@ -2,8 +2,7 @@
 
 ptal has two front ends over one core (`review`). This page lists each
 operation once, with the way an agent does it and the way a human does it, so
-the CLI and the TUI cannot drift apart. It lists every operation, command and
-key.
+the CLI and the TUI cannot drift apart.
 
 > **Rule: every change to the user-facing surface updates this table.** Adding,
 > renaming, or removing a CLI command or flag, or a TUI key or mode, edits the
@@ -220,9 +219,8 @@ the TUI runs. A failed write of the result to stdout (including `--help` and
 
 `ptal <file>` opens the TUI. A first argument that is exactly `comments`,
 `add`, `resolve`, `reply`, `reopen`, `handoff`, `wait` or `help` is the subcommand; to open a file with one of those names,
-write `./comments`. With no arguments, `ptal` exits `2`: on a terminal it prints help to stderr
-and nothing to stdout; otherwise it prints a JSON `usage` error on stdout whose
-message is the help. The
+write `./comments`. With no arguments, `ptal` exits `2` and writes only to stderr: help on a
+terminal, otherwise a JSON `usage` error whose message is the help. The
 `--json` flag is accepted with a file and has no effect on the TUI. Unlike
 the agent commands, the TUI takes its author from `$USER` only (never
 `PTAL_AUTHOR`); an unset or blank `$USER` is `missing_author`, reported before
